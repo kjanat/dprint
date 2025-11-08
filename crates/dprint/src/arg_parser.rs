@@ -96,9 +96,23 @@ impl CliArgs {
         .unwrap_or(ConfigDiscovery::Default),
     }
   }
+
+  pub fn config_discovery_raw(&self) -> Option<ConfigDiscovery> {
+    self.config_discovery
+  }
+
+  pub fn new_with_config_discovery(&self, config_discovery: ConfigDiscovery) -> Self {
+    Self {
+      sub_command: self.sub_command.clone(),
+      log_level: self.log_level,
+      plugins: self.plugins.clone(),
+      config: self.config.clone(),
+      config_discovery: Some(config_discovery),
+    }
+  }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubCommand {
   Check(CheckSubCommand),
   Fmt(FmtSubCommand),
@@ -153,7 +167,7 @@ impl SubCommand {
   }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckSubCommand {
   pub patterns: FilePatternArgs,
   pub incremental: Option<bool>,
@@ -162,7 +176,7 @@ pub struct CheckSubCommand {
   pub only_staged: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FmtSubCommand {
   pub diff: bool,
   pub patterns: FilePatternArgs,
@@ -172,37 +186,37 @@ pub struct FmtSubCommand {
   pub only_staged: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSubCommand {
   Init,
   Update { yes: bool },
   Add(Option<String>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFilePathsSubCommand {
   pub patterns: FilePatternArgs,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFormatTimesSubCommand {
   pub patterns: FilePatternArgs,
   pub allow_no_files: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorServiceSubCommand {
   pub parent_pid: u32,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdInFmtSubCommand {
   pub file_name_or_path: String,
   pub file_bytes: Vec<u8>,
   pub patterns: FilePatternArgs,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_os = "windows")]
 pub enum HiddenSubCommand {
   #[cfg(target_os = "windows")]
@@ -211,7 +225,7 @@ pub enum HiddenSubCommand {
   WindowsUninstall(String),
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilePatternArgs {
   pub include_patterns: Vec<String>,
   pub include_pattern_overrides: Option<Vec<String>>,

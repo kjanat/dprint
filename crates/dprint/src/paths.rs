@@ -92,6 +92,16 @@ pub async fn get_and_resolve_file_paths<'a>(
   plugins: impl Iterator<Item = &'a PluginWithConfig>,
   environment: &impl Environment,
 ) -> Result<GlobOutput> {
+  // Skip filesystem traversal when config discovery is disabled and no file patterns are specified.
+  // This prevents unnecessary traversal for commands like `config update` that don't need to find files.
+  if matches!(config_discovery, ConfigDiscovery::Disabled)
+    && args.include_patterns.is_empty()
+    && args.include_pattern_overrides.is_none()
+    && !args.only_staged
+  {
+    return Ok(GlobOutput::default());
+  }
+
   let cwd = environment.cwd();
   let mut file_patterns = get_all_file_patterns(config, args, &cwd);
 

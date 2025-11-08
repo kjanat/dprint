@@ -12,6 +12,7 @@ use std::rc::Rc;
 use url::Url;
 
 use crate::arg_parser::CliArgs;
+use crate::arg_parser::ConfigDiscovery;
 use crate::arg_parser::FilePatternArgs;
 use crate::configuration::get_init_config_file_text;
 use crate::configuration::*;
@@ -183,6 +184,13 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     bail!("Cannot specify plugins for this sub command. Sorry, too much work for me.");
   }
 
+  // For config update, we should only update the specified config file, not search for sub-configs.
+  // Default to IgnoreDescendants to prevent descendant traversal while still allowing ancestor traversal.
+  let args_with_disabled_discovery = CliArgs::new_with_config_discovery(
+    args,
+    args.config_discovery_raw().unwrap_or(ConfigDiscovery::IgnoreDescendants),
+  );
+
   let file_pattern_args = FilePatternArgs {
     include_patterns: Vec::new(),
     include_pattern_overrides: None,
@@ -191,7 +199,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     allow_node_modules: false,
     only_staged: false,
   };
-  let scopes = resolve_plugins_scope_and_paths(args, &file_pattern_args, environment, plugin_resolver).await?;
+  let scopes = resolve_plugins_scope_and_paths(&args_with_disabled_discovery, &file_pattern_args, environment, plugin_resolver).await?;
   let mut plugin_responses = HashMap::new();
   let mut updates_per_scope = HashMap::with_capacity(scopes.len());
   for (i, scope) in scopes.into_iter().enumerate() {
@@ -262,7 +270,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
 
   // now resolve the plugins again in every scope and run their config updates
 
-  run_plugin_config_updates(environment, args, &file_pattern_args, plugin_resolver, &updates_per_scope)
+  run_plugin_config_updates(environment, &args_with_disabled_discovery, &file_pattern_args, plugin_resolver, &updates_per_scope)
     .await
     .with_context(|| "Failed running plugin config updates.".to_string())?;
 
