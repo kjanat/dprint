@@ -232,7 +232,11 @@ pub fn completions<TEnvironment: Environment>(shell: clap_complete::Shell, envir
 /// regardless of where the repository is checked out.
 fn display_config_source(source: &PathSource, cwd: &CanonicalizedPathBuf) -> String {
   match source {
-    PathSource::Local(local) => get_relative_path(cwd, &local.path).unwrap_or_else(|| local.path.to_string_lossy().replace('\\', "/")),
+    PathSource::Local(local) => match &local.display {
+      // configuration text that didn't come from a file (ex. `--config -`)
+      Some(display) => display.clone(),
+      None => get_relative_path(cwd, &local.path).unwrap_or_else(|| local.path.to_string_lossy().replace('\\', "/")),
+    },
     PathSource::Remote(_) | PathSource::Npm(_) => source.to_string(),
   }
 }

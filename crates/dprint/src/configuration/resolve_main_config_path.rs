@@ -1,15 +1,19 @@
+use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use deno_terminal::colors;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
 use crate::arg_parser::CliArgs;
+use crate::arg_parser::ConfigArg;
 use crate::arg_parser::ConfigDiscovery;
 use crate::arg_parser::SubCommand;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
 use crate::utils::PathSource;
+use crate::utils::ResolvedFilePathWithText;
 use crate::utils::ResolvedFilePathWithTextRef;
 use crate::utils::resolve_url_or_file_path_to_file_with_cache;
 
@@ -73,9 +77,32 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   let config_discovery = args.config_discovery(environment);
   if let Some(config) = &args.config {
     let base_path = environment.cwd();
-    let resolved_file = resolve_url_or_file_path_to_file_with_cache(config, &PathSource::new_local(base_path.clone()), environment)
-      .await?
-      .into_text()?;
+    let resolved_file = match config {
+      ConfigArg::Text(config) => ResolvedFilePathWithText {
+        content: config.text.clone(),
+        source: virtual_config_source(&base_path, &config.origin),
+        is_first_download: false,
+      },
+      ConfigArg::PathOrUrl(config) => {
+        match resolve_url_or_file_path_to_file_with_cache(config, &PathSource::new_local(base_path.clone()), environment).await {
+          Ok(resolved_file) => resolved_file.into_text()?,
+          // a pipe can be read but not canonicalized, so fall back to reading it as a stream
+          Err(err) => match maybe_read_config_stream(config, &base_path, environment)? {
+            Some(resolved_file) => resolved_file,
+            None => return Err(err),
+          },
+        }
+      }
+    };
+    if resolved_file.source.is_virtual() && matches!(args.sub_command, SubCommand::Config(_)) {
+      bail!(
+        concat!(
+          "Cannot use the configuration provided by --config ({}) with this sub command because it reads and writes ",
+          "the configuration file. Specify a file path instead (ex. --config dprint.json)."
+        ),
+        resolved_file.source.display(),
+      );
+    }
     Ok(Some(ResolvedConfigPathWithText {
       content: resolved_file.content,
       source: resolved_file.source,
@@ -97,6 +124,62 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   } else {
     Ok(None)
   }
+}
+
+/// The source used for configuration text that didn't come from a file
+/// dprint opened by path (provided inline, on stdin, or through a pipe).
+///
+/// There's no configuration directory in that case, so relative paths within
+/// the configuration (`extends`, plugin paths and `${configDir}`) resolve
+/// against the current working directory, as if the configuration were a
+/// file sitting in it.
+fn virtual_config_source(cwd: &CanonicalizedPathBuf, origin: &str) -> PathSource {
+  PathSource::new_local_virtual(cwd.join_panic_relative(VIRTUAL_CONFIG_FILE_NAME), origin.to_string())
+}
+
+/// A name that can't collide with a real configuration file in the directory,
+/// since nothing should read or write it.
+const VIRTUAL_CONFIG_FILE_NAME: &str = "<config>";
+
+/// Reads a `--config` value that names something readable that can't be
+/// canonicalized, which is what a pipe looks like on the file system: the
+/// `/dev/fd/63` of a `<(...)` process substitution, or `/dev/stdin` when
+/// stdin is a pipe. Returns `None` when there's nothing to read this way, in
+/// which case the caller reports why the path couldn't be resolved.
+fn maybe_read_config_stream<TEnvironment: Environment>(
+  config: &str,
+  cwd: &CanonicalizedPathBuf,
+  environment: &TEnvironment,
+) -> Result<Option<ResolvedFilePathWithText>> {
+  let Some(path) = resolve_uncanonicalized_local_path(config, cwd, environment) else {
+    return Ok(None);
+  };
+  let Ok(bytes) = environment.read_file_bytes(&path) else {
+    return Ok(None);
+  };
+
+  log_debug!(environment, "Read the config from a stream at {}", path.display());
+  let content = String::from_utf8(bytes).with_context(|| format!("Failed converting '{}' to string.", path.display()))?;
+  Ok(Some(ResolvedFilePathWithText {
+    content,
+    source: virtual_config_source(cwd, &path.to_string_lossy()),
+    is_first_download: false,
+  }))
+}
+
+/// Makes a local `--config` value absolute without canonicalizing it, or
+/// `None` when it doesn't name a local path at all.
+fn resolve_uncanonicalized_local_path(config: &str, cwd: &CanonicalizedPathBuf, environment: &impl Environment) -> Option<PathBuf> {
+  if let Some(rest) = config.strip_prefix("~/") {
+    return Some(environment.get_home_dir()?.join(rest));
+  }
+  if let Ok(url) = url::Url::parse(config) {
+    // a single letter scheme is a Windows drive rather than a url (ex. `C:/config.json`)
+    if url.scheme().len() > 1 {
+      return if url.scheme() == "file" { url.to_file_path().ok() } else { None };
+    }
+  }
+  Some(cwd.join(config))
 }
 
 fn resolve_global_config_path_or_error(environment: &impl Environment) -> Result<ResolvedConfigPathWithText> {

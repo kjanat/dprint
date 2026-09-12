@@ -10,6 +10,10 @@ pub use tests::TestStdInReader;
 pub trait StdInReader: Clone + Send + Sync {
   fn read(&self) -> Result<Vec<u8>>;
 
+  /// Whether stdin is attached to a terminal, in which case there's no
+  /// piped input waiting to be read.
+  fn is_terminal(&self) -> bool;
+
   /// Reads stdin line by line, skipping blank lines, without buffering the
   /// entire input into a single string. Useful for large lists of file paths.
   fn read_non_empty_lines(&self) -> Result<Vec<String>>;
@@ -19,6 +23,11 @@ pub trait StdInReader: Clone + Send + Sync {
 pub struct RealStdInReader;
 
 impl StdInReader for RealStdInReader {
+  fn is_terminal(&self) -> bool {
+    use std::io::IsTerminal;
+    io::stdin().is_terminal()
+  }
+
   fn read(&self) -> Result<Vec<u8>> {
     let mut text = Vec::new();
     io::stdin().read_to_end(&mut text)?;
@@ -46,17 +55,29 @@ mod tests {
   #[derive(Default, Clone)]
   pub struct TestStdInReader {
     text: Arc<Mutex<Option<Vec<u8>>>>,
+    is_terminal: Arc<Mutex<bool>>,
   }
 
   impl<S: ToString> From<S> for TestStdInReader {
     fn from(value: S) -> Self {
       Self {
         text: Arc::new(Mutex::new(Some(value.to_string().into_bytes()))),
+        is_terminal: Arc::new(Mutex::new(false)),
       }
     }
   }
 
+  impl TestStdInReader {
+    pub fn set_is_terminal(&self, value: bool) {
+      *self.is_terminal.lock() = value;
+    }
+  }
+
   impl StdInReader for TestStdInReader {
+    fn is_terminal(&self) -> bool {
+      *self.is_terminal.lock()
+    }
+
     fn read(&self) -> Result<Vec<u8>> {
       let text = self.text.lock();
       Ok(text.as_ref().expect("Expected to have stdin text set.").clone())

@@ -221,7 +221,11 @@ pub async fn run_language_server<TEnvironment: Environment>(
   let stdout = tokio::io::stdout();
   let (tx, rx) = mpsc::unbounded_channel();
 
-  let config_path = args.config.as_ref().map(|config| environment.cwd().join(config));
+  let config_path = args
+    .config
+    .as_ref()
+    .and_then(|config| config.maybe_path_or_url())
+    .map(|config| environment.cwd().join(config));
   let recv_task = start_message_handler(environment, plugin_resolver, config_path, rx);
 
   let environment = environment.clone();

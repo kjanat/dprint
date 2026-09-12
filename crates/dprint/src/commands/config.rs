@@ -3404,6 +3404,29 @@ text",
   }
 
   #[test]
+  fn config_edit_should_error_for_a_config_that_is_not_a_file() {
+    let environment = TestEnvironmentBuilder::new()
+      .with_default_config(|config| {
+        config.add_includes("**/*.txt");
+      })
+      // a `<(...)` process substitution shows up as a path that can be read but not canonicalized
+      .write_file("/dev/fd/63", r#"{ "includes": ["**/*.txt"] }"#)
+      .build();
+    environment.add_uncanonicalizable_path("/dev/fd/63");
+
+    let error = run_test_cli(vec!["config", "edit", "-c", "/dev/fd/63"], &environment).err().unwrap();
+
+    assert_eq!(
+      error.to_string(),
+      concat!(
+        "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command because it reads and ",
+        "writes the configuration file. Specify a file path instead (ex. --config dprint.json)."
+      )
+    );
+    assert!(environment.take_run_commands().is_empty());
+  }
+
+  #[test]
   fn config_edit_should_open_editor_with_local_config() {
     let environment = TestEnvironmentBuilder::new()
       .with_default_config(|config| {

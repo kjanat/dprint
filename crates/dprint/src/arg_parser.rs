@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use clap::ArgMatches;
@@ -56,11 +57,40 @@ impl ConfigDiscovery {
   }
 }
 
+/// The value of `--config`, which is either something to read the
+/// configuration file from or the configuration file text itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigArg {
+  /// A file path or url to the configuration file.
+  PathOrUrl(String),
+  /// The configuration file text, provided inline or read from stdin.
+  Text(ConfigArgText),
+}
+
+impl ConfigArg {
+  /// The file path or url when the configuration wasn't provided as text.
+  pub fn maybe_path_or_url(&self) -> Option<&str> {
+    match self {
+      ConfigArg::PathOrUrl(value) => Some(value),
+      ConfigArg::Text(_) => None,
+    }
+  }
+}
+
+/// Configuration file text that didn't come from a file dprint opened itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigArgText {
+  pub text: String,
+  /// Where the text came from, for display in error messages
+  /// (ex. `<stdin>` or `/dev/fd/63`).
+  pub origin: String,
+}
+
 pub struct CliArgs {
   pub sub_command: SubCommand,
   pub log_level: LogLevel,
   pub plugins: Vec<String>,
-  pub config: Option<String>,
+  pub config: Option<ConfigArg>,
   config_discovery: Option<ConfigDiscovery>,
 }
 
@@ -516,10 +546,15 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     }
   };
 
+  let config = match matches.get_one::<String>("config") {
+    Some(value) => Some(parse_config_arg(value, &sub_command, &matches, &std_in_reader)?),
+    None => None,
+  };
+
   Ok(CliArgs {
     sub_command,
     log_level,
-    config: matches.get_one::<String>("config").map(String::from),
+    config,
     config_discovery: if is_global_config {
       Some(ConfigDiscovery::Global)
     } else if is_config_update {
@@ -537,6 +572,80 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     },
     plugins: maybe_values_to_vec(matches.get_many("plugins")),
   })
+}
+
+/// Resolves the `--config` value, which is either something to read the
+/// configuration file from or the configuration file text itself.
+///
+/// Shells make it easy to hand a command the text rather than a path, so
+/// beyond a file path or url this accepts:
+///
+/// * inline text — a value whose first non-whitespace character is `{`
+///   (ex. `--config '{ "lineWidth": 80 }'`)
+/// * stdin — a value of `-`, or `--config` with no value at all, which is
+///   what `dprint fmt -c <<<'{ ... }'` ends up being once the shell has
+///   turned the here-string into stdin
+///
+/// A path that isn't a regular file (ex. the `/dev/fd/63` of a `<(...)`
+/// process substitution) stays a `PathOrUrl` here and is read as a stream
+/// later on, once the environment is available.
+fn parse_config_arg<TStdInReader: StdInReader>(value: &str, sub_command: &SubCommand, matches: &ArgMatches, std_in_reader: &TStdInReader) -> Result<ConfigArg> {
+  if value != "-" && !value.trim_start().starts_with('{') {
+    return Ok(ConfigArg::PathOrUrl(value.to_string()));
+  }
+
+  // these need a configuration file on disk rather than its text
+  match sub_command {
+    SubCommand::Config(_) => bail!(concat!(
+      "Cannot provide the configuration text to this sub command because it reads and writes the configuration file. ",
+      "Specify a file path instead (ex. --config dprint.json)."
+    )),
+    SubCommand::Lsp | SubCommand::EditorService(_) => {
+      bail!("Cannot provide the configuration text to this sub command. Specify a file path instead (ex. --config dprint.json).")
+    }
+    _ => {}
+  }
+
+  if value != "-" {
+    return Ok(ConfigArg::Text(ConfigArgText {
+      text: value.to_string(),
+      origin: "<inline config>".to_string(),
+    }));
+  }
+
+  // reading the config from stdin means nothing else can be
+  if let Some(other) = other_stdin_consumer(sub_command, matches) {
+    bail!("Cannot read the configuration from stdin because {} is already reading from it.", other);
+  }
+  if std_in_reader.is_terminal() {
+    bail!(concat!(
+      "Expected the configuration text on stdin because --config was provided without a file path ",
+      "(ex. `dprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
+    ));
+  }
+
+  let bytes = std_in_reader.read()?;
+  let text = String::from_utf8(bytes).context("Failed reading the configuration from stdin as UTF-8.")?;
+  if text.trim().is_empty() {
+    bail!("Expected the configuration text on stdin because --config was provided without a file path, but stdin was empty.");
+  }
+  Ok(ConfigArg::Text(ConfigArgText {
+    text,
+    origin: "<stdin>".to_string(),
+  }))
+}
+
+/// What else is already reading stdin, which stops the configuration from
+/// being read from it too.
+fn other_stdin_consumer(sub_command: &SubCommand, matches: &ArgMatches) -> Option<&'static str> {
+  if matches!(sub_command, SubCommand::StdInFmt(_)) {
+    return Some("--stdin");
+  }
+  let reads_file_paths = matches
+    .subcommand()
+    .and_then(|(_, sub_matches)| sub_matches.try_get_one::<bool>("stdin-files").ok().flatten().copied())
+    .unwrap_or(false);
+  reads_file_paths.then_some("--stdin-files")
 }
 
 fn parse_file_patterns<TStdInReader: StdInReader>(matches: &ArgMatches, std_in_reader: &TStdInReader) -> Result<FilePatternArgs> {
@@ -793,6 +902,12 @@ EXAMPLES:
 
     dprint fmt --config path/to/config/dprint.json
 
+  Provide the configuration instead of a path to it:
+
+    dprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
+    dprint fmt --config <(cat path/to/config/dprint.json)
+    dprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
+
   Search for files using the specified paths or file patterns:
 
     dprint fmt "**/*.{ts,tsx,js,jsx,json}""#,
@@ -1001,10 +1116,15 @@ EXAMPLES:
       Arg::new("config")
         .long("config")
         .short('c')
-        .help("Path or url to JSON configuration file. Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.")
+        .help(concat!(
+          "Path or url to JSON configuration file, the configuration text itself, or `-` to read it from stdin. ",
+          "Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.",
+        ))
         .value_hint(clap::ValueHint::AnyPath)
         .global(true)
-        .num_args(1)
+        .num_args(0..=1)
+        // so `dprint fmt -c <<<'{ ... }'` and `dprint fmt -c` read the config from stdin
+        .default_missing_value("-")
     )
     .arg(
       Arg::new("config-discovery")
@@ -1292,6 +1412,129 @@ mod test {
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--skip-stable-format", "--incremental=true"]).unwrap();
     assert_eq!(fmt_cmd.enable_stable_format, false);
     assert_eq!(fmt_cmd.incremental, Some(false));
+  }
+
+  #[test]
+  fn config_arg_path_or_url() {
+    let args = test_args(vec!["fmt", "-c", "dprint.json"]).unwrap();
+    assert_eq!(args.config, Some(ConfigArg::PathOrUrl("dprint.json".to_string())));
+    let args = test_args(vec!["fmt", "--config", "https://dprint.dev/dprint.json"]).unwrap();
+    assert_eq!(args.config, Some(ConfigArg::PathOrUrl("https://dprint.dev/dprint.json".to_string())));
+    // a pipe stays a path here and gets read when the config is resolved
+    let args = test_args(vec!["fmt", "-c", "/dev/fd/63"]).unwrap();
+    assert_eq!(args.config, Some(ConfigArg::PathOrUrl("/dev/fd/63".to_string())));
+    let args = test_args(vec!["fmt"]).unwrap();
+    assert_eq!(args.config, None);
+  }
+
+  #[test]
+  fn config_arg_inline_text() {
+    for text in [r#"{ "lineWidth": 80 }"#, "  \n{}"] {
+      let args = test_args(vec!["fmt", "-c", text]).unwrap();
+      assert_eq!(
+        args.config,
+        Some(ConfigArg::Text(ConfigArgText {
+          text: text.to_string(),
+          origin: "<inline config>".to_string(),
+        }))
+      );
+    }
+  }
+
+  #[test]
+  fn config_arg_stdin() {
+    // `dprint fmt -c <<<'{ ... }'` reaches the cli as --config with no value
+    // and the here-string on stdin
+    for args in [vec!["fmt", "-c"], vec!["fmt", "-c", "-"], vec!["fmt", "--config", "-"], vec!["check", "-c"]] {
+      let stdin_reader = TestStdInReader::from(r#"{ "lineWidth": 80 }"#);
+      let parsed = parse_args(to_string_args(args.clone()), stdin_reader).unwrap();
+      assert_eq!(
+        parsed.config,
+        Some(ConfigArg::Text(ConfigArgText {
+          text: r#"{ "lineWidth": 80 }"#.to_string(),
+          origin: "<stdin>".to_string(),
+        })),
+        "{:?}",
+        args
+      );
+    }
+  }
+
+  #[test]
+  fn config_arg_stdin_errors_when_stdin_is_a_terminal() {
+    let stdin_reader = TestStdInReader::from("");
+    stdin_reader.set_is_terminal(true);
+    let err = parse_args(to_string_args(vec!["fmt", "-c"]), stdin_reader).err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "Expected the configuration text on stdin because --config was provided without a file path ",
+        "(ex. `dprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
+      )
+    );
+  }
+
+  #[test]
+  fn config_arg_stdin_errors_when_empty() {
+    let err = parse_args(to_string_args(vec!["fmt", "-c"]), TestStdInReader::from(" \n")).err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Expected the configuration text on stdin because --config was provided without a file path, but stdin was empty."
+    );
+  }
+
+  #[test]
+  fn config_arg_stdin_conflicts_with_other_readers_of_stdin() {
+    let err = parse_args(to_string_args(vec!["fmt", "--stdin", "ts", "-c", "-"]), TestStdInReader::from("const t = 5;"))
+      .err()
+      .unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Cannot read the configuration from stdin because --stdin is already reading from it."
+    );
+
+    let err = parse_args(to_string_args(vec!["fmt", "--stdin-files", "-c"]), TestStdInReader::from("/file.ts\n"))
+      .err()
+      .unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Cannot read the configuration from stdin because --stdin-files is already reading from it."
+    );
+  }
+
+  #[test]
+  fn config_arg_text_not_supported_by_some_sub_commands() {
+    // these read and write the configuration file, so they need a path to it
+    for args in [
+      vec!["init", "-c", "{}"],
+      vec!["add", "-c", "{}"],
+      vec!["config", "init", "-c", "{}"],
+      vec!["config", "add", "-c", "{}"],
+      vec!["config", "update", "-c", "{}"],
+      vec!["config", "edit", "-c", "{}"],
+    ] {
+      let err = test_args(args.clone()).err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "Cannot provide the configuration text to this sub command because it reads and writes the configuration file. ",
+          "Specify a file path instead (ex. --config dprint.json)."
+        ),
+        "{:?}",
+        args
+      );
+    }
+
+    // these communicate over stdin and resolve the configuration from a path
+    for args in [vec!["lsp", "-c", "{}"], vec!["editor-service", "--parent-pid", "1", "-c", "{}"]] {
+      let err = test_args(args.clone()).err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        "Cannot provide the configuration text to this sub command. Specify a file path instead (ex. --config dprint.json).",
+        "{:?}",
+        args
+      );
+    }
   }
 
   #[test]
@@ -1639,9 +1882,12 @@ mod test {
   }
 
   fn test_args(args: Vec<&str>) -> Result<CliArgs, ParseArgsError> {
-    let stdin_reader = TestStdInReader::default();
+    parse_args(to_string_args(args), TestStdInReader::default())
+  }
+
+  fn to_string_args(args: Vec<&str>) -> Vec<String> {
     let mut args: Vec<String> = args.into_iter().map(String::from).collect();
     args.insert(0, "".to_string());
-    parse_args(args, stdin_reader)
+    args
   }
 }

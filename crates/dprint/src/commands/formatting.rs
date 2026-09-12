@@ -1128,6 +1128,106 @@ mod test {
   }
 
   #[test]
+  fn should_format_files_with_inline_config() {
+    let file_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file(file_path, "text")
+      .build();
+
+    run_test_cli(
+      vec![
+        "fmt",
+        "--config",
+        r#"{ "test-plugin": { "ending": "custom-formatted" }, "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+        "/file.txt",
+      ],
+      &environment,
+    )
+    .unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+  }
+
+  #[test]
+  fn should_format_files_with_config_from_stdin() {
+    let file_path = "/file.txt";
+    // `dprint fmt -c <<<'{ ... }'` reaches the cli as --config with no value
+    // and the here-string on stdin. `-` says to read stdin explicitly, which
+    // is needed when also specifying file patterns since --config would
+    // otherwise take the first of them as its value.
+    for args in [vec!["fmt", "-c"], vec!["fmt", "-c", "-", "/file.txt"]] {
+      let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+        .write_file(file_path, "text")
+        .build();
+      let stdin_reader =
+        TestStdInReader::from(r#"{ "test-plugin": { "ending": "custom-formatted" }, "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#);
+
+      run_test_cli_with_stdin(args, &environment, stdin_reader).unwrap();
+
+      assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+      assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+    }
+  }
+
+  #[test]
+  fn should_format_files_with_config_from_a_pipe() {
+    let file_path = "/file.txt";
+    // a `<(...)` process substitution shows up as a path that can be read but not canonicalized
+    let pipe_path = "/dev/fd/63";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file(file_path, "text")
+      .write_file(
+        pipe_path,
+        r#"{ "test-plugin": { "ending": "custom-formatted" }, "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .build();
+    environment.add_uncanonicalizable_path(pipe_path);
+
+    run_test_cli(vec!["fmt", "--config", pipe_path, "/file.txt"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+  }
+
+  #[test]
+  fn should_error_when_config_path_does_not_exist() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file("/file.txt", "text")
+      .build();
+
+    let error = run_test_cli(vec!["fmt", "--config", "/not-found.json", "/file.txt"], &environment)
+      .err()
+      .unwrap();
+
+    // reading the config as a stream doesn't swallow why the path couldn't be resolved
+    assert_eq!(error.to_string(), "File not found");
+    error.assert_exit_code(11);
+  }
+
+  #[test]
+  fn should_resolve_relative_paths_of_a_config_without_a_file_against_the_cwd() {
+    let file_path = "/sub_dir/file.txt";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/base.json", |c| {
+        c.add_remote_wasm_plugin().add_config_section(
+          "test-plugin",
+          r#"{
+            "ending": "custom-formatted"
+          }"#,
+        );
+      })
+      .write_file(file_path, "text")
+      .build();
+    let stdin_reader = TestStdInReader::from(r#"{ "extends": "./base.json" }"#);
+
+    run_test_cli_with_stdin(vec!["fmt", "-c", "-"], &environment, stdin_reader).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+  }
+
+  #[test]
   fn should_format_files_with_config_sub_dir_auto_discoverable_name() {
     let file_path1 = "/file1.txt";
     let file_path2 = "/file2.txt_ps";

@@ -185,6 +185,26 @@ dprint fmt --config https://dprint.dev/path/to/some/config.json
 
 This flag is more useful for one-off commands. It is recommended to use the default configuration file location and name as that will lead to a better user experience.
 
+## Providing the Config Instead of a Path to It
+
+`--config` also accepts the configuration itself rather than somewhere to read it from, which saves writing a temporary file for a one-off command:
+
+```sh
+# inline
+dprint fmt --config '{ "excludes": ["dist"], "plugins": ["https://plugins.dprint.dev/json-0.19.4.wasm"] }'
+# from a pipe (ex. a shell process substitution)
+dprint fmt --config <(sed 's/dist/build/' dprint.json)
+# from stdin, which is what `-` and a --config with no value at all mean
+dprint fmt --config - <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
+dprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
+```
+
+Use `--config -` rather than a bare `--config` when also specifying file patterns, otherwise the first pattern is taken as the value of `--config`.
+
+There's no configuration directory in these cases, so relative paths within the configuration (`extends`, plugin paths and `${configDir}`) resolve against the current working directory, as if the configuration were a file sitting in it.
+
+The `config` sub commands (`dprint config update`, `dprint config edit`, etc.) read and write the configuration file, so they still need a path to one.
+
 ## Changing Config Discovery
 
 Starting in dprint 0.50, you can change the way dprint discovers configuration files by using the `--config-discovery` flag:

@@ -354,7 +354,7 @@ SUBCOMMANDS:
 More details at `dprint help <SUBCOMMAND>`
 
 OPTIONS:
-  -c, --config <config>             Path or url to JSON configuration file. Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.
+  -c, --config [<config>]           Path or url to JSON configuration file, the configuration text itself, or `-` to read it from stdin. Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.
       --config-discovery=<BOOLEAN>  Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.
       --plugins <urls/files>...     List of urls or file paths of plugins to use. This overrides what is specified in the config file.
   -L, --log-level <log-level>       Set log level [default: info] [possible values: debug, info, warn, error, silent]
@@ -407,6 +407,12 @@ EXAMPLES:
   Specify path to config file other than the default:
 
     dprint fmt --config path/to/config/dprint.json
+
+  Provide the configuration instead of a path to it:
+
+    dprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
+    dprint fmt --config <(cat path/to/config/dprint.json)
+    dprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
 
   Search for files using the specified paths or file patterns:
 
