@@ -428,9 +428,9 @@ Note: The `includes` property of extended _remote_ configuration is ignored for 
 
 ### Caching of Remote Configuration
 
-Remote configuration files are downloaded once and stored in dprint's cache directory. A cached file is used for an hour before dprint checks its URL for changes, so a change to a configuration file pinned to a branch (ex. `https://cdn.jsdelivr.net/gh/user/repo@main/dprint.json`) is picked up within an hour. When the check fails (ex. no network), the cached copy is used and a warning is logged. Files whose response is marked `Cache-Control: immutable` (ex. a jsdelivr URL pinned to a tag or commit) never change, so they are never checked again.
+Remote configuration files are downloaded once and stored in dprint's cache directory. A cached file is used for an hour. The next time it is resolved after that, dprint checks its URL for changes, so a change to a configuration file pinned to a branch (ex. `https://cdn.jsdelivr.net/gh/user/repo@main/dprint.json`) is picked up within an hour. When the check fails (ex. no network), the cached copy is used and a warning is logged. A response marked `Cache-Control: immutable` promises not to change for its `max-age`, so dprint trusts it for that long instead of an hour (ex. jsdelivr serves URLs pinned to a tag or commit with a one year `max-age`, so those are not checked again for a year). Pin to a tag or commit when you want that.
 
-To pick up a change immediately, run `dprint clear-cache`. Note that CDNs have their own caches, so a change to a branch may take longer to appear (ex. jsdelivr serves branch content from its edge cache for up to 12 hours, while `raw.githubusercontent.com` does so for 5 minutes).
+To pick up a change immediately, run `dprint clear-cache`. Note that CDNs have their own caches, so a change to a branch may take longer to appear (ex. jsdelivr serves branch content from its edge cache for up to 12 hours, while `raw.githubusercontent.com` uses a much shorter cache lifetime).
 
 ## Directory Specific Configuration
 
