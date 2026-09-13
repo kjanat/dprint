@@ -12,6 +12,10 @@ on:
           - patch
           - minor
         required: true
+      suffix:
+        description: Version suffix. Empty means the repository owner, unless that is dprint.
+        type: string
+        required: false
 jobs:
   rust:
     name: release
@@ -28,7 +32,8 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ secrets.GH_DPRINTBOT_PAT }}"
           GH_WORKFLOW_ACTOR: "${{ github.actor }}"
+          RELEASE_SUFFIX: "${{ github.event.inputs.suffix || (github.repository_owner != 'dprint' && github.repository_owner || '') }}"
         run: |-
           git config user.email "${{ github.actor }}@users.noreply.github.com"
           git config user.name "${{ github.actor }}"
-          deno run -A jsr:@dprint/automation@0.10.2/tasks/publish-release --${{ github.event.inputs.releaseKind }} ./crates/dprint/Cargo.toml
+          f=crates/dprint/Cargo.toml; v=$(yq .package.version $f); IFS=.- read -r a b c _ <<<"$v"; [ "${{ github.event.inputs.releaseKind }}" = minor ] && b=$((b+1)) c=0 || c=$((c+1)); v=$a.$b.$c${RELEASE_SUFFIX:+-$RELEASE_SUFFIX}; yq -i ".package.version = \"$v\"" $f; cargo update --workspace; git add .; git commit -m "$v"; git push -u origin HEAD; git tag "$v"; git push origin "$v"
