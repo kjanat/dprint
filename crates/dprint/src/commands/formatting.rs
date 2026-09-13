@@ -1191,6 +1191,34 @@ mod test {
   }
 
   #[test]
+  fn should_format_files_with_config_from_a_fifo() {
+    let file_path = "/file.txt";
+    // a fifo (ex. `mkfifo`) has an ordinary path that canonicalizes, unlike the
+    // `/dev/fd/63` of a process substitution, but its text is still a stream
+    let fifo_path = "/sub_dir/myfifo";
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_local_config("/base.json", |c| {
+        c.add_remote_wasm_plugin().add_config_section(
+          "test-plugin",
+          r#"{
+            "ending": "custom-formatted"
+          }"#,
+        );
+      })
+      .write_file(file_path, "text")
+      // the `extends` is relative, so it only resolves if the fifo is treated as
+      // a stream whose directory is the cwd rather than a file in /sub_dir
+      .write_file(fifo_path, r#"{ "extends": "./base.json" }"#)
+      .build();
+    environment.add_fifo_path(fifo_path);
+
+    run_test_cli(vec!["fmt", "--config", fifo_path, "/file.txt"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+  }
+
+  #[test]
   fn should_error_when_config_path_does_not_exist() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
       .write_file("/file.txt", "text")

@@ -177,6 +177,9 @@ pub struct TestEnvironment {
   /// a pipe looks on the file system (ex. the `/dev/fd/63` of a shell process
   /// substitution).
   uncanonicalizable_paths: Arc<Mutex<Vec<PathBuf>>>,
+  /// Paths that read like a file without being a regular one, which is how a
+  /// fifo behaves (ex. one created with `mkfifo`).
+  fifo_paths: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl TestEnvironment {
@@ -217,6 +220,7 @@ impl TestEnvironment {
       running_processes: Default::default(),
       remove_dir_all_failures: Default::default(),
       uncanonicalizable_paths: Default::default(),
+      fifo_paths: Default::default(),
     };
     env.mk_dir_all("/").unwrap();
     env
@@ -228,6 +232,13 @@ impl TestEnvironment {
   pub fn add_uncanonicalizable_path(&self, path: impl AsRef<Path>) {
     let path = self.clean_path(path);
     self.uncanonicalizable_paths.lock().push(path);
+  }
+
+  /// Makes the path read like a file without being a regular one, which is how
+  /// a fifo behaves (ex. one created with `mkfifo`).
+  pub fn add_fifo_path(&self, path: impl AsRef<Path>) {
+    let path = self.clean_path(path);
+    self.fifo_paths.lock().push(path);
   }
 
   pub fn take_stdout_messages(&self) -> Vec<String> {
@@ -663,6 +674,9 @@ impl Environment for TestEnvironment {
 
   fn path_is_file(&self, file_path: impl AsRef<Path>) -> bool {
     let path = self.clean_path(file_path);
+    if self.fifo_paths.lock().contains(&path) {
+      return false;
+    }
     self.sys.fs_is_file_no_err(path)
   }
 

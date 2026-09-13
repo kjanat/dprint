@@ -3427,6 +3427,30 @@ text",
   }
 
   #[test]
+  fn config_edit_should_error_for_a_fifo() {
+    let environment = TestEnvironmentBuilder::new()
+      .with_default_config(|config| {
+        config.add_includes("**/*.txt");
+      })
+      // a fifo canonicalizes like any other path, but opening it for writing
+      // would block rather than edit a configuration file
+      .write_file("/myfifo", r#"{ "includes": ["**/*.txt"] }"#)
+      .build();
+    environment.add_fifo_path("/myfifo");
+
+    let error = run_test_cli(vec!["config", "edit", "-c", "/myfifo"], &environment).err().unwrap();
+
+    assert_eq!(
+      error.to_string(),
+      concat!(
+        "Cannot use the configuration provided by --config (/myfifo) with this sub command because it reads and ",
+        "writes the configuration file. Specify a file path instead (ex. --config dprint.json)."
+      )
+    );
+    assert!(environment.take_run_commands().is_empty());
+  }
+
+  #[test]
   fn config_edit_should_open_editor_with_local_config() {
     let environment = TestEnvironmentBuilder::new()
       .with_default_config(|config| {

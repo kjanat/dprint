@@ -85,8 +85,24 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
       },
       ConfigArg::PathOrUrl(config) => {
         match resolve_url_or_file_path_to_file_with_cache(config, &PathSource::new_local(base_path.clone()), environment).await {
-          Ok(resolved_file) => resolved_file.into_text()?,
-          // a pipe can be read but not canonicalized, so fall back to reading it as a stream
+          Ok(resolved_file) => {
+            let mut resolved_file = resolved_file.into_text()?;
+            // a fifo has an ordinary path that canonicalizes, but its text came from
+            // whatever wrote to it rather than from that directory, so it's a stream
+            // like any other pipe
+            let stream_path = resolved_file
+              .source
+              .maybe_local_path()
+              .filter(|path| !environment.path_is_file(path))
+              .map(|path| path.display().to_string());
+            if let Some(display) = stream_path {
+              log_debug!(environment, "Read the config from a stream at {}", display);
+              resolved_file.source = virtual_config_source(&base_path, &display);
+            }
+            resolved_file
+          }
+          // a pipe with no path of its own can be read but not canonicalized, so
+          // fall back to reading it as a stream
           Err(err) => match maybe_read_config_stream(config, &base_path, environment)? {
             Some(resolved_file) => resolved_file,
             None => return Err(err),
@@ -142,8 +158,8 @@ fn virtual_config_source(cwd: &CanonicalizedPathBuf, origin: &str) -> PathSource
 const VIRTUAL_CONFIG_FILE_NAME: &str = "<config>";
 
 /// Reads a `--config` value that names something readable that can't be
-/// canonicalized, which is what a pipe looks like on the file system: the
-/// `/dev/fd/63` of a `<(...)` process substitution, or `/dev/stdin` when
+/// canonicalized, which is what a pipe with no path of its own looks like:
+/// the `/dev/fd/63` of a `<(...)` process substitution, or `/dev/stdin` when
 /// stdin is a pipe. Returns `None` when there's nothing to read this way, in
 /// which case the caller reports why the path couldn't be resolved.
 fn maybe_read_config_stream<TEnvironment: Environment>(

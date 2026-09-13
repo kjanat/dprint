@@ -430,7 +430,16 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     LogLevel::Info
   };
 
-  let sub_command = match matches.subcommand().unwrap() {
+  let (sub_command_name, sub_command_matches) = matches.subcommand().unwrap();
+
+  // resolve --config before the sub command, since parsing that is what
+  // reads stdin and the configuration may need to be read from stdin itself
+  let config = match matches.get_one::<String>("config") {
+    Some(value) => Some(parse_config_arg(value, sub_command_name, sub_command_matches, &std_in_reader)?),
+    None => None,
+  };
+
+  let sub_command = match (sub_command_name, sub_command_matches) {
     ("fmt", matches) => {
       if let Some(file_name_path_or_extension) = matches.get_one::<String>("stdin").map(String::from) {
         let file_name_or_path = if file_name_path_or_extension.contains('.') {
@@ -546,11 +555,6 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     }
   };
 
-  let config = match matches.get_one::<String>("config") {
-    Some(value) => Some(parse_config_arg(value, &sub_command, &matches, &std_in_reader)?),
-    None => None,
-  };
-
   Ok(CliArgs {
     sub_command,
     log_level,
@@ -589,18 +593,28 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
 /// A path that isn't a regular file (ex. the `/dev/fd/63` of a `<(...)`
 /// process substitution) stays a `PathOrUrl` here and is read as a stream
 /// later on, once the environment is available.
-fn parse_config_arg<TStdInReader: StdInReader>(value: &str, sub_command: &SubCommand, matches: &ArgMatches, std_in_reader: &TStdInReader) -> Result<ConfigArg> {
+///
+/// This runs before the sub command is parsed, because parsing that is what
+/// reads stdin, and a conflict over stdin has to be reported without first
+/// draining it.
+fn parse_config_arg<TStdInReader: StdInReader>(
+  value: &str,
+  sub_command_name: &str,
+  sub_command_matches: &ArgMatches,
+  std_in_reader: &TStdInReader,
+) -> Result<ConfigArg> {
   if value != "-" && !value.trim_start().starts_with('{') {
     return Ok(ConfigArg::PathOrUrl(value.to_string()));
   }
 
-  // these need a configuration file on disk rather than its text
-  match sub_command {
-    SubCommand::Config(_) => bail!(concat!(
+  match sub_command_name {
+    // these read and write the configuration file, so they need a path to it
+    "init" | "add" | "config" => bail!(concat!(
       "Cannot provide the configuration text to this sub command because it reads and writes the configuration file. ",
       "Specify a file path instead (ex. --config dprint.json)."
     )),
-    SubCommand::Lsp | SubCommand::EditorService(_) => {
+    // these speak a protocol over stdin and resolve the configuration from a path
+    "lsp" | "editor-service" => {
       bail!("Cannot provide the configuration text to this sub command. Specify a file path instead (ex. --config dprint.json).")
     }
     _ => {}
@@ -614,7 +628,7 @@ fn parse_config_arg<TStdInReader: StdInReader>(value: &str, sub_command: &SubCom
   }
 
   // reading the config from stdin means nothing else can be
-  if let Some(other) = other_stdin_consumer(sub_command, matches) {
+  if let Some(other) = other_stdin_consumer(sub_command_matches) {
     bail!("Cannot read the configuration from stdin because {} is already reading from it.", other);
   }
   if std_in_reader.is_terminal() {
@@ -635,17 +649,16 @@ fn parse_config_arg<TStdInReader: StdInReader>(value: &str, sub_command: &SubCom
   }))
 }
 
-/// What else is already reading stdin, which stops the configuration from
-/// being read from it too.
-fn other_stdin_consumer(sub_command: &SubCommand, matches: &ArgMatches) -> Option<&'static str> {
-  if matches!(sub_command, SubCommand::StdInFmt(_)) {
+/// What else is going to read stdin, which stops the configuration from being
+/// read from it too. Both of these are read while parsing the sub command.
+fn other_stdin_consumer(sub_command_matches: &ArgMatches) -> Option<&'static str> {
+  if sub_command_matches.try_get_one::<String>("stdin").ok().flatten().is_some() {
     return Some("--stdin");
   }
-  let reads_file_paths = matches
-    .subcommand()
-    .and_then(|(_, sub_matches)| sub_matches.try_get_one::<bool>("stdin-files").ok().flatten().copied())
-    .unwrap_or(false);
-  reads_file_paths.then_some("--stdin-files")
+  if sub_command_matches.try_get_one::<bool>("stdin-files").ok().flatten().copied().unwrap_or(false) {
+    return Some("--stdin-files");
+  }
+  None
 }
 
 fn parse_file_patterns<TStdInReader: StdInReader>(matches: &ArgMatches, std_in_reader: &TStdInReader) -> Result<FilePatternArgs> {
@@ -1485,7 +1498,10 @@ mod test {
 
   #[test]
   fn config_arg_stdin_conflicts_with_other_readers_of_stdin() {
-    let err = parse_args(to_string_args(vec!["fmt", "--stdin", "ts", "-c", "-"]), TestStdInReader::from("const t = 5;"))
+    // a reader with no text panics when read, so these also assert the conflict
+    // is reported without first draining stdin — otherwise a non-terminating
+    // stream would block instead of erroring
+    let err = parse_args(to_string_args(vec!["fmt", "--stdin", "ts", "-c", "-"]), TestStdInReader::default())
       .err()
       .unwrap();
     assert_eq!(
@@ -1493,7 +1509,7 @@ mod test {
       "Cannot read the configuration from stdin because --stdin is already reading from it."
     );
 
-    let err = parse_args(to_string_args(vec!["fmt", "--stdin-files", "-c"]), TestStdInReader::from("/file.ts\n"))
+    let err = parse_args(to_string_args(vec!["fmt", "--stdin-files", "-c"]), TestStdInReader::default())
       .err()
       .unwrap();
     assert_eq!(
