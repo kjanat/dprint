@@ -37,15 +37,6 @@ impl PathSource {
     PathSource::Local(LocalPathSource { path, display: Some(display) })
   }
 
-  /// Whether this points at text that didn't come from a file on disk, so
-  /// nothing should attempt to read or write the underlying path.
-  pub fn is_virtual(&self) -> bool {
-    match self {
-      PathSource::Local(local) => local.display.is_some(),
-      PathSource::Remote(_) | PathSource::Npm(_) => false,
-    }
-  }
-
   pub fn new_remote(url: Url) -> PathSource {
     PathSource::Remote(RemotePathSource { url })
   }

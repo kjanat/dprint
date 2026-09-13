@@ -12,10 +12,12 @@ use crate::arg_parser::ConfigDiscovery;
 use crate::arg_parser::SubCommand;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
+use crate::environment::PathKind;
 use crate::utils::PathSource;
 use crate::utils::ResolvedFilePathWithText;
 use crate::utils::ResolvedFilePathWithTextRef;
-use crate::utils::resolve_url_or_file_path_to_file_with_cache;
+use crate::utils::resolve_path_source_to_file_with_cache;
+use crate::utils::resolve_url_or_file_path_to_path_source;
 
 pub static POSSIBLE_CONFIG_FILE_NAMES: [&str; 4] = ["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc"];
 
@@ -77,48 +79,40 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   let config_discovery = args.config_discovery(environment);
   if let Some(config) = &args.config {
     let base_path = environment.cwd();
-    let resolved_file = match config {
-      ConfigArg::Text(config) => ResolvedFilePathWithText {
-        content: config.text.clone(),
-        source: virtual_config_source(&base_path, &config.origin),
-        is_first_download: false,
-      },
-      ConfigArg::PathOrUrl(config) => {
-        match resolve_url_or_file_path_to_file_with_cache(config, &PathSource::new_local(base_path.clone()), environment).await {
-          Ok(resolved_file) => {
-            let mut resolved_file = resolved_file.into_text()?;
-            // a fifo has an ordinary path that canonicalizes, but its text came from
-            // whatever wrote to it rather than from that directory, so it's a stream
-            // like any other pipe
-            let stream_path = resolved_file
-              .source
-              .maybe_local_path()
-              .filter(|path| !environment.path_is_file(path))
-              .map(|path| path.display().to_string());
-            if let Some(display) = stream_path {
-              log_debug!(environment, "Read the config from a stream at {}", display);
-              resolved_file.source = virtual_config_source(&base_path, &display);
-            }
-            resolved_file
-          }
-          // a pipe with no path of its own can be read but not canonicalized, so
-          // fall back to reading it as a stream
-          Err(err) => match maybe_read_config_stream(config, &base_path, environment)? {
-            Some(resolved_file) => resolved_file,
-            None => return Err(err),
-          },
-        }
-      }
-    };
-    if resolved_file.source.is_virtual() && matches!(args.sub_command, SubCommand::Config(_)) {
+    // work out where the configuration comes from before reading any of it:
+    // reading a pipe blocks until it's written to, so a sub command that can't
+    // accept one has to turn it away first
+    let config_source = resolve_config_arg_source(config, &base_path, environment)?;
+    if let Some(display) = config_source.virtual_display()
+      && matches!(args.sub_command, SubCommand::Config(_))
+    {
       bail!(
         concat!(
           "Cannot use the configuration provided by --config ({}) with this sub command because it reads and writes ",
           "the configuration file. Specify a file path instead (ex. --config dprint.json)."
         ),
-        resolved_file.source.display(),
+        display,
       );
     }
+
+    let resolved_file = match config_source {
+      ConfigArgSource::Text { text, display } => ResolvedFilePathWithText {
+        content: text,
+        source: virtual_config_source(&base_path, &display),
+        is_first_download: false,
+      },
+      ConfigArgSource::Stream { path, display } => {
+        log_debug!(environment, "Reading the config from a stream at {}", display);
+        let bytes = environment.read_file_bytes(&path)?;
+        let content = String::from_utf8(bytes).with_context(|| format!("Failed converting '{}' to string.", display))?;
+        ResolvedFilePathWithText {
+          content,
+          source: virtual_config_source(&base_path, &display),
+          is_first_download: false,
+        }
+      }
+      ConfigArgSource::File(path_source) => resolve_path_source_to_file_with_cache(path_source, environment).await?.into_text()?,
+    };
     Ok(Some(ResolvedConfigPathWithText {
       content: resolved_file.content,
       source: resolved_file.source,
@@ -142,6 +136,70 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   }
 }
 
+/// Where the configuration named by `--config` is going to come from, worked
+/// out before any of it is read.
+enum ConfigArgSource {
+  /// Text provided inline or already read from stdin.
+  Text { text: String, display: String },
+  /// A regular file or a url, read the usual way.
+  File(PathSource),
+  /// A pipe: a fifo, or something like the `/dev/fd/63` of a `<(...)` process
+  /// substitution that can be read but not canonicalized.
+  Stream { path: PathBuf, display: String },
+}
+
+impl ConfigArgSource {
+  /// How to describe the configuration when it didn't come from a file dprint
+  /// could also write back to, or `None` when it did.
+  fn virtual_display(&self) -> Option<&str> {
+    match self {
+      ConfigArgSource::Text { display, .. } | ConfigArgSource::Stream { display, .. } => Some(display),
+      ConfigArgSource::File(_) => None,
+    }
+  }
+}
+
+fn resolve_config_arg_source(config: &ConfigArg, cwd: &CanonicalizedPathBuf, environment: &impl Environment) -> Result<ConfigArgSource> {
+  let config = match config {
+    ConfigArg::Text(config) => {
+      return Ok(ConfigArgSource::Text {
+        text: config.text.clone(),
+        display: config.origin.clone(),
+      });
+    }
+    ConfigArg::PathOrUrl(config) => config,
+  };
+
+  match resolve_url_or_file_path_to_path_source(config, &PathSource::new_local(cwd.clone()), environment) {
+    Ok(path_source) => Ok(match path_source.maybe_local_path() {
+      // a fifo has an ordinary path that canonicalizes, but its text came from
+      // whatever wrote to it rather than from that directory
+      Some(path) if is_stream_path(environment, path.as_ref()) => ConfigArgSource::Stream {
+        display: path.display().to_string(),
+        path: path.as_ref().to_path_buf(),
+      },
+      _ => ConfigArgSource::File(path_source),
+    }),
+    // a pipe with no path of its own (the `/dev/fd/63` of a process substitution,
+    // or `/dev/stdin` when stdin is a pipe) can be stat'd and read, but not
+    // canonicalized
+    Err(err) => match resolve_uncanonicalized_local_path(config, cwd, environment) {
+      Some(path) if environment.path_exists(&path) => Ok(ConfigArgSource::Stream {
+        display: path.display().to_string(),
+        path,
+      }),
+      _ => Err(err),
+    },
+  }
+}
+
+/// Whether the path names something to read as a stream rather than an ordinary
+/// file. A directory isn't a regular file either, but it isn't a stream: it
+/// should keep failing on the read the way it always has.
+fn is_stream_path(environment: &impl Environment, path: &Path) -> bool {
+  environment.path_exists(path) && !environment.path_is_file(path) && !matches!(environment.path_kind(path), Some(PathKind::Dir))
+}
+
 /// The source used for configuration text that didn't come from a file
 /// dprint opened by path (provided inline, on stdin, or through a pipe).
 ///
@@ -156,32 +214,6 @@ fn virtual_config_source(cwd: &CanonicalizedPathBuf, origin: &str) -> PathSource
 /// A name that can't collide with a real configuration file in the directory,
 /// since nothing should read or write it.
 const VIRTUAL_CONFIG_FILE_NAME: &str = "<config>";
-
-/// Reads a `--config` value that names something readable that can't be
-/// canonicalized, which is what a pipe with no path of its own looks like:
-/// the `/dev/fd/63` of a `<(...)` process substitution, or `/dev/stdin` when
-/// stdin is a pipe. Returns `None` when there's nothing to read this way, in
-/// which case the caller reports why the path couldn't be resolved.
-fn maybe_read_config_stream<TEnvironment: Environment>(
-  config: &str,
-  cwd: &CanonicalizedPathBuf,
-  environment: &TEnvironment,
-) -> Result<Option<ResolvedFilePathWithText>> {
-  let Some(path) = resolve_uncanonicalized_local_path(config, cwd, environment) else {
-    return Ok(None);
-  };
-  let Ok(bytes) = environment.read_file_bytes(&path) else {
-    return Ok(None);
-  };
-
-  log_debug!(environment, "Read the config from a stream at {}", path.display());
-  let content = String::from_utf8(bytes).with_context(|| format!("Failed converting '{}' to string.", path.display()))?;
-  Ok(Some(ResolvedFilePathWithText {
-    content,
-    source: virtual_config_source(cwd, &path.to_string_lossy()),
-    is_first_download: false,
-  }))
-}
 
 /// Makes a local `--config` value absolute without canonicalizing it, or
 /// `None` when it doesn't name a local path at all.

@@ -3433,8 +3433,10 @@ text",
         config.add_includes("**/*.txt");
       })
       // a fifo canonicalizes like any other path, but opening it for writing
-      // would block rather than edit a configuration file
-      .write_file("/myfifo", r#"{ "includes": ["**/*.txt"] }"#)
+      // would block rather than edit a configuration file. the content is
+      // invalid utf-8 so that the test fails if anything reads it: reading a
+      // fifo blocks until it's written to, so the rejection has to come first
+      .write_file("/myfifo", [0xff, 0xfe])
       .build();
     environment.add_fifo_path("/myfifo");
 
