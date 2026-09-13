@@ -226,9 +226,9 @@ impl TestEnvironment {
     env
   }
 
-  /// Makes the path fail to canonicalize while still being readable, which is
-  /// how a pipe looks on the file system (ex. the `/dev/fd/63` of a shell
-  /// process substitution).
+  /// Makes the path fail to canonicalize while still being readable. Together
+  /// with `add_fifo_path` this is how a pipe with no path of its own looks on
+  /// the file system (ex. the `/dev/fd/63` of a shell process substitution).
   pub fn add_uncanonicalizable_path(&self, path: impl AsRef<Path>) {
     let path = self.clean_path(path);
     self.uncanonicalizable_paths.lock().push(path);

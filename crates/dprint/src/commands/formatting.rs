@@ -1173,7 +1173,7 @@ mod test {
   #[test]
   fn should_format_files_with_config_from_a_pipe() {
     let file_path = "/file.txt";
-    // a `<(...)` process substitution shows up as a path that can be read but not canonicalized
+    // a `<(...)` process substitution shows up as a pipe that can be read but not canonicalized
     let pipe_path = "/dev/fd/63";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
       .write_file(file_path, "text")
@@ -1183,11 +1183,32 @@ mod test {
       )
       .build();
     environment.add_uncanonicalizable_path(pipe_path);
+    environment.add_fifo_path(pipe_path);
 
     run_test_cli(vec!["fmt", "--config", pipe_path, "/file.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(environment.read_file(file_path).unwrap(), "text_custom-formatted");
+  }
+
+  #[test]
+  fn should_keep_the_error_for_a_regular_config_file_that_cannot_be_canonicalized() {
+    // a regular file that can't be canonicalized (ex. on an unusual file
+    // system) isn't a pipe, so it isn't read as one: its relative paths would
+    // resolve against the cwd instead of its directory
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .write_file("/file.txt", "text")
+      .write_file("/sub_dir/config.json", r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#)
+      .build();
+    environment.add_uncanonicalizable_path("/sub_dir/config.json");
+
+    let error = run_test_cli(vec!["fmt", "--config", "/sub_dir/config.json", "/file.txt"], &environment)
+      .err()
+      .unwrap();
+
+    assert_eq!(error.to_string(), "Error canonicalizing path '/sub_dir/config.json'");
+    error.assert_exit_code(11);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
   }
 
   #[test]

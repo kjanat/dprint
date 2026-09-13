@@ -3415,10 +3415,11 @@ text",
       .with_default_config(|config| {
         config.add_includes("**/*.txt");
       })
-      // a `<(...)` process substitution shows up as a path that can be read but not canonicalized
+      // a `<(...)` process substitution shows up as a pipe that can be read but not canonicalized
       .write_file("/dev/fd/63", r#"{ "includes": ["**/*.txt"] }"#)
       .build();
     environment.add_uncanonicalizable_path("/dev/fd/63");
+    environment.add_fifo_path("/dev/fd/63");
 
     let error = run_test_cli(vec!["config", "edit", "-c", "/dev/fd/63"], &environment).err().unwrap();
 

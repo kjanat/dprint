@@ -222,11 +222,12 @@ fn resolve_config_arg_source(config: &ConfigArg, cwd: &CanonicalizedPathBuf, env
       },
       _ => ConfigArgSource::File(path_source),
     }),
-    // a pipe with no path of its own (the `/dev/fd/63` of a process substitution,
-    // or `/dev/stdin` when stdin is a pipe) can be stat'd and read, but not
-    // canonicalized
+    // a pipe with no path of its own (the `/dev/fd/63` of a process substitution)
+    // can be stat'd and read, but not canonicalized. A regular file that can't
+    // be canonicalized (ex. on an unusual file system) isn't a stream though,
+    // so it keeps the error rather than losing its directory
     Err(err) => match resolve_uncanonicalized_local_path(config, cwd, environment) {
-      Some(path) if environment.path_exists(&path) => Ok(ConfigArgSource::Stream {
+      Some(path) if is_stream_path(environment, &path) => Ok(ConfigArgSource::Stream {
         display: path.display().to_string(),
         path,
       }),
