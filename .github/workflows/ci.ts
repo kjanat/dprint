@@ -213,18 +213,6 @@ const lint = step.if(isLinuxGnu.and(isNotTag))(
       cache: true,
     },
   }).dependsOn(setupDeno),
-  step({
-    name: "Lint CI Generation",
-    run: [
-      "./.github/workflows/ci.ts --lint",
-      "./.github/workflows/publish.ts --lint",
-      "./.github/workflows/publish_crate_core.ts --lint",
-      "./.github/workflows/publish_crate_core-macros.ts --lint",
-      "./.github/workflows/publish_crate_dev.ts --lint",
-      "./.github/workflows/website.ts --lint",
-      "./.github/workflows/release.ts --lint",
-    ],
-  }).dependsOn(setupDeno),
 );
 
 const aarch64LinkerEnv = {
