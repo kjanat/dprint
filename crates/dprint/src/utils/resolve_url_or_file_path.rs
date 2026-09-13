@@ -1,15 +1,28 @@
+use std::time::UNIX_EPOCH;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use url::Url;
 
 use super::PathSource;
+use crate::cache::CacheEntry;
+use crate::cache::HeadersMap;
+use crate::cache::HttpCache;
 use crate::environment::Environment;
 use crate::utils::RemotePathSource;
+
+/// How long a downloaded remote file is used before its URL is checked for
+/// changes. Remote configuration is often pinned to a branch (ex.
+/// `https://cdn.jsdelivr.net/gh/user/repo@main/dprint.json`) whose content
+/// changes over time, so a cached copy can't be used forever.
+pub const REMOTE_FILE_MAX_AGE_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedFilePathWithBytes {
   pub source: PathSource,
+  /// Whether the file was downloaded rather than served from the cache. This
+  /// is false when a stale cache entry was checked for changes and had none.
   pub is_first_download: bool,
   pub content: Vec<u8>,
 }
@@ -69,37 +82,79 @@ pub async fn resolve_url_or_file_path_to_file_with_cache<TEnvironment: Environme
 }
 
 async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, environment: &TEnvironment) -> Result<ResolvedFilePathWithBytes> {
-  use crate::cache::HttpCache;
-
   const MAX_REDIRECTS: usize = 10;
 
+  enum CachedFile {
+    Redirect(Url),
+    Content(ResolvedFilePathWithBytes),
+  }
+
+  fn use_cache_entry(current_url: &Url, entry: CacheEntry) -> Result<CachedFile> {
+    if let Some(location) = entry.metadata.headers.get("location") {
+      // cached redirect — follow it
+      return Ok(CachedFile::Redirect(current_url.join(location)?));
+    }
+    // cached content
+    let resolved_url = Url::parse(&entry.metadata.url).unwrap_or_else(|_| current_url.clone());
+    Ok(CachedFile::Content(ResolvedFilePathWithBytes {
+      source: PathSource::Remote(RemotePathSource { url: resolved_url }),
+      is_first_download: false,
+      content: entry.content,
+    }))
+  }
+
   let cache = HttpCache::new(environment.clone(), environment.get_cache_dir().join("remote"));
+  let now_secs = environment.sys_time_now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
   let mut current_url = url.clone();
 
   for _ in 0..=MAX_REDIRECTS {
     let key = cache.cache_item_key(&current_url)?;
 
     // check cache
+    let mut stale_entry = None;
     if let Some(entry) = cache.get(&key)? {
-      if let Some(location) = entry.metadata.headers.get("location") {
-        // cached redirect — follow it
-        current_url = current_url.join(location)?;
-        continue;
+      if is_cache_entry_fresh(&entry, now_secs) {
+        match use_cache_entry(&current_url, entry)? {
+          CachedFile::Redirect(location) => {
+            current_url = location;
+            continue;
+          }
+          CachedFile::Content(file) => return Ok(file),
+        }
       }
-      // cached content
-      let resolved_url = Url::parse(&entry.metadata.url).unwrap_or(current_url);
-      return Ok(ResolvedFilePathWithBytes {
-        source: PathSource::Remote(RemotePathSource { url: resolved_url }),
-        is_first_download: false,
-        content: entry.content,
-      });
+      log_debug!(environment, "Checking for changes: {}", current_url);
+      stale_entry = Some(entry);
     }
 
     // download
-    let result = environment
-      .download_file_no_redirects(&current_url, None)
-      .await?
-      .ok_or_else(|| anyhow::anyhow!("Error downloading {} - 404 Not Found", url))?;
+    let result = match environment.download_file_no_redirects(&current_url, None).await {
+      Ok(Some(result)) => result,
+      Ok(None) => bail!("Error downloading {} - 404 Not Found", url),
+      Err(err) => match stale_entry {
+        // keep using the previously downloaded file when checking for changes
+        // fails (ex. offline). The entry stays stale, so it's checked again next time.
+        Some(entry) => {
+          log_warn!(
+            environment,
+            "Using the cached version of {} because checking it for changes failed. {:#}",
+            current_url,
+            err
+          );
+          match use_cache_entry(&current_url, entry)? {
+            CachedFile::Redirect(location) => {
+              current_url = location;
+              continue;
+            }
+            CachedFile::Content(file) => return Ok(file),
+          }
+        }
+        None => return Err(err),
+      },
+    };
+    let is_changed = match &stale_entry {
+      Some(entry) => entry.content != result.content,
+      None => true,
+    };
 
     // cache the response and ignore errors
     _ = cache.set(&current_url, result.headers.clone(), &result.content);
@@ -112,12 +167,34 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
 
     return Ok(ResolvedFilePathWithBytes {
       source: PathSource::Remote(RemotePathSource { url: current_url }),
-      is_first_download: true,
+      is_first_download: is_changed,
       content: result.content,
     });
   }
 
   bail!("Too many redirects for {}", url)
+}
+
+/// A cached remote file is used without checking its URL for changes while it's
+/// younger than the max age. Responses marked `Cache-Control: immutable` (ex.
+/// a CDN URL pinned to a tag or commit) never change, so they're never re-checked.
+fn is_cache_entry_fresh(entry: &CacheEntry, now_secs: u64) -> bool {
+  if has_immutable_cache_control(&entry.metadata.headers) {
+    return true;
+  }
+  match entry.metadata.time {
+    Some(time) => now_secs.saturating_sub(time) < REMOTE_FILE_MAX_AGE_SECS,
+    // cached by a version of dprint that didn't record the time
+    None => false,
+  }
+}
+
+fn has_immutable_cache_control(headers: &HeadersMap) -> bool {
+  headers
+    .iter()
+    .filter(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+    .flat_map(|(_, value)| value.split(','))
+    .any(|directive| directive.trim().eq_ignore_ascii_case("immutable"))
 }
 
 pub async fn fetch_file_or_url_bytes(url_or_file_path: &PathSource, environment: &impl Environment) -> Result<Vec<u8>> {
@@ -385,6 +462,171 @@ mod tests {
         PathSource::new_remote(Url::parse("https://cdn.example.com/v1/plugin.json").unwrap())
       );
     });
+  }
+
+  #[test]
+  fn should_check_for_changes_once_cache_entry_is_stale() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://dprint.dev/test.json";
+    environment.add_remote_file(url, "1".as_bytes());
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "1".as_bytes());
+      assert_eq!(result.is_first_download, true);
+
+      // a fresh cache entry is used even though the remote file changed
+      environment.add_remote_file(url, "2".as_bytes());
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS - 1);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "1".as_bytes());
+      assert_eq!(result.is_first_download, false);
+
+      // once stale, the url is checked for changes
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "2".as_bytes());
+      assert_eq!(result.is_first_download, true);
+
+      // checking an unchanged file is not a first download
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS * 2);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "2".as_bytes());
+      assert_eq!(result.is_first_download, false);
+
+      // the check made the entry fresh again
+      environment.add_remote_file(url, "3".as_bytes());
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS * 3 - 1);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "2".as_bytes());
+      assert_eq!(result.is_first_download, false);
+
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS * 3);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "3".as_bytes());
+      assert_eq!(result.is_first_download, true);
+      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    });
+  }
+
+  #[test]
+  fn should_use_stale_cache_entry_when_checking_for_changes_fails() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://dprint.dev/test.json";
+    environment.add_remote_file(url, "1".as_bytes());
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "1".as_bytes());
+
+      environment.add_remote_file_error(url, "network down");
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "1".as_bytes());
+      assert_eq!(result.is_first_download, false);
+      assert_eq!(result.source, PathSource::new_remote(Url::parse(url).unwrap()));
+      assert_eq!(
+        environment.take_stderr_messages(),
+        vec!["Using the cached version of https://dprint.dev/test.json because checking it for changes failed. network down".to_string()]
+      );
+
+      // the failure doesn't refresh the entry, so it's checked again next time
+      environment.add_remote_file(url, "2".as_bytes());
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "2".as_bytes());
+      assert_eq!(result.is_first_download, true);
+    });
+  }
+
+  #[test]
+  fn should_error_when_stale_remote_file_no_longer_exists() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://dprint.dev/test.json";
+    environment.add_remote_file(url, "1".as_bytes());
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+
+      environment.remove_remote_file(url);
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let err = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.err().unwrap();
+      assert_eq!(err.to_string(), "Error downloading https://dprint.dev/test.json - 404 Not Found");
+    });
+  }
+
+  #[test]
+  fn should_check_stale_redirect_for_changes() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://example.com/plugin.json";
+    environment.add_remote_file("https://cdn.example.com/v1/plugin.json", "v1".as_bytes());
+    environment.add_remote_file("https://cdn.example.com/v2/plugin.json", "v2".as_bytes());
+    environment.add_remote_file_redirect(url, "https://cdn.example.com/v1/plugin.json");
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v1".as_bytes());
+
+      // the cached redirect is used while fresh
+      environment.add_remote_file_redirect(url, "https://cdn.example.com/v2/plugin.json");
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS - 1);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v1".as_bytes());
+      assert_eq!(result.is_first_download, false);
+
+      // then checked for changes
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v2".as_bytes());
+      assert_eq!(result.is_first_download, true);
+      assert_eq!(
+        result.source,
+        PathSource::new_remote(Url::parse("https://cdn.example.com/v2/plugin.json").unwrap())
+      );
+    });
+  }
+
+  #[test]
+  fn should_get_if_cache_entry_is_fresh() {
+    use crate::cache::SerializedCachedUrlMetadata;
+
+    fn entry(headers: &[(&str, &str)], time: Option<u64>) -> CacheEntry {
+      CacheEntry {
+        metadata: SerializedCachedUrlMetadata {
+          headers: headers.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect(),
+          url: "https://dprint.dev/test.json".to_string(),
+          time,
+        },
+        content: Vec::new(),
+      }
+    }
+
+    let now = REMOTE_FILE_MAX_AGE_SECS * 100;
+    assert!(is_cache_entry_fresh(&entry(&[], Some(now)), now));
+    assert!(is_cache_entry_fresh(&entry(&[], Some(now - REMOTE_FILE_MAX_AGE_SECS + 1)), now));
+    assert!(!is_cache_entry_fresh(&entry(&[], Some(now - REMOTE_FILE_MAX_AGE_SECS)), now));
+    // cached by an older dprint without a time
+    assert!(!is_cache_entry_fresh(&entry(&[], None), now));
+    // clock went backwards
+    assert!(is_cache_entry_fresh(&entry(&[], Some(now + 10)), now));
+    // immutable responses are never stale
+    assert!(is_cache_entry_fresh(
+      &entry(&[("cache-control", "public, max-age=31536000, s-maxage=31536000, immutable")], Some(0)),
+      now
+    ));
+    assert!(is_cache_entry_fresh(&entry(&[("Cache-Control", "IMMUTABLE")], None), now));
+    assert!(!is_cache_entry_fresh(
+      &entry(&[("cache-control", "public, max-age=604800, s-maxage=43200")], Some(0)),
+      now
+    ));
+    assert!(!is_cache_entry_fresh(&entry(&[("cache-control", "not-immutable")], Some(0)), now));
   }
 
   #[test]

@@ -426,6 +426,12 @@ Referencing multiple configuration files is also supported. These should be orde
 
 Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed.
 
+### Caching of Remote Configuration
+
+Remote configuration files are downloaded once and stored in dprint's cache directory. A cached file is used for an hour before dprint checks its URL for changes, so a change to a configuration file pinned to a branch (ex. `https://cdn.jsdelivr.net/gh/user/repo@main/dprint.json`) is picked up within an hour. When the check fails (ex. no network), the cached copy is used and a warning is logged. Files whose response is marked `Cache-Control: immutable` (ex. a jsdelivr URL pinned to a tag or commit) never change, so they are never checked again.
+
+To pick up a change immediately, run `dprint clear-cache`. Note that CDNs have their own caches, so a change to a branch may take longer to appear (ex. jsdelivr serves branch content from its edge cache for up to 12 hours, while `raw.githubusercontent.com` does so for 5 minutes).
+
 ## Directory Specific Configuration
 
 Useful for monorepos, you may place additional configuration files in descendant directories. When dprint searches for files to format, it stops descending into a directory once it discovers a configuration file there and uses that configuration file for the files in that subtree instead (see [changing config discovery](/cli#changing-config-discovery)).

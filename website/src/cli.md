@@ -432,3 +432,5 @@ Internally, a cache is used to avoid re-downloading files. It may be useful in s
 ```sh
 dprint clear-cache
 ```
+
+Remote configuration files (`extends` or `--config` with a URL) are checked for changes automatically once an hour (see [caching of remote configuration](/config#caching-of-remote-configuration)), so clearing the cache is only necessary to pick up a change immediately.
