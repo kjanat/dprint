@@ -1216,7 +1216,9 @@ EXAMPLES:
         // the help text already lists the accepted values
         .hide_possible_values(true)
         .value_name("BOOLEAN")
-        .num_args(1)
+        // `0..=1` so a bare `--config-discovery` picks up the default missing
+        // value below instead of erroring on the absent `=`
+        .num_args(0..=1)
         .require_equals(true)
         .default_missing_value("true")
     )
@@ -1227,6 +1229,7 @@ EXAMPLES:
         .help("List of urls or file paths of plugins to use. This overrides what is specified in the config file.")
         .value_hint(clap::ValueHint::AnyPath)
         .global(true)
+        .action(clap::ArgAction::Append)
         .num_args(1..)
     )
     .arg(
@@ -1300,6 +1303,7 @@ impl ClapExtensions for clap::Command {
           .value_name("patterns")
           .help("List of file patterns in quotes to format. This overrides what is specified in the config file.")
           .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1308,6 +1312,7 @@ impl ClapExtensions for clap::Command {
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This excludes in addition to what is found in the config file.")
           .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1316,6 +1321,7 @@ impl ClapExtensions for clap::Command {
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This overrides what is specified in the config file.")
           .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1452,6 +1458,67 @@ mod test {
         "  --plugins https://plugins.dprint.dev/test.wasm -- [files/directories/patterns]...",
       )
     );
+  }
+
+  #[test]
+  fn config_discovery_arg() {
+    fn config_discovery(args: Vec<&str>) -> Option<ConfigDiscovery> {
+      test_args(args).unwrap().config_discovery
+    }
+    // a bare `--config-discovery` means the default mode, which is what makes
+    // the shells able to offer the flag on its own
+    assert!(matches!(config_discovery(vec!["fmt", "--config-discovery"]), Some(ConfigDiscovery::Default)));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=true"]),
+      Some(ConfigDiscovery::Default)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=false"]),
+      Some(ConfigDiscovery::Disabled)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=global"]),
+      Some(ConfigDiscovery::Global)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=ignore-descendants"]),
+      Some(ConfigDiscovery::IgnoreDescendants)
+    ));
+    assert!(config_discovery(vec!["fmt"]).is_none());
+  }
+
+  #[test]
+  fn pattern_args_accumulate_across_occurrences() {
+    fn patterns(args: Vec<&str>) -> (Option<Vec<String>>, Option<Vec<String>>, Vec<String>) {
+      match test_args(args).unwrap().sub_command {
+        SubCommand::Fmt(cmd) => (
+          cmd.patterns.include_pattern_overrides,
+          cmd.patterns.exclude_pattern_overrides,
+          cmd.patterns.exclude_patterns,
+        ),
+        _ => unreachable!(),
+      }
+    }
+    // repeating these is what lets a shell keep offering them, so the repeats
+    // have to add up rather than overwrite each other
+    let (includes, exclude_overrides, excludes) = patterns(vec![
+      "fmt",
+      "--excludes",
+      "a",
+      "--excludes",
+      "b",
+      "--includes-override",
+      "c",
+      "--includes-override",
+      "d",
+      "--excludes-override",
+      "e",
+      "--excludes-override",
+      "f",
+    ]);
+    assert_eq!(excludes, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(includes, Some(vec!["c".to_string(), "d".to_string()]));
+    assert_eq!(exclude_overrides, Some(vec!["e".to_string(), "f".to_string()]));
   }
 
   #[test]

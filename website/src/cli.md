@@ -216,6 +216,8 @@ Starting in dprint 0.50, you can change the way dprint discovers configuration f
 - `--config-discovery=global` - Use the global config file only (dprint 0.51+)
 - `--config-discovery=false` - Disables all configuration discovery (specify either `--config=<path>` or `--plugins <url-or-path>`).
 
+The value must be attached with `=`; a bare `--config-discovery` means `default`.
+
 Note this can also be set via the `DPRINT_CONFIG_DISCOVERY` environment variable (ex. `DPRINT_CONFIG_DISCOVERY=false`, `DPRINT_CONFIG_DISCOVERY=global`, etc.)
 
 ## Coloured Output
