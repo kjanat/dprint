@@ -33,6 +33,40 @@ impl std::str::FromStr for ConfigDiscovery {
   }
 }
 
+/// Parses `--config-discovery` while telling clap which values to suggest.
+///
+/// `ConfigDiscovery` accepts more spellings than are worth putting in front of
+/// someone (ex. `1`, `0`, `default`), so the canonical four are surfaced for
+/// shell completions and hidden from `--help`, where the prose already covers
+/// them.
+#[derive(Clone)]
+struct ConfigDiscoveryValueParser;
+
+impl clap::builder::TypedValueParser for ConfigDiscoveryValueParser {
+  type Value = ConfigDiscovery;
+
+  fn parse_ref(&self, cmd: &clap::Command, arg: Option<&clap::Arg>, value: &std::ffi::OsStr) -> Result<Self::Value, clap::Error> {
+    let value = value
+      .to_str()
+      .ok_or_else(|| clap::Error::raw(clap::error::ErrorKind::InvalidUtf8, "invalid utf-8 value\n").with_cmd(cmd))?;
+    value.parse::<ConfigDiscovery>().map_err(|err| {
+      let mut err = clap::Error::raw(clap::error::ErrorKind::InvalidValue, format!("{err}\n"));
+      if let Some(arg) = arg {
+        err.insert(clap::error::ContextKind::InvalidArg, clap::error::ContextValue::String(arg.to_string()));
+      }
+      err.with_cmd(cmd)
+    })
+  }
+
+  fn possible_values(&self) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+    Some(Box::new(
+      ["true", "false", "global", "ignore-descendants"]
+        .into_iter()
+        .map(clap::builder::PossibleValue::new),
+    ))
+  }
+}
+
 impl ConfigDiscovery {
   pub fn is_global(&self) -> bool {
     matches!(self, ConfigDiscovery::Global)
@@ -772,7 +806,7 @@ fn validate_plugin_args_when_no_files(plugins: &[String]) -> Result<()> {
   Ok(())
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum CliArgParserKind {
   ForOutputtingMainHelp,
   ForCompletions,
@@ -964,7 +998,7 @@ EXAMPLES:
     .subcommand(
       Command::new("fmt")
         .about("Formats the source files and writes the result to the file system.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_incremental_arg()
         .arg(
           Arg::new("stdin")
@@ -1005,7 +1039,7 @@ EXAMPLES:
     .subcommand(
       Command::new("check")
         .about("Checks for any files that haven't been formatted.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_incremental_arg()
         .add_allow_no_files_arg()
         .add_only_staged_arg()
@@ -1090,7 +1124,7 @@ EXAMPLES:
       Command::new("file-paths")
         .alias("output-file-paths")
         .about("Prints the resolved file paths for the plugins based on the args and configuration.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_only_staged_arg()
         .add_only_dirty_arg()
     )
@@ -1116,7 +1150,7 @@ EXAMPLES:
       Command::new("format-times")
         .alias("output-format-times")
         .about("Prints the amount of time it takes to format each file. Use this for debugging.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_allow_no_files_arg()
         .add_only_staged_arg()
         .add_only_dirty_arg()
@@ -1178,9 +1212,13 @@ EXAMPLES:
         .long("config-discovery")
         .help("Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.")
         .global(true)
-        .value_parser(clap::value_parser!(ConfigDiscovery))
+        .value_parser(ConfigDiscoveryValueParser)
+        // the help text already lists the accepted values
+        .hide_possible_values(true)
         .value_name("BOOLEAN")
-        .num_args(1)
+        // `0..=1` so a bare `--config-discovery` picks up the default missing
+        // value below instead of erroring on the absent `=`
+        .num_args(0..=1)
         .require_equals(true)
         .default_missing_value("true")
     )
@@ -1191,6 +1229,7 @@ EXAMPLES:
         .help("List of urls or file paths of plugins to use. This overrides what is specified in the config file.")
         .value_hint(clap::ValueHint::AnyPath)
         .global(true)
+        .action(clap::ArgAction::Append)
         .num_args(1..)
     )
     .arg(
@@ -1226,7 +1265,7 @@ EXAMPLES:
 }
 
 trait ClapExtensions {
-  fn add_resolve_file_path_args(self) -> Self;
+  fn add_resolve_file_path_args(self, kind: CliArgParserKind) -> Self;
   fn add_incremental_arg(self) -> Self;
   fn add_allow_no_files_arg(self) -> Self;
   fn add_diff_format_arg(self) -> Self;
@@ -1235,15 +1274,19 @@ trait ClapExtensions {
 }
 
 impl ClapExtensions for clap::Command {
-  fn add_resolve_file_path_args(self) -> Self {
+  fn add_resolve_file_path_args(self, kind: CliArgParserKind) -> Self {
     use clap::Arg;
     self
-      .arg(
-        Arg::new("files")
-          .help("List of files, directories, or file patterns to format. This can be a subset of what is found in the config file.")
-          .value_hint(clap::ValueHint::AnyPath)
-          .num_args(1..),
-      )
+      .arg({
+        let arg = Arg::new("files").value_hint(clap::ValueHint::AnyPath).num_args(1..);
+        // a positional's help becomes the description a shell shows above the
+        // matches, so a sentence there is a wall of text over the file list
+        if kind == CliArgParserKind::ForCompletions {
+          arg
+        } else {
+          arg.help("List of files, directories, or file patterns to format. This can be a subset of what is found in the config file.")
+        }
+      })
       .arg(
         Arg::new("stdin-files")
           .long("stdin-files")
@@ -1259,6 +1302,8 @@ impl ClapExtensions for clap::Command {
           .long("includes-override")
           .value_name("patterns")
           .help("List of file patterns in quotes to format. This overrides what is specified in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1266,6 +1311,8 @@ impl ClapExtensions for clap::Command {
           .long("excludes")
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This excludes in addition to what is found in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1273,6 +1320,8 @@ impl ClapExtensions for clap::Command {
           .long("excludes-override")
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This overrides what is specified in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
+          .action(clap::ArgAction::Append)
           .num_args(1..),
       )
       .arg(
@@ -1409,6 +1458,67 @@ mod test {
         "  --plugins https://plugins.dprint.dev/test.wasm -- [files/directories/patterns]...",
       )
     );
+  }
+
+  #[test]
+  fn config_discovery_arg() {
+    fn config_discovery(args: Vec<&str>) -> Option<ConfigDiscovery> {
+      test_args(args).unwrap().config_discovery
+    }
+    // a bare `--config-discovery` means the default mode, which is what makes
+    // the shells able to offer the flag on its own
+    assert!(matches!(config_discovery(vec!["fmt", "--config-discovery"]), Some(ConfigDiscovery::Default)));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=true"]),
+      Some(ConfigDiscovery::Default)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=false"]),
+      Some(ConfigDiscovery::Disabled)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=global"]),
+      Some(ConfigDiscovery::Global)
+    ));
+    assert!(matches!(
+      config_discovery(vec!["fmt", "--config-discovery=ignore-descendants"]),
+      Some(ConfigDiscovery::IgnoreDescendants)
+    ));
+    assert!(config_discovery(vec!["fmt"]).is_none());
+  }
+
+  #[test]
+  fn pattern_args_accumulate_across_occurrences() {
+    fn patterns(args: Vec<&str>) -> (Option<Vec<String>>, Option<Vec<String>>, Vec<String>) {
+      match test_args(args).unwrap().sub_command {
+        SubCommand::Fmt(cmd) => (
+          cmd.patterns.include_pattern_overrides,
+          cmd.patterns.exclude_pattern_overrides,
+          cmd.patterns.exclude_patterns,
+        ),
+        _ => unreachable!(),
+      }
+    }
+    // repeating these is what lets a shell keep offering them, so the repeats
+    // have to add up rather than overwrite each other
+    let (includes, exclude_overrides, excludes) = patterns(vec![
+      "fmt",
+      "--excludes",
+      "a",
+      "--excludes",
+      "b",
+      "--includes-override",
+      "c",
+      "--includes-override",
+      "d",
+      "--excludes-override",
+      "e",
+      "--excludes-override",
+      "f",
+    ]);
+    assert_eq!(excludes, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(includes, Some(vec!["c".to_string(), "d".to_string()]));
+    assert_eq!(exclude_overrides, Some(vec!["e".to_string(), "f".to_string()]));
   }
 
   #[test]
