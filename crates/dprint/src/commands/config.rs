@@ -75,7 +75,13 @@ pub async fn init_config_file<TEnvironment: Environment>(
       })?;
       Ok(Vec::from([directory.join("dprint.jsonc"), directory.join("dprint.json")]))
     } else if let Some(config_arg) = options.config_arg {
-      Ok(Vec::from([PathBuf::from(config_arg)]))
+      let path = PathBuf::from(config_arg);
+      // this sub command never resolves the configuration, so it has to turn a
+      // pipe away itself — adding plugins to one would block on the read
+      if crate::configuration::is_stream_path(environment, &path) {
+        bail!("{}", crate::configuration::config_needs_file_message(&path.to_string_lossy()));
+      }
+      Ok(Vec::from([path]))
     } else {
       Ok(POSSIBLE_CONFIG_FILE_NAMES.iter().map(PathBuf::from).collect::<Vec<_>>())
     }
@@ -3419,11 +3425,30 @@ text",
     assert_eq!(
       error.to_string(),
       concat!(
-        "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command because it reads and ",
-        "writes the configuration file. Specify a file path instead (ex. --config dprint.json)."
+        "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command because it needs a ",
+        "configuration file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
       )
     );
     assert!(environment.take_run_commands().is_empty());
+  }
+
+  #[test]
+  fn init_should_error_for_a_fifo() {
+    // this sub command never resolves the configuration, so without its own
+    // check adding plugins to a fifo would block on the read. the content is
+    // invalid utf-8 so the test fails if anything reads it
+    let environment = TestEnvironmentBuilder::new().write_file("/myfifo", [0xff, 0xfe]).build();
+    environment.add_fifo_path("/myfifo");
+
+    let error = run_test_cli(vec!["init", "-c", "/myfifo"], &environment).err().unwrap();
+
+    assert_eq!(
+      error.to_string(),
+      concat!(
+        "Cannot use the configuration provided by --config (/myfifo) with this sub command because it needs a ",
+        "configuration file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
+      )
+    );
   }
 
   #[test]
@@ -3445,8 +3470,8 @@ text",
     assert_eq!(
       error.to_string(),
       concat!(
-        "Cannot use the configuration provided by --config (/myfifo) with this sub command because it reads and ",
-        "writes the configuration file. Specify a file path instead (ex. --config dprint.json)."
+        "Cannot use the configuration provided by --config (/myfifo) with this sub command because it needs a ",
+        "configuration file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
       )
     );
     assert!(environment.take_run_commands().is_empty());

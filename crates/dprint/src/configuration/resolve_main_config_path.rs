@@ -79,39 +79,13 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   let config_discovery = args.config_discovery(environment);
   if let Some(config) = &args.config {
     let base_path = environment.cwd();
-    // work out where the configuration comes from before reading any of it:
-    // reading a pipe blocks until it's written to, so a sub command that can't
-    // accept one has to turn it away first
-    let config_source = resolve_config_arg_source(config, &base_path, environment)?;
-    if let Some(display) = config_source.virtual_display()
-      && matches!(args.sub_command, SubCommand::Config(_))
-    {
-      bail!(
-        concat!(
-          "Cannot use the configuration provided by --config ({}) with this sub command because it reads and writes ",
-          "the configuration file. Specify a file path instead (ex. --config dprint.json)."
-        ),
-        display,
-      );
-    }
-
-    let resolved_file = match config_source {
-      ConfigArgSource::Text { text, display } => ResolvedFilePathWithText {
-        content: text,
-        source: virtual_config_source(&base_path, &display),
-        is_first_download: false,
-      },
-      ConfigArgSource::Stream { path, display } => {
-        log_debug!(environment, "Reading the config from a stream at {}", display);
-        let bytes = environment.read_file_bytes(&path)?;
-        let content = String::from_utf8(bytes).with_context(|| format!("Failed converting '{}' to string.", display))?;
-        ResolvedFilePathWithText {
-          content,
-          source: virtual_config_source(&base_path, &display),
-          is_first_download: false,
-        }
-      }
-      ConfigArgSource::File(path_source) => resolve_path_source_to_file_with_cache(path_source, environment).await?.into_text()?,
+    let resolved_file = match config {
+      ConfigArg::Text(_) => read_config_arg(config, &base_path, args, environment).await?,
+      // a value that opens like a json object but was resolved as a path is
+      // rarely what was meant, so say so rather than only naming the path
+      ConfigArg::PathOrUrl(value) => read_config_arg(config, &base_path, args, environment)
+        .await
+        .map_err(|err| add_config_text_hint(err, value))?,
     };
     Ok(Some(ResolvedConfigPathWithText {
       content: resolved_file.content,
@@ -134,6 +108,74 @@ pub async fn resolve_main_config_path_and_bytes<TEnvironment: Environment>(
   } else {
     Ok(None)
   }
+}
+
+async fn read_config_arg<TEnvironment: Environment>(
+  config: &ConfigArg,
+  base_path: &CanonicalizedPathBuf,
+  args: &CliArgs,
+  environment: &TEnvironment,
+) -> Result<ResolvedFilePathWithText> {
+  // work out where the configuration comes from before reading any of it:
+  // reading a pipe blocks until it's written to, so a sub command that can't
+  // accept one has to turn it away first
+  let config_source = resolve_config_arg_source(config, base_path, environment)?;
+  if let Some(display) = config_source.virtual_display()
+    && sub_command_needs_config_file(&args.sub_command)
+  {
+    bail!("{}", config_needs_file_message(display));
+  }
+
+  Ok(match config_source {
+    ConfigArgSource::Text { text, display } => ResolvedFilePathWithText {
+      content: text,
+      source: virtual_config_source(base_path, &display),
+      is_first_download: false,
+    },
+    ConfigArgSource::Stream { path, display } => {
+      log_debug!(environment, "Reading the config from a stream at {}", display);
+      let bytes = environment.read_file_bytes(&path)?;
+      let content = String::from_utf8(bytes).with_context(|| format!("Failed converting '{}' to string.", display))?;
+      ResolvedFilePathWithText {
+        content,
+        source: virtual_config_source(base_path, &display),
+        is_first_download: false,
+      }
+    }
+    ConfigArgSource::File(path_source) => resolve_path_source_to_file_with_cache(path_source, environment).await?.into_text()?,
+  })
+}
+
+/// Whether the sub command needs a configuration file rather than one-shot
+/// text: it either writes the file back, or runs long enough to read it again.
+pub fn sub_command_needs_config_file(sub_command: &SubCommand) -> bool {
+  matches!(sub_command, SubCommand::Config(_) | SubCommand::EditorService(_) | SubCommand::Lsp)
+}
+
+/// Told to a sub command that was handed configuration it can't use.
+pub fn config_needs_file_message(display: &str) -> String {
+  format!(
+    concat!(
+      "Cannot use the configuration provided by --config ({}) with this sub command because it needs a configuration ",
+      "file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
+    ),
+    display,
+  )
+}
+
+/// Explains the text heuristic when a value that opens like a json object was
+/// resolved as a path and didn't work out.
+fn add_config_text_hint(err: anyhow::Error, config: &str) -> anyhow::Error {
+  if !config.trim_start().starts_with('{') {
+    return err;
+  }
+  anyhow::anyhow!(
+    concat!(
+      "{:#}\n\nThe --config value is only read as the configuration itself when it starts with `{{` and ends with ",
+      "`}}`. Use --config - to read the configuration from stdin instead."
+    ),
+    err,
+  )
 }
 
 /// Where the configuration named by `--config` is going to come from, worked
@@ -378,6 +420,19 @@ fn get_config_file_in_dir(dir: impl AsRef<Path>, environment: &impl Environment)
 mod tests {
   use super::*;
   use crate::environment::TestEnvironment;
+
+  #[test]
+  fn test_sub_command_needs_config_file() {
+    // these either write the configuration file back or run long enough to
+    // read it again, so one-shot text and pipes are no good to them
+    assert!(sub_command_needs_config_file(&SubCommand::Config(crate::arg_parser::ConfigSubCommand::Edit)));
+    assert!(sub_command_needs_config_file(&SubCommand::Lsp));
+    assert!(sub_command_needs_config_file(&SubCommand::EditorService(
+      crate::arg_parser::EditorServiceSubCommand { parent_pid: 1 }
+    )));
+    assert!(!sub_command_needs_config_file(&SubCommand::EditorInfo));
+    assert!(!sub_command_needs_config_file(&SubCommand::Version));
+  }
 
   #[test]
   fn test_resolve_system_config_dir_macos_with_xdg_config_home() {

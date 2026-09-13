@@ -15,6 +15,7 @@ pub use manipulation::*;
 pub use resolve_config::*;
 pub use resolve_main_config_path::POSSIBLE_CONFIG_FILE_NAMES;
 pub use resolve_main_config_path::ResolvedConfigPathWithText;
+pub use resolve_main_config_path::config_needs_file_message;
 pub use resolve_main_config_path::get_default_config_file_in_ancestor_directories;
 pub use resolve_main_config_path::is_stream_path;
 pub use resolve_main_config_path::resolve_global_config_dir;

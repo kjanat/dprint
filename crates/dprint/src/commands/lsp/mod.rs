@@ -46,6 +46,7 @@ use tower_lsp::lsp_types::TextEdit;
 use url::Url;
 
 use crate::arg_parser::CliArgs;
+use crate::configuration::config_needs_file_message;
 use crate::configuration::is_stream_path;
 use crate::environment::Environment;
 use crate::plugins::PluginResolver;
@@ -223,10 +224,7 @@ fn resolve_config_override(args: &CliArgs, environment: &impl Environment) -> an
   // a pipe hands over its text once and has no file behind it to read again,
   // so turn it away at startup rather than failing every formatting request
   if is_stream_path(environment, &path) {
-    anyhow::bail!(
-      "Cannot use the configuration provided by --config ({}) with this sub command. Specify a file path instead (ex. --config dprint.json).",
-      path.display(),
-    );
+    anyhow::bail!("{}", config_needs_file_message(&path.to_string_lossy()));
   }
   Ok(Some(path))
 }
@@ -641,7 +639,10 @@ mod test {
 
     assert_eq!(
       err.to_string(),
-      "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command. Specify a file path instead (ex. --config dprint.json)."
+      concat!(
+        "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command because it needs a ",
+        "configuration file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
+      )
     );
   }
 
