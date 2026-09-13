@@ -266,6 +266,11 @@ impl TestEnvironment {
     self.remote_files.lock().insert(String::from(path), Err(anyhow!("{}", err)));
   }
 
+  /// Makes the url respond with a 404 from now on.
+  pub fn remove_remote_file(&self, path: &str) {
+    self.remote_files.lock().remove(path);
+  }
+
   pub fn get_remote_file(&self, url: &str) -> Result<Option<Vec<u8>>> {
     let remote_files = self.remote_files.lock();
     match remote_files.get(&String::from(url)) {
