@@ -603,7 +603,8 @@ fn parse_config_arg<TStdInReader: StdInReader>(
   sub_command_matches: &ArgMatches,
   std_in_reader: &TStdInReader,
 ) -> Result<ConfigArg> {
-  if value != "-" && !value.trim_start().starts_with('{') {
+  let reads_stdin = names_stdin(value);
+  if !reads_stdin && !is_inline_config(value) {
     return Ok(ConfigArg::PathOrUrl(value.to_string()));
   }
 
@@ -620,7 +621,7 @@ fn parse_config_arg<TStdInReader: StdInReader>(
     _ => {}
   }
 
-  if value != "-" {
+  if !reads_stdin {
     return Ok(ConfigArg::Text(ConfigArgText {
       text: value.to_string(),
       origin: "<inline config>".to_string(),
@@ -647,6 +648,23 @@ fn parse_config_arg<TStdInReader: StdInReader>(
     text,
     origin: "<stdin>".to_string(),
   }))
+}
+
+/// Whether the `--config` value says to read the configuration from stdin,
+/// either as `-` or by naming stdin's own path.
+fn names_stdin(value: &str) -> bool {
+  matches!(value, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+}
+
+/// Whether the `--config` value is the configuration itself rather than
+/// somewhere to read it from. A file can legitimately be named
+/// `{project}.json`, so an opening brace alone isn't enough to tell them
+/// apart — a json object closes as well as opens. A file named `{project}`,
+/// with no extension after the closing brace, stays ambiguous and is read as
+/// configuration text; `--config ./{project}` names it unambiguously.
+fn is_inline_config(value: &str) -> bool {
+  let value = value.trim();
+  value.starts_with('{') && value.ends_with('}')
 }
 
 /// What else is going to read stdin, which stops the configuration from being
@@ -1130,7 +1148,7 @@ EXAMPLES:
         .long("config")
         .short('c')
         .help(concat!(
-          "Path or url to JSON configuration file, the configuration text itself, or `-` to read it from stdin. ",
+          "Path or url to JSON configuration file, the configuration text itself (a `{...}` object), or `-` to read it from stdin. ",
           "Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.",
         ))
         .value_hint(clap::ValueHint::AnyPath)
@@ -1441,6 +1459,16 @@ mod test {
   }
 
   #[test]
+  fn config_arg_path_that_looks_like_json() {
+    // a file can legitimately be named `{project}.json`, so an opening brace
+    // alone doesn't make the value configuration text
+    for value in ["{project}.json", "{", "{unclosed.json", "  {project}.jsonc  "] {
+      let args = test_args(vec!["fmt", "-c", value]).unwrap();
+      assert_eq!(args.config, Some(ConfigArg::PathOrUrl(value.to_string())), "{:?}", value);
+    }
+  }
+
+  #[test]
   fn config_arg_inline_text() {
     for text in [r#"{ "lineWidth": 80 }"#, "  \n{}"] {
       let args = test_args(vec!["fmt", "-c", text]).unwrap();
@@ -1450,6 +1478,35 @@ mod test {
           text: text.to_string(),
           origin: "<inline config>".to_string(),
         }))
+      );
+    }
+  }
+
+  #[test]
+  fn config_arg_stdin_by_path() {
+    // pointing --config at stdin's own path means the same as `-`
+    for value in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+      let stdin_reader = TestStdInReader::from(r#"{ "lineWidth": 80 }"#);
+      let parsed = parse_args(to_string_args(vec!["fmt", "-c", value]), stdin_reader).unwrap();
+      assert_eq!(
+        parsed.config,
+        Some(ConfigArg::Text(ConfigArgText {
+          text: r#"{ "lineWidth": 80 }"#.to_string(),
+          origin: "<stdin>".to_string(),
+        })),
+        "{:?}",
+        value
+      );
+
+      // so it conflicts with the other readers of stdin the same way
+      let err = parse_args(to_string_args(vec!["fmt", "--stdin", "ts", "-c", value]), TestStdInReader::default())
+        .err()
+        .unwrap();
+      assert_eq!(
+        err.to_string(),
+        "Cannot read the configuration from stdin because --stdin is already reading from it.",
+        "{:?}",
+        value
       );
     }
   }

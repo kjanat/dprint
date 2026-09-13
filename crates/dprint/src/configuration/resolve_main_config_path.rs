@@ -196,7 +196,7 @@ fn resolve_config_arg_source(config: &ConfigArg, cwd: &CanonicalizedPathBuf, env
 /// Whether the path names something to read as a stream rather than an ordinary
 /// file. A directory isn't a regular file either, but it isn't a stream: it
 /// should keep failing on the read the way it always has.
-fn is_stream_path(environment: &impl Environment, path: &Path) -> bool {
+pub fn is_stream_path(environment: &impl Environment, path: &Path) -> bool {
   environment.path_exists(path) && !environment.path_is_file(path) && !matches!(environment.path_kind(path), Some(PathKind::Dir))
 }
 
