@@ -33,6 +33,40 @@ impl std::str::FromStr for ConfigDiscovery {
   }
 }
 
+/// Parses `--config-discovery` while telling clap which values to suggest.
+///
+/// `ConfigDiscovery` accepts more spellings than are worth putting in front of
+/// someone (ex. `1`, `0`, `default`), so the canonical four are surfaced for
+/// shell completions and hidden from `--help`, where the prose already covers
+/// them.
+#[derive(Clone)]
+struct ConfigDiscoveryValueParser;
+
+impl clap::builder::TypedValueParser for ConfigDiscoveryValueParser {
+  type Value = ConfigDiscovery;
+
+  fn parse_ref(&self, cmd: &clap::Command, arg: Option<&clap::Arg>, value: &std::ffi::OsStr) -> Result<Self::Value, clap::Error> {
+    let value = value
+      .to_str()
+      .ok_or_else(|| clap::Error::raw(clap::error::ErrorKind::InvalidUtf8, "invalid utf-8 value\n").with_cmd(cmd))?;
+    value.parse::<ConfigDiscovery>().map_err(|err| {
+      let mut err = clap::Error::raw(clap::error::ErrorKind::InvalidValue, format!("{err}\n"));
+      if let Some(arg) = arg {
+        err.insert(clap::error::ContextKind::InvalidArg, clap::error::ContextValue::String(arg.to_string()));
+      }
+      err.with_cmd(cmd)
+    })
+  }
+
+  fn possible_values(&self) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+    Some(Box::new(
+      ["true", "false", "global", "ignore-descendants"]
+        .into_iter()
+        .map(clap::builder::PossibleValue::new),
+    ))
+  }
+}
+
 impl ConfigDiscovery {
   pub fn is_global(&self) -> bool {
     matches!(self, ConfigDiscovery::Global)
@@ -1178,7 +1212,9 @@ EXAMPLES:
         .long("config-discovery")
         .help("Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.")
         .global(true)
-        .value_parser(clap::value_parser!(ConfigDiscovery))
+        .value_parser(ConfigDiscoveryValueParser)
+        // the help text already lists the accepted values
+        .hide_possible_values(true)
         .value_name("BOOLEAN")
         .num_args(1)
         .require_equals(true)
@@ -1259,6 +1295,7 @@ impl ClapExtensions for clap::Command {
           .long("includes-override")
           .value_name("patterns")
           .help("List of file patterns in quotes to format. This overrides what is specified in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
           .num_args(1..),
       )
       .arg(
@@ -1266,6 +1303,7 @@ impl ClapExtensions for clap::Command {
           .long("excludes")
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This excludes in addition to what is found in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
           .num_args(1..),
       )
       .arg(
@@ -1273,6 +1311,7 @@ impl ClapExtensions for clap::Command {
           .long("excludes-override")
           .value_name("patterns")
           .help("List of file patterns or directories in quotes to exclude when formatting. This overrides what is specified in the config file.")
+          .value_hint(clap::ValueHint::AnyPath)
           .num_args(1..),
       )
       .arg(

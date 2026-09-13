@@ -263,6 +263,28 @@ dprint completions bash > /usr/local/etc/bash_completion.d/dprint.bash
 source /usr/local/etc/bash_completion.d/dprint.bash
 ```
 
+Example (zsh) — the file must be named `_dprint` and live in a directory that's on `$fpath` before `compinit` runs:
+
+```sh
+mkdir -p ~/.zfunc
+dprint completions zsh > ~/.zfunc/_dprint
+```
+
+Then in `~/.zshrc`:
+
+```sh
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+Start a new shell afterwards. If nothing is completed, delete the completion cache with `rm -f ~/.zcompdump*` and start another shell. Re-run `dprint completions zsh` after upgrading dprint to pick up new subcommands and flags.
+
+Example (fish):
+
+```sh
+dprint completions fish > ~/.config/fish/completions/dprint.fish
+```
+
 ## Diagnostic Commands and Flags
 
 ### Outputting file paths
