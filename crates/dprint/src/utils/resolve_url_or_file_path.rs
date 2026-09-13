@@ -116,9 +116,10 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
       _ = cache.set(redirect_url, headers.clone(), &[]);
     }
   };
-  // The previously cached target of the last re-checked redirect that now
-  // points somewhere else, to fall back to when the new target can't be downloaded.
-  let mut previous_chain_url: Option<Url> = None;
+  // The previously cached entry of the last re-checked url whose response now
+  // leads somewhere else (a redirect with a new target, or content that became
+  // a redirect), to fall back to when the new target can't be downloaded.
+  let mut previous_chain: Option<(Url, CacheEntry)> = None;
   // Whether a re-checked redirect now points somewhere else. The content it
   // leads to is then new for this configuration even when it was already cached.
   let mut chain_changed = false;
@@ -154,10 +155,10 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
         // fails (ex. offline). Nothing is written, so it's checked again next time.
         let cached_file = match stale_entry {
           Some(entry) => use_cache_entry(&current_url, entry, chain_changed)?,
-          None => match previous_chain_url.take() {
-            Some(previous_url) => {
+          None => match previous_chain.take() {
+            Some((previous_url, entry)) => {
               chain_changed = false;
-              CachedFile::Redirect(previous_url)
+              use_cache_entry(&previous_url, entry, false)?
             }
             None => return Err(err),
           },
@@ -182,11 +183,11 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
     // follow redirect
     if let Some(location) = result.headers.get("location") {
       let location = current_url.join(location)?;
-      if let Some(previous_location) = stale_entry.as_ref().and_then(|entry| entry.metadata.headers.get("location")) {
-        let previous_location = current_url.join(previous_location)?;
-        if previous_location != location {
+      if let Some(entry) = stale_entry {
+        let previous_location = entry.metadata.headers.get("location").map(|l| current_url.join(l)).transpose()?;
+        if previous_location.as_ref() != Some(&location) {
           chain_changed = true;
-          previous_chain_url = Some(previous_location);
+          previous_chain = Some((current_url.clone(), entry));
         }
       }
       pending_redirects.push((current_url, result.headers));
@@ -773,6 +774,41 @@ mod tests {
       assert_eq!(environment.take_stderr_messages().len(), 2);
 
       // the new redirect wasn't cached, so it's picked up once its target is available
+      environment.add_remote_file(v2_url, "v2".as_bytes());
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v2".as_bytes());
+      assert_eq!(result.is_first_download, true);
+      assert_eq!(result.source, PathSource::new_remote(Url::parse(v2_url).unwrap()));
+      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    });
+  }
+
+  #[test]
+  fn should_use_previous_content_when_it_becomes_a_redirect_whose_target_fails() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://example.com/plugin.json";
+    let v2_url = "https://cdn.example.com/v2/plugin.json";
+    environment.add_remote_file(url, "v1".as_bytes());
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+
+      // the url now redirects to a target that can't be downloaded
+      environment.add_remote_file_redirect(url, v2_url);
+      environment.add_remote_file_error(v2_url, "network down");
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v1".as_bytes());
+      assert_eq!(result.is_first_download, false);
+      assert_eq!(result.source, PathSource::new_remote(Url::parse(url).unwrap()));
+      assert_eq!(
+        environment.take_stderr_messages(),
+        vec!["Using the cached version of https://example.com/plugin.json because checking it for changes failed. network down".to_string()]
+      );
+
+      // then the redirect is followed once its target is available
       environment.add_remote_file(v2_url, "v2".as_bytes());
       let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
       assert_eq!(result.content, "v2".as_bytes());
