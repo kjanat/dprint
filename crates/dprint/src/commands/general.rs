@@ -938,9 +938,10 @@ SOFTWARE.
     let logged_messages = environment.take_stdout_messages();
     assert_eq!(logged_messages.len(), 1);
     // the `files` positional on the `fmt` subcommand should have a file completion
-    // action so that `dprint fmt f<TAB>` completes to `dprint fmt foo.py`
+    // action so that `dprint fmt f<TAB>` completes to `dprint fmt foo.py`, and no
+    // help text, which a shell would render as a description above the matches
     let fmt_section = logged_messages[0].split("(fmt)").nth(1).unwrap().split("(check)").next().unwrap();
-    assert!(fmt_section.lines().any(|line| line.contains("*::files -- ") && line.contains(":_files")));
+    assert!(fmt_section.lines().any(|line| line.trim() == "'*::files:_files' \\"));
   }
 
   /// Every zsh spec that says an option takes a value must also say how to

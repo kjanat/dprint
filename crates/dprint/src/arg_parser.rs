@@ -806,7 +806,7 @@ fn validate_plugin_args_when_no_files(plugins: &[String]) -> Result<()> {
   Ok(())
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum CliArgParserKind {
   ForOutputtingMainHelp,
   ForCompletions,
@@ -998,7 +998,7 @@ EXAMPLES:
     .subcommand(
       Command::new("fmt")
         .about("Formats the source files and writes the result to the file system.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_incremental_arg()
         .arg(
           Arg::new("stdin")
@@ -1039,7 +1039,7 @@ EXAMPLES:
     .subcommand(
       Command::new("check")
         .about("Checks for any files that haven't been formatted.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_incremental_arg()
         .add_allow_no_files_arg()
         .add_only_staged_arg()
@@ -1124,7 +1124,7 @@ EXAMPLES:
       Command::new("file-paths")
         .alias("output-file-paths")
         .about("Prints the resolved file paths for the plugins based on the args and configuration.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_only_staged_arg()
         .add_only_dirty_arg()
     )
@@ -1150,7 +1150,7 @@ EXAMPLES:
       Command::new("format-times")
         .alias("output-format-times")
         .about("Prints the amount of time it takes to format each file. Use this for debugging.")
-        .add_resolve_file_path_args()
+        .add_resolve_file_path_args(kind)
         .add_allow_no_files_arg()
         .add_only_staged_arg()
         .add_only_dirty_arg()
@@ -1262,7 +1262,7 @@ EXAMPLES:
 }
 
 trait ClapExtensions {
-  fn add_resolve_file_path_args(self) -> Self;
+  fn add_resolve_file_path_args(self, kind: CliArgParserKind) -> Self;
   fn add_incremental_arg(self) -> Self;
   fn add_allow_no_files_arg(self) -> Self;
   fn add_diff_format_arg(self) -> Self;
@@ -1271,15 +1271,19 @@ trait ClapExtensions {
 }
 
 impl ClapExtensions for clap::Command {
-  fn add_resolve_file_path_args(self) -> Self {
+  fn add_resolve_file_path_args(self, kind: CliArgParserKind) -> Self {
     use clap::Arg;
     self
-      .arg(
-        Arg::new("files")
-          .help("List of files, directories, or file patterns to format. This can be a subset of what is found in the config file.")
-          .value_hint(clap::ValueHint::AnyPath)
-          .num_args(1..),
-      )
+      .arg({
+        let arg = Arg::new("files").value_hint(clap::ValueHint::AnyPath).num_args(1..);
+        // a positional's help becomes the description a shell shows above the
+        // matches, so a sentence there is a wall of text over the file list
+        if kind == CliArgParserKind::ForCompletions {
+          arg
+        } else {
+          arg.help("List of files, directories, or file patterns to format. This can be a subset of what is found in the config file.")
+        }
+      })
       .arg(
         Arg::new("stdin-files")
           .long("stdin-files")
