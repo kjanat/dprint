@@ -187,7 +187,10 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
         let previous_location = entry.metadata.headers.get("location").map(|l| current_url.join(l)).transpose()?;
         if previous_location.as_ref() != Some(&location) {
           chain_changed = true;
-          previous_chain = Some((current_url.clone(), entry));
+          // keep the earliest so the fallback is what the requested url previously resolved to
+          if previous_chain.is_none() {
+            previous_chain = Some((current_url.clone(), entry));
+          }
         }
       }
       pending_redirects.push((current_url, result.headers));
@@ -230,11 +233,16 @@ fn is_cache_entry_fresh(entry: &CacheEntry, now_secs: u64) -> bool {
 /// commit) promises not to change for its `max-age`, so it's trusted for that
 /// long when that's longer than the default.
 fn freshness_lifetime_secs(headers: &HeadersMap) -> u64 {
-  let directives = || {
+  fn header_values<'a>(headers: &'a HeadersMap, name: &'a str) -> impl Iterator<Item = &'a str> {
     headers
       .iter()
-      .filter(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
-      .flat_map(|(_, value)| value.split(','))
+      .filter(move |(key, _)| key.eq_ignore_ascii_case(name))
+      .map(|(_, value)| value.as_str())
+  }
+
+  let directives = || {
+    header_values(headers, "cache-control")
+      .flat_map(|value| value.split(','))
       .map(|directive| directive.trim())
   };
   if !directives().any(|directive| directive.eq_ignore_ascii_case("immutable")) {
@@ -248,7 +256,10 @@ fn freshness_lifetime_secs(headers: &HeadersMap) -> u64 {
       None
     }
   });
-  std::cmp::max(max_age.unwrap_or(0), REMOTE_FILE_MAX_AGE_SECS)
+  // the response may have already spent part of its lifetime in an
+  // intermediary cache (ex. a CDN), which it reports in the age header
+  let age = header_values(headers, "age").find_map(|value| value.trim().parse::<u64>().ok()).unwrap_or(0);
+  std::cmp::max(max_age.unwrap_or(0).saturating_sub(age), REMOTE_FILE_MAX_AGE_SECS)
 }
 
 pub async fn fetch_file_or_url_bytes(url_or_file_path: &PathSource, environment: &impl Environment) -> Result<Vec<u8>> {
@@ -700,6 +711,13 @@ mod tests {
       &entry(&[("cache-control", "not-immutable")], Some(now - REMOTE_FILE_MAX_AGE_SECS)),
       now
     ));
+    // the age a response already had when downloaded counts against its max-age
+    let aged = &[("cache-control", "max-age=31536000, immutable"), ("Age", "100")];
+    assert!(is_cache_entry_fresh(&entry(aged, Some(now - YEAR + 101)), now));
+    assert!(!is_cache_entry_fresh(&entry(aged, Some(now - YEAR + 100)), now));
+    let nearly_expired = &[("cache-control", "max-age=31536000, immutable"), ("age", "31535900")];
+    assert!(is_cache_entry_fresh(&entry(nearly_expired, Some(now - REMOTE_FILE_MAX_AGE_SECS + 1)), now));
+    assert!(!is_cache_entry_fresh(&entry(nearly_expired, Some(now - REMOTE_FILE_MAX_AGE_SECS)), now));
   }
 
   #[test]
@@ -780,6 +798,48 @@ mod tests {
       assert_eq!(result.is_first_download, true);
       assert_eq!(result.source, PathSource::new_remote(Url::parse(v2_url).unwrap()));
       assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    });
+  }
+
+  #[test]
+  fn should_use_earliest_previous_chain_when_multiple_redirects_change() {
+    const START: u64 = 1_000_000;
+    let environment = TestEnvironment::new();
+    let url = "https://example.com/plugin.json";
+    let v1_url = "https://cdn.example.com/v1/plugin.json";
+    let v2_url = "https://cdn.example.com/v2/plugin.json";
+    let v3_url = "https://cdn.example.com/v3/plugin.json";
+    let other_url = "https://other.example.com/plugin.json";
+    environment.add_remote_file(v1_url, "v1".as_bytes());
+    environment.add_remote_file(other_url, "other".as_bytes());
+    environment.add_remote_file_redirect(url, v1_url);
+    environment.add_remote_file_redirect(v2_url, other_url);
+    environment.set_fs_time(START);
+    environment.clone().run_in_runtime(async move {
+      let base = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v1".as_bytes());
+      // v2 was resolved on its own and is cached as a redirect to another file
+      let result = resolve_url_or_file_path_to_file_with_cache(v2_url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "other".as_bytes());
+
+      // both redirects change and the final target can't be downloaded
+      environment.add_remote_file_redirect(url, v2_url);
+      environment.add_remote_file_redirect(v2_url, v3_url);
+      environment.add_remote_file_error(v3_url, "network down");
+      environment.set_fs_time(START + REMOTE_FILE_MAX_AGE_SECS);
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      // falls back to what the requested url previously resolved to, not to v2's previous target
+      assert_eq!(result.content, "v1".as_bytes());
+      assert_eq!(result.is_first_download, false);
+      assert_eq!(result.source, PathSource::new_remote(Url::parse(v1_url).unwrap()));
+      assert_eq!(environment.take_stderr_messages().len(), 1);
+
+      environment.add_remote_file(v3_url, "v3".as_bytes());
+      let result = resolve_url_or_file_path_to_file_with_cache(url, &base, &environment).await.unwrap();
+      assert_eq!(result.content, "v3".as_bytes());
+      assert_eq!(result.is_first_download, true);
+      assert_eq!(result.source, PathSource::new_remote(Url::parse(v3_url).unwrap()));
     });
   }
 
