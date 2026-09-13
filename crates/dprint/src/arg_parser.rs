@@ -651,9 +651,19 @@ fn parse_config_arg<TStdInReader: StdInReader>(
 }
 
 /// Whether the `--config` value says to read the configuration from stdin,
-/// either as `-` or by naming stdin's own path.
+/// either as `-` or by naming stdin's own path, also as a `file:` url since
+/// the resolver turns one back into its path.
 fn names_stdin(value: &str) -> bool {
-  matches!(value, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+  const STDIN_PATHS: [&str; 3] = ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"];
+  if value == "-" || STDIN_PATHS.contains(&value) {
+    return true;
+  }
+  match url::Url::parse(value) {
+    Ok(url) if url.scheme() == "file" => url
+      .to_file_path()
+      .is_ok_and(|path| STDIN_PATHS.iter().any(|stdin_path| std::path::Path::new(stdin_path) == path)),
+    _ => false,
+  }
 }
 
 /// Whether the `--config` value is the configuration itself rather than
@@ -1485,7 +1495,12 @@ mod test {
   #[test]
   fn config_arg_stdin_by_path() {
     // pointing --config at stdin's own path means the same as `-`
-    for value in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+    let mut values = vec!["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"];
+    // a file url resolves back to the same path, where it's a valid file path at all
+    if cfg!(unix) {
+      values.extend(["file:///dev/stdin", "file:///proc/self/fd/0"]);
+    }
+    for value in values {
       let stdin_reader = TestStdInReader::from(r#"{ "lineWidth": 80 }"#);
       let parsed = parse_args(to_string_args(vec!["fmt", "-c", value]), stdin_reader).unwrap();
       assert_eq!(
