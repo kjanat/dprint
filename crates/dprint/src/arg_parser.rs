@@ -603,7 +603,7 @@ fn parse_config_arg<TStdInReader: StdInReader>(
   sub_command_matches: &ArgMatches,
   std_in_reader: &TStdInReader,
 ) -> Result<ConfigArg> {
-  let reads_stdin = names_stdin(value);
+  let reads_stdin = names_stdin(value, std_in_reader);
   if !reads_stdin && !is_inline_config(value) {
     return Ok(ConfigArg::PathOrUrl(value.to_string()));
   }
@@ -651,19 +651,25 @@ fn parse_config_arg<TStdInReader: StdInReader>(
 }
 
 /// Whether the `--config` value says to read the configuration from stdin,
-/// either as `-` or by naming stdin's own path, also as a `file:` url since
-/// the resolver turns one back into its path.
-fn names_stdin(value: &str) -> bool {
+/// either as `-` or by naming stdin itself: its well known paths, a `file:`
+/// url of one (the resolver turns a file url back into its path), or any
+/// other path that turns out to be stdin when looked at (ex. a symlink to
+/// `/dev/stdin`).
+fn names_stdin(value: &str, std_in_reader: &impl StdInReader) -> bool {
   const STDIN_PATHS: [&str; 3] = ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"];
-  if value == "-" || STDIN_PATHS.contains(&value) {
+  if value == "-" {
     return true;
   }
-  match url::Url::parse(value) {
-    Ok(url) if url.scheme() == "file" => url
-      .to_file_path()
-      .is_ok_and(|path| STDIN_PATHS.iter().any(|stdin_path| std::path::Path::new(stdin_path) == path)),
-    _ => false,
-  }
+  let path = match url::Url::parse(value) {
+    Ok(url) if url.scheme() == "file" => match url.to_file_path() {
+      Ok(path) => path,
+      Err(()) => return false,
+    },
+    // some other url (a single letter scheme is a Windows drive rather than a url)
+    Ok(url) if url.scheme().len() > 1 => return false,
+    _ => std::path::PathBuf::from(value),
+  };
+  STDIN_PATHS.iter().any(|stdin_path| std::path::Path::new(stdin_path) == path) || std_in_reader.is_stdin_path(&path)
 }
 
 /// Whether the `--config` value is the configuration itself rather than
@@ -1490,6 +1496,39 @@ mod test {
         }))
       );
     }
+  }
+
+  #[test]
+  fn config_arg_stdin_by_alias() {
+    // a path that turns out to be stdin when looked at (ex. a symlink to
+    // /dev/stdin, or /proc/thread-self/fd/0) means the same as `-`, however
+    // it's spelled
+    let alias = "/proc/thread-self/fd/0";
+    let stdin_reader = TestStdInReader::from(r#"{ "lineWidth": 80 }"#);
+    stdin_reader.add_stdin_path(alias);
+    let parsed = parse_args(to_string_args(vec!["fmt", "-c", alias]), stdin_reader).unwrap();
+    assert_eq!(
+      parsed.config,
+      Some(ConfigArg::Text(ConfigArgText {
+        text: r#"{ "lineWidth": 80 }"#.to_string(),
+        origin: "<stdin>".to_string(),
+      }))
+    );
+
+    // so it conflicts with the other readers of stdin the same way
+    let stdin_reader = TestStdInReader::default();
+    stdin_reader.add_stdin_path(alias);
+    let err = parse_args(to_string_args(vec!["fmt", "--stdin", "ts", "-c", alias]), stdin_reader)
+      .err()
+      .unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Cannot read the configuration from stdin because --stdin is already reading from it."
+    );
+
+    // while a path that isn't stdin stays a path
+    let parsed = parse_args(to_string_args(vec!["fmt", "-c", "/proc/thread-self/fd/3"]), TestStdInReader::default()).unwrap();
+    assert_eq!(parsed.config, Some(ConfigArg::PathOrUrl("/proc/thread-self/fd/3".to_string())));
   }
 
   #[test]
