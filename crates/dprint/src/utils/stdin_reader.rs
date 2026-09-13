@@ -17,7 +17,8 @@ pub trait StdInReader: Clone + Send + Sync {
 
   /// Whether the path names stdin itself rather than a file of its own (ex.
   /// a symlink to `/dev/stdin`, or `/proc/thread-self/fd/0`), so that
-  /// reading it reads stdin.
+  /// reading it reads stdin. A regular file never is, even when stdin is
+  /// redirected from it.
   fn is_stdin_path(&self, path: &Path) -> bool;
 
   /// Reads stdin line by line, skipping blank lines, without buffering the
@@ -48,6 +49,13 @@ impl StdInReader for RealStdInReader {
     let Ok(path_metadata) = std::fs::metadata(path) else {
       return false;
     };
+    // a regular file is a file of its own even when stdin happens to be
+    // redirected from it (`-c dprint.json < dprint.json`): opening it by path
+    // reads it independently, from its own directory. Only a pipe, terminal
+    // or other device is stdin itself
+    if path_metadata.is_file() {
+      return false;
+    }
     let Ok(stdin_fd) = io::stdin().as_fd().try_clone_to_owned() else {
       return false;
     };
@@ -85,6 +93,19 @@ mod tests {
   use super::*;
   use parking_lot::Mutex;
   use std::sync::Arc;
+
+  #[cfg(unix)]
+  #[test]
+  fn real_reader_never_treats_a_regular_file_as_stdin() {
+    // whatever stdin is while the tests run, a regular file is a file of its
+    // own, so this holds even when stdin is redirected from it
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("dprint.json");
+    std::fs::write(&file_path, "{}").unwrap();
+    assert!(!RealStdInReader.is_stdin_path(&file_path));
+    // and a path that doesn't exist isn't stdin either
+    assert!(!RealStdInReader.is_stdin_path(&dir.path().join("missing.json")));
+  }
 
   #[derive(Default, Clone)]
   pub struct TestStdInReader {
