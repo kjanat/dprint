@@ -53,7 +53,15 @@ pub async fn resolve_url_or_file_path_to_file_with_cache<TEnvironment: Environme
   environment: &TEnvironment,
 ) -> Result<ResolvedFilePathWithBytes> {
   let path_source = resolve_url_or_file_path_to_path_source(url_or_file_path, base, environment)?;
+  resolve_path_source_to_file_with_cache(path_source, environment).await
+}
 
+/// Reads an already resolved path source, for callers that need to look at it
+/// before anything is read.
+pub async fn resolve_path_source_to_file_with_cache<TEnvironment: Environment>(
+  path_source: PathSource,
+  environment: &TEnvironment,
+) -> Result<ResolvedFilePathWithBytes> {
   match &path_source {
     PathSource::Remote(remote_path_source) => resolve_url_to_file_with_cache(&remote_path_source.url, environment).await,
     PathSource::Local(local_path_source) => {

@@ -173,6 +173,13 @@ pub struct TestEnvironment {
   /// succeeding, independent of any running process. Models a flaky deletion
   /// (e.g. a file briefly locked) that succeeds on retry.
   remove_dir_all_failures: Arc<Mutex<usize>>,
+  /// Paths that fail to canonicalize while still being readable, which is how
+  /// a pipe looks on the file system (ex. the `/dev/fd/63` of a shell process
+  /// substitution).
+  uncanonicalizable_paths: Arc<Mutex<Vec<PathBuf>>>,
+  /// Paths that read like a file without being a regular one, which is how a
+  /// fifo behaves (ex. one created with `mkfifo`).
+  fifo_paths: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl TestEnvironment {
@@ -212,9 +219,26 @@ impl TestEnvironment {
       run_command_results: Default::default(),
       running_processes: Default::default(),
       remove_dir_all_failures: Default::default(),
+      uncanonicalizable_paths: Default::default(),
+      fifo_paths: Default::default(),
     };
     env.mk_dir_all("/").unwrap();
     env
+  }
+
+  /// Makes the path fail to canonicalize while still being readable. Together
+  /// with `add_fifo_path` this is how a pipe with no path of its own looks on
+  /// the file system (ex. the `/dev/fd/63` of a shell process substitution).
+  pub fn add_uncanonicalizable_path(&self, path: impl AsRef<Path>) {
+    let path = self.clean_path(path);
+    self.uncanonicalizable_paths.lock().push(path);
+  }
+
+  /// Makes the path read like a file without being a regular one, which is how
+  /// a fifo behaves (ex. one created with `mkfifo`).
+  pub fn add_fifo_path(&self, path: impl AsRef<Path>) {
+    let path = self.clean_path(path);
+    self.fifo_paths.lock().push(path);
   }
 
   pub fn take_stdout_messages(&self) -> Vec<String> {
@@ -650,6 +674,9 @@ impl Environment for TestEnvironment {
 
   fn path_is_file(&self, file_path: impl AsRef<Path>) -> bool {
     let path = self.clean_path(file_path);
+    if self.fifo_paths.lock().contains(&path) {
+      return false;
+    }
     self.sys.fs_is_file_no_err(path)
   }
 
@@ -665,6 +692,12 @@ impl Environment for TestEnvironment {
 
   fn canonicalize(&self, path: impl AsRef<Path>) -> io::Result<CanonicalizedPathBuf> {
     let path = self.clean_path(path);
+    if self.uncanonicalizable_paths.lock().contains(&path) {
+      return Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("Error canonicalizing path '{}'", path.display()),
+      ));
+    }
     // todo: use sys_traits to implement this properly
     // if !self.path_exists(&path) {
     //   Err(io::Error::new(io::ErrorKind::NotFound, "Path not found."))

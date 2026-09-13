@@ -127,7 +127,7 @@ pub async fn run_cli<TEnvironment: Environment>(args: &CliArgs, environment: &TE
           plugin_resolver,
           InitConfigFileOptions {
             global: *global,
-            config_arg: args.config.as_deref(),
+            config_arg: args.config.as_ref().and_then(|config| config.maybe_path_or_url()),
             non_interactive: *yes,
             minimum_dependency_age: minimum_dependency_age.clone(),
           },

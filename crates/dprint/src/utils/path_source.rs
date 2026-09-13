@@ -23,7 +23,18 @@ pub enum PathSource {
 
 impl PathSource {
   pub fn new_local(path: CanonicalizedPathBuf) -> PathSource {
-    PathSource::Local(LocalPathSource { path })
+    PathSource::Local(LocalPathSource { path, display: None })
+  }
+
+  /// Creates a local path source for text that didn't come from `path` on
+  /// disk (ex. configuration provided inline, on stdin, or through a pipe
+  /// such as a shell process substitution).
+  ///
+  /// The path is only a stand-in used to resolve relative paths within the
+  /// text (its parent directory), while `display` is what gets shown to the
+  /// user in messages.
+  pub fn new_local_virtual(path: CanonicalizedPathBuf, display: String) -> PathSource {
+    PathSource::Local(LocalPathSource { path, display: Some(display) })
   }
 
   pub fn new_remote(url: Url) -> PathSource {
@@ -99,7 +110,10 @@ impl PathSource {
 
   pub fn display(&self) -> String {
     match self {
-      PathSource::Local(local) => local.path.display().to_string(),
+      PathSource::Local(local) => match &local.display {
+        Some(display) => display.clone(),
+        None => local.path.display().to_string(),
+      },
       PathSource::Remote(remote) => remote.url.to_string(),
       PathSource::Npm(npm) => npm.specifier.display(),
     }
@@ -140,7 +154,10 @@ impl fmt::Display for PathSource {
       f,
       "{}",
       match self {
-        PathSource::Local(local) => local.path.to_string_lossy().to_string(),
+        PathSource::Local(local) => match &local.display {
+          Some(display) => display.clone(),
+          None => local.path.to_string_lossy().to_string(),
+        },
         PathSource::Remote(remote) => remote.url.to_string(),
         PathSource::Npm(npm) => npm.specifier.display(),
       }
@@ -151,6 +168,9 @@ impl fmt::Display for PathSource {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LocalPathSource {
   pub path: CanonicalizedPathBuf,
+  /// Set when the text didn't come from `path` on disk. See
+  /// `PathSource::new_local_virtual`.
+  pub display: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

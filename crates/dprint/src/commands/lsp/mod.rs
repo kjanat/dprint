@@ -46,6 +46,8 @@ use tower_lsp::lsp_types::TextEdit;
 use url::Url;
 
 use crate::arg_parser::CliArgs;
+use crate::configuration::config_needs_file_message;
+use crate::configuration::is_stream_path;
 use crate::environment::Environment;
 use crate::plugins::PluginResolver;
 
@@ -212,6 +214,21 @@ async fn handle_format_request<TEnvironment: Environment>(
   .await?
 }
 
+/// The `--config` override for the language server, which needs a configuration
+/// file it can re-read for as long as the server runs.
+fn resolve_config_override(args: &CliArgs, environment: &impl Environment) -> anyhow::Result<Option<PathBuf>> {
+  let Some(config) = args.config.as_ref().and_then(|config| config.maybe_path_or_url()) else {
+    return Ok(None);
+  };
+  let path = environment.cwd().join(config);
+  // a pipe hands over its text once and has no file behind it to read again,
+  // so turn it away at startup rather than failing every formatting request
+  if is_stream_path(environment, &path) {
+    anyhow::bail!("{}", config_needs_file_message(&path.to_string_lossy()));
+  }
+  Ok(Some(path))
+}
+
 pub async fn run_language_server<TEnvironment: Environment>(
   args: &CliArgs,
   environment: &TEnvironment,
@@ -221,7 +238,7 @@ pub async fn run_language_server<TEnvironment: Environment>(
   let stdout = tokio::io::stdout();
   let (tx, rx) = mpsc::unbounded_channel();
 
-  let config_path = args.config.as_ref().map(|config| environment.cwd().join(config));
+  let config_path = resolve_config_override(args, environment)?;
   let recv_task = start_message_handler(environment, plugin_resolver, config_path, rx);
 
   let environment = environment.clone();
@@ -605,6 +622,41 @@ mod test {
         .await;
       assert_eq!(result.unwrap(), $expected);
     };
+  }
+
+  #[test]
+  fn should_reject_a_config_override_that_is_a_stream() {
+    // a `<(...)` process substitution hands its text over once and has no file
+    // behind it for the server to read again
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dev/fd/63", r#"{ "includes": ["**/*.txt"] }"#)
+      .build();
+    environment.add_fifo_path("/dev/fd/63");
+
+    let mut args = CliArgs::empty();
+    args.config = Some(crate::arg_parser::ConfigArg::PathOrUrl("/dev/fd/63".to_string()));
+    let err = resolve_config_override(&args, &environment).err().unwrap();
+
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "Cannot use the configuration provided by --config (/dev/fd/63) with this sub command because it needs a ",
+        "configuration file it can read again or write back to. Specify a file path instead (ex. --config dprint.json)."
+      )
+    );
+  }
+
+  #[test]
+  fn should_resolve_a_config_override_that_is_a_file() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "includes": ["**/*.txt"] }"#)
+      .build();
+
+    let mut args = CliArgs::empty();
+    args.config = Some(crate::arg_parser::ConfigArg::PathOrUrl("dprint.json".to_string()));
+
+    assert_eq!(resolve_config_override(&args, &environment).unwrap(), Some(PathBuf::from("/dprint.json")));
+    assert_eq!(resolve_config_override(&CliArgs::empty(), &environment).unwrap(), None);
   }
 
   #[test]
