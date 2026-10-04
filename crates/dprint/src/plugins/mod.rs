@@ -17,10 +17,14 @@ pub use repo::*;
 pub use resolver::*;
 pub use types::*;
 
+pub use implementations::WASM_COMPILE_WORKER_ARG;
 pub use implementations::WASM_PLUGIN_THREAD_STACK_SIZE;
+#[cfg(test)]
 pub use implementations::compile_wasm;
+pub use implementations::compile_wasm_supervised;
 pub use implementations::exec_command_program;
 pub use implementations::is_builtin_exec_reference;
+pub use implementations::run_wasm_compile_worker;
 pub use implementations::wasm_precompile_compatibility_hash;
 pub use name_resolution::PluginNameResolutionMaps;
 pub use npm_resolution::FetchNpmLatestInfo;

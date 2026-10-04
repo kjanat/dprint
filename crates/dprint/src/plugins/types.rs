@@ -11,7 +11,7 @@ use crate::utils::parse_npm_specifier;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 use crate::utils::validate_plugin_extension;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CompilationResult {
   pub bytes: Vec<u8>,
   pub plugin_info: PluginInfo,
