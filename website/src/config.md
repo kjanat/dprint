@@ -37,6 +37,43 @@ See [Setup](/setup).
 }
 ```
 
+## TOML
+
+The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:
+
+```toml
+# :schema https://dprint.dev/schemas/v0.json
+lineWidth = 80
+excludes = ["**/*-lock.json"]
+plugins = [
+  "https://plugins.dprint.dev/typescript-x.x.x.wasm",
+  "https://plugins.dprint.dev/json-x.x.x.wasm",
+  "https://plugins.dprint.dev/markdown-x.x.x.wasm",
+]
+
+# This applies to both JavaScript & TypeScript
+[typescript]
+quoteStyle = "preferSingle"
+"binaryExpression.operatorPosition" = "sameLine"
+
+[json]
+indentWidth = 2
+```
+
+Property names with a dot in them are quoted, like they are in JSON. Arrays of objects (ex. `"overrides"` or the exec plugin's `"commands"`) are arrays of tables, ex. `[[exec.commands]]`.
+
+Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
+
+### Editor support with tombi
+
+[Tombi](https://github.com/tombi-toml/tombi) reads the `#:schema` comment to validate and complete the file. It can also give each plugin's table its plugin's schema through "sub schemas". Print those for your configuration file with:
+
+```shellsession
+dprint tombi-schemas >> tombi.toml
+```
+
+The plugins' schemas are versioned, so run it again after updating plugins.
+
 ## Plugins
 
 The `plugins` property specifies which plugins to use for formatting. These may be URLs or file paths to a WebAssembly file of the plugin.

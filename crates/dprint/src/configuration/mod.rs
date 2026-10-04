@@ -1,3 +1,4 @@
+mod config_file_format;
 mod deserialize_config;
 mod get_global_config;
 mod get_init_config_file_text;
@@ -7,6 +8,8 @@ mod resolve_config;
 mod resolve_main_config_path;
 mod types;
 
+pub use config_file_format::ConfigFileFormat;
+pub use config_file_format::json_config_text_to_toml;
 pub use deserialize_config::*;
 pub use get_global_config::*;
 pub use get_init_config_file_text::*;

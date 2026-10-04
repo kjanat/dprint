@@ -13,9 +13,9 @@ use thiserror::Error;
 use crate::arg_parser::CliArgs;
 use crate::arg_parser::ConfigDiscovery;
 use crate::arg_parser::SubCommand;
+use crate::configuration::ConfigFileFormat;
 use crate::configuration::ConfigMap;
 use crate::configuration::ConfigMapValue;
-use crate::configuration::deserialize_config;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
 use crate::patterns::process_config_pattern;
@@ -451,7 +451,8 @@ struct ConfigPathContext<'a> {
 }
 
 fn get_config_map_from_path(path: ConfigPathContext) -> Result<ConfigMap> {
-  let mut result = match deserialize_config(path.current.content) {
+  let format = ConfigFileFormat::from_source(path.current.source, path.current.content);
+  let mut result = match format.deserialize(path.current.content) {
     Ok(map) => map,
     Err(e) => bail!("Error deserializing. {}", e),
   };

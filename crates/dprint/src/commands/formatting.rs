@@ -492,6 +492,78 @@ mod test {
   }
 
   #[test]
+  fn should_format_with_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file(
+        "/dprint.toml",
+        "#:schema https://dprint.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_toml");
+  }
+
+  #[test]
+  fn should_prefer_json_config_over_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file(
+        "/dprint.toml",
+        "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+      )
+      .write_file(
+        "/dprint.json",
+        r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"], "test-plugin": { "ending": "json" } }"#,
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_json");
+  }
+
+  #[test]
+  fn should_extend_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://example.com/base.toml", "[test-plugin]\nending = \"remote_toml\"\n")
+      .write_file(
+        "/dprint.json",
+        r#"{ "extends": "https://example.com/base.toml", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_remote_toml");
+  }
+
+  #[test]
+  fn should_use_toml_config_text_from_the_cli() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin().write_file("/file.txt", "text").build();
+    let config = "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n[test-plugin]\nending = \"inline\"";
+    run_test_cli(vec!["fmt", "--config", config, "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_inline");
+  }
+
+  #[test]
   fn should_format_files() {
     let file_path1 = "/file.txt";
     let file_path2 = "/file.txt_ps";

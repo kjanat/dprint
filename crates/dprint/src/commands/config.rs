@@ -111,6 +111,10 @@ pub async fn init_config_file<TEnvironment: Environment>(
     },
   )
   .await?;
+  let text = match ConfigFileFormat::from_path(&config_file_path) {
+    ConfigFileFormat::Json => text,
+    ConfigFileFormat::Toml => crate::configuration::json_config_text_to_toml(&text)?,
+  };
   if let Some(parent) = config_file_path.parent() {
     _ = environment.mk_dir_all(parent);
   }
@@ -172,7 +176,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
   }
 
   let file_text = environment.read_file(&config_file_path)?;
-  let file_text = add_plugins_to_config(&file_text, &[], &entries)?;
+  let file_text = ConfigFileFormat::from_path(&config_file_path).add_plugins(&file_text, &[], &entries)?;
   environment.write_file(&config_file_path, &file_text)?;
   log_stdout_info!(
     environment,
@@ -329,7 +333,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
   };
 
   let file_text = environment.read_file(&config_path)?;
-  let file_text = add_plugins_to_config(&file_text, &npm_packages_to_replace, &plugin_urls_to_add)?;
+  let file_text = ConfigFileFormat::from_path(&config_path).add_plugins(&file_text, &npm_packages_to_replace, &plugin_urls_to_add)?;
   environment.write_file(&config_path, &file_text)?;
 
   if update_package_json && !package_json_additions.is_empty() {
@@ -499,7 +503,7 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
               Some(resolved) => (resolved.version.clone(), resolved.as_source_reference()),
               None => (plugin.version.clone(), plugin.as_source_reference()?),
             };
-            let file_text = update_plugin_in_config(
+            let file_text = ConfigFileFormat::from_path(config_path).update_plugin(
               &file_text,
               &PluginUpdateInfo {
                 name: config_plugin.info().name.to_string(),
@@ -958,7 +962,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     for result in plugins_to_update {
       match result {
         Ok(info) => {
-          let new_file_text = update_plugin_in_config(&file_text, &info);
+          let new_file_text = ConfigFileFormat::from_path(config_path).update_plugin(&file_text, &info);
           // the plugin may come from an `extends`ed config, in which case there's
           // no entry here to move. A version bump in that situation stops being
           // reported once the extended config updates, but a move to npm never
@@ -1080,7 +1084,8 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
     let Some(mut file_text) = dry_run_texts.get(config_path).cloned() else {
       continue;
     };
-    let config_map = match deserialize_config_raw(&file_text) {
+    let format = ConfigFileFormat::from_path(config_path);
+    let config_map = match format.deserialize_raw(&file_text) {
       Ok(map) => map,
       Err(err) => {
         log_warn!(environment, "Failed deserializing config file '{}': {:#}", config_path.display(), err);
@@ -1126,7 +1131,7 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
         continue;
       }
 
-      let result = apply_config_changes(&file_text, config_key, &changes);
+      let result = format.apply_changes(&file_text, config_key, &changes);
       all_diagnostics.extend(result.diagnostics);
       file_text = result.new_text;
     }
@@ -1193,7 +1198,8 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
       continue;
     }
     let mut file_text = environment.read_file(config_path)?;
-    let config_map = match deserialize_config_raw(&file_text) {
+    let format = ConfigFileFormat::from_path(config_path);
+    let config_map = match format.deserialize_raw(&file_text) {
       Ok(map) => map,
       Err(err) => {
         log_warn!(environment, "Failed deserializing config file '{}': {:#}", config_path.display(), err);
@@ -1241,7 +1247,7 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
         continue;
       }
 
-      let result = apply_config_changes(&file_text, config_key, &changes);
+      let result = format.apply_changes(&file_text, config_key, &changes);
       all_diagnostics.extend(result.diagnostics);
       file_text = result.new_text;
     }
@@ -1623,6 +1629,64 @@ pub async fn output_resolved_config<TEnvironment: Environment>(
   Ok(())
 }
 
+/// Prints tombi `[[schemas]]` entries for the configuration file: dprint's
+/// schema for the file, and each plugin's schema for its table (a tombi "sub
+/// schema"). The plugin schemas are versioned, so this is run again after
+/// updating plugins.
+pub async fn output_tombi_schemas<TEnvironment: Environment>(
+  args: &CliArgs,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<()> {
+  let config = resolve_config_from_args(args, environment).await?;
+  let config_path = match &config.source {
+    PathSource::Local(local) if local.display.is_none() => local.path.clone(),
+    _ => bail!("Expected a local configuration file, but the configuration was {}.", config.source.display()),
+  };
+  if ConfigFileFormat::from_path(&config_path) != ConfigFileFormat::Toml {
+    log_warn!(
+      environment,
+      "Note: {} isn't a TOML file, which tombi doesn't read. Maybe use dprint.toml?",
+      config_path.display()
+    );
+  }
+  // tombi resolves the patterns relative to its configuration file, which is
+  // usually in the cwd
+  let cwd = environment.cwd();
+  let include = config_path
+    .strip_prefix(&cwd)
+    .unwrap_or(config_path.as_ref())
+    .to_string_lossy()
+    .replace('\\', "/");
+
+  let mut plugins = Vec::new();
+  for plugin in plugin_resolver.resolve_plugins(config.plugins.clone()).await? {
+    let info = plugin.info();
+    if !info.config_schema_url.is_empty() {
+      plugins.push((info.config_key.clone(), info.config_schema_url.clone()));
+    }
+  }
+
+  let schema = |root: Option<&str>, path: &str| {
+    let mut table = toml_edit::Table::new();
+    if let Some(root) = root {
+      table.insert("root", toml_edit::value(root));
+    }
+    table.insert("path", toml_edit::value(path));
+    table.insert("include", toml_edit::value(toml_edit::Array::from_iter([include.as_str()])));
+    table
+  };
+  let mut schemas = toml_edit::ArrayOfTables::new();
+  schemas.push(schema(None, "https://dprint.dev/schemas/v0.json"));
+  for (config_key, schema_url) in &plugins {
+    schemas.push(schema(Some(config_key), schema_url));
+  }
+  let mut document = toml_edit::DocumentMut::new();
+  document.insert("schemas", toml_edit::Item::ArrayOfTables(schemas));
+  environment.log_machine_readable(format!("# add to tombi.toml\n{}", document).as_bytes());
+  Ok(())
+}
+
 /// The names of the plugins a config file resolves to, skipping (with a
 /// warning) the ones that fail to resolve.
 async fn get_config_file_plugin_names<TEnvironment: Environment>(
@@ -1941,6 +2005,82 @@ mod test {
       ]
     );
     assert_eq!(environment.read_file("./test.config.json").unwrap(), expected_text);
+  }
+
+  #[test]
+  fn should_initialize_toml_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .with_info_file(|info| {
+        info.add_plugin(TestInfoFilePlugin {
+          name: "dprint-plugin-typescript".to_string(),
+          version: "0.17.2".to_string(),
+          url: "https://plugins.dprint.dev/typescript-0.17.2.wasm".to_string(),
+          config_key: Some("typescript".to_string()),
+          file_extensions: vec!["ts".to_string()],
+          config_excludes: vec![],
+          ..Default::default()
+        });
+      })
+      .build();
+    let expected_json = environment.clone().run_in_runtime({
+      let environment = environment.clone();
+      async move {
+        let expected_text = get_init_config_file_text(&environment, Default::default()).await.unwrap();
+        environment.clear_logs();
+        expected_text
+      }
+    });
+    run_test_cli(vec!["init", "--config", "./dprint.toml"], &environment).unwrap();
+    environment.take_stderr_messages();
+    assert_eq!(environment.take_stdout_messages()[0], "\nCreated ./dprint.toml");
+    let text = environment.read_file("./dprint.toml").unwrap();
+    assert_eq!(text, crate::configuration::json_config_text_to_toml(&expected_json).unwrap());
+    assert!(text.starts_with("#:schema https://dprint.dev/schemas/v0.json\n"), "{}", text);
+  }
+
+  #[test]
+  fn config_add_to_toml_config() {
+    let environment = get_setup_env(SetupEnvOptions {
+      config_has_wasm: false,
+      config_has_wasm_checksum: false,
+      config_has_process: false,
+      remote_has_wasm_checksum: false,
+      remote_has_process_checksum: false,
+    });
+    environment.remove_file("./dprint.json").unwrap();
+    environment.write_file("./dprint.toml", "# formatting\nlineWidth = 80\n").unwrap();
+    run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
+    assert_eq!(
+      environment.read_file("./dprint.toml").unwrap(),
+      "# formatting\nlineWidth = 80\nplugins = [\n  \"https://plugins.dprint.dev/test-plugin.wasm\",\n]\n"
+    );
+  }
+
+  #[test]
+  fn should_output_tombi_schemas() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
+      .build();
+    run_test_cli(vec!["tombi-schemas"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(
+      environment.take_stdout_messages(),
+      vec![
+        r#"# add to tombi.toml
+[[schemas]]
+path = "https://dprint.dev/schemas/v0.json"
+include = ["dprint.toml"]
+
+[[schemas]]
+root = "test-plugin"
+path = "https://plugins.dprint.dev/test/schema.json"
+include = ["dprint.toml"]
+"#
+      ]
+    );
   }
 
   #[test]
