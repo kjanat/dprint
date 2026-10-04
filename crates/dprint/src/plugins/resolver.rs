@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use super::InitializedPlugin;
 use super::implementations::WasmModuleCreator;
+use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
 use crate::environment::Environment;
 use crate::plugins::Plugin;
@@ -42,6 +43,11 @@ impl PluginWrapper {
 
   pub fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
     self.plugin.resolution_cache()
+  }
+
+  /// The schema of the plugin's configuration when it's built into dprint.
+  pub fn config_schema(&self) -> Option<&'static str> {
+    self.plugin.config_schema()
   }
 
   pub async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
@@ -132,6 +138,9 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     };
     cell
       .get_or_try_init(|| async {
+        if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
+          return Ok(Rc::new(PluginWrapper::new(plugin)));
+        }
         match create_plugin(&self.plugin_cache, self.environment.clone(), &plugin_reference, &self.wasm_module_creator).await {
           Ok(plugin) => Ok(Rc::new(PluginWrapper::new(plugin))),
           Err(err) => {

@@ -10,6 +10,7 @@ use text_size::TextSize;
 use tower_lsp::lsp_types as lsp;
 use url::Url;
 
+use crate::configuration::ConfigFileFormat;
 use crate::configuration::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::Environment;
 
@@ -41,13 +42,14 @@ pub struct ConfigCompletions<TEnvironment: Environment> {
   schema_cache: RefCell<HashMap<String, Option<Rc<Value>>>>,
 }
 
-/// Gets whether the given uri points at a file dprint recognizes as a
-/// configuration file (ex. `dprint.json`).
+/// Gets whether the given uri points at a JSON file dprint recognizes as a
+/// configuration file (ex. `dprint.json`). The completions are for JSON, so a
+/// TOML configuration file is left to a TOML language server.
 pub fn is_config_uri(uri: &Url) -> bool {
   let Some(file_name) = uri.path_segments().and_then(|mut s| s.next_back()) else {
     return false;
   };
-  POSSIBLE_CONFIG_FILE_NAMES.contains(&file_name)
+  POSSIBLE_CONFIG_FILE_NAMES.contains(&file_name) && ConfigFileFormat::from_path(file_name) == ConfigFileFormat::Json
 }
 
 impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
@@ -83,7 +85,11 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
       if let Ok(Some(scope)) = self.scope_container.resolve_by_path(parent).await {
         for plugin in scope.plugins.values() {
           let info = plugin.info();
-          let schema = self.fetch_schema(&info.config_schema_url).await;
+          let schema = match plugin.plugin.config_schema() {
+            // built into dprint, so there's nothing to download
+            Some(schema) => serde_json::from_str(schema).ok().map(Rc::new),
+            None => self.fetch_schema(&info.config_schema_url).await,
+          };
           plugins.push(PluginSchema {
             config_key: info.config_key.clone(),
             name: info.name.clone(),
@@ -963,6 +969,37 @@ mod test {
       .iter()
       .find(|i| i.label == label)
       .unwrap_or_else(|| panic!("missing completion: {}", label))
+  }
+
+  #[test]
+  fn completes_the_built_in_exec_properties_without_downloading() {
+    use crate::environment::TestEnvironmentBuilder;
+    use crate::plugins::PluginCache;
+    use crate::plugins::PluginResolver;
+
+    // no plugin files are served, so this would fail if it tried to download
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r#"{
+  "plugins": ["https://plugins.dprint.dev/exec-0.5.0.json@0000000000000000000000000000000000000000000000000000000000000000"],
+  "exec": { "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }
+}"#,
+      )
+      .build();
+    environment.clone().run_in_runtime(async move {
+      let plugin_resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+      let scope_container = Rc::new(LspPluginsScopeContainer::new(environment.clone(), plugin_resolver, None));
+      let completions = ConfigCompletions::new(environment.clone(), scope_container);
+      let items = completions
+        .completions(Path::new("/dprint.json"), r#"{ "exec": {  } }"#, lsp::Position::new(0, 12))
+        .await
+        .unwrap();
+      let labels = labels(&items);
+      // what only the built-in exec has
+      assert!(labels.contains(&"playWithFire".to_string()), "{:?}", labels);
+      assert!(labels.contains(&"setupTimeout".to_string()), "{:?}", labels);
+    });
   }
 
   #[test]

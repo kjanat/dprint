@@ -19,7 +19,9 @@ use crate::utils::ResolvedFilePathWithTextRef;
 use crate::utils::resolve_path_source_to_file_with_cache;
 use crate::utils::resolve_url_or_file_path_to_path_source;
 
-pub static POSSIBLE_CONFIG_FILE_NAMES: [&str; 4] = ["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc"];
+/// The names of configuration files, in order of preference. The TOML ones are
+/// last so a directory with both keeps using its JSON file.
+pub static POSSIBLE_CONFIG_FILE_NAMES: [&str; 6] = ["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc", "dprint.toml", ".dprint.toml"];
 
 #[derive(Debug)]
 pub struct ResolvedConfigPathWithText {
@@ -303,7 +305,7 @@ fn resolve_global_config_path_and_text_detail(environment: &impl Environment) ->
     Ok(dir) => dir,
     Err(err) => return Ok(ResolveGlobalConfigPathResult::FailedResolvingSystemDir(err)),
   };
-  for name in ["dprint.jsonc", "dprint.json"] {
+  for name in ["dprint.jsonc", "dprint.json", "dprint.toml"] {
     let file_path = global_folder.join_panic_relative(name);
     if let Some(content) = environment.maybe_read_file(&file_path)? {
       return Ok(ResolveGlobalConfigPathResult::Found(ResolvedConfigPathWithText {

@@ -147,6 +147,7 @@ impl CliArgs {
       SubCommand::StdInFmt(..)
         | SubCommand::EditorInfo
         | SubCommand::OutputResolvedConfig(..)
+        | SubCommand::Schema
         | SubCommand::IncrementalState
         | SubCommand::Completions(..)
         | SubCommand::Check(CheckSubCommand { json: true, .. })
@@ -188,6 +189,7 @@ pub enum SubCommand {
   ClearCache,
   OutputFilePaths(OutputFilePathsSubCommand),
   OutputResolvedConfig(OutputResolvedConfigSubCommand),
+  Schema,
   IncrementalState,
   OutputFormatTimes(OutputFormatTimesSubCommand),
   Version,
@@ -233,6 +235,7 @@ impl SubCommand {
       SubCommand::Config(_)
       | SubCommand::ClearCache
       | SubCommand::OutputResolvedConfig(_)
+      | SubCommand::Schema
       | SubCommand::IncrementalState
       | SubCommand::Version
       | SubCommand::License
@@ -564,6 +567,7 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     ("resolved-config", matches) => SubCommand::OutputResolvedConfig(OutputResolvedConfigSubCommand {
       file_path: matches.get_one::<String>("file").map(String::from),
     }),
+    ("schema", _) => SubCommand::Schema,
     ("incremental-state", _) => SubCommand::IncrementalState,
     ("format-times", matches) => SubCommand::OutputFormatTimes(OutputFormatTimesSubCommand {
       patterns: parse_file_patterns(matches, &std_in_reader)?,
@@ -712,9 +716,15 @@ fn names_stdin(value: &str, std_in_reader: &impl StdInReader) -> bool {
 /// apart — a json object closes as well as opens. A file named `{project}`,
 /// with no extension after the closing brace, stays ambiguous and is read as
 /// configuration text; `--config ./{project}` names it unambiguously.
+///
+/// TOML configuration text has a line break or a `key = value`, and parses,
+/// which a path doesn't.
 fn is_inline_config(value: &str) -> bool {
   let value = value.trim();
-  value.starts_with('{') && value.ends_with('}')
+  if value.starts_with('{') && value.ends_with('}') {
+    return true;
+  }
+  (value.contains('\n') || value.contains('=')) && value.parse::<toml_edit::DocumentMut>().is_ok_and(|document| !document.is_empty())
 }
 
 /// What else is going to read stdin, which stops the configuration from being
@@ -1143,6 +1153,11 @@ EXAMPLES:
         )
     )
     .subcommand(
+      Command::new("schema")
+        .alias("output-schema")
+        .about("Prints a JSON schema of the configuration file, including the plugins' configuration.")
+    )
+    .subcommand(
       Command::new("incremental-state")
         .about("Prints the state used to determine whether the incremental cache would be invalidated.")
     )
@@ -1198,8 +1213,8 @@ EXAMPLES:
         .long("config")
         .short('c')
         .help(concat!(
-          "Path or url to JSON configuration file, the configuration text itself (a `{...}` object), or `-` to read it from stdin. ",
-          "Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.",
+          "Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. ",
+          "Defaults to dprint.json(c), .dprint.json(c), dprint.toml or .dprint.toml in current or ancestor directory when not provided.",
         ))
         .value_hint(clap::ValueHint::AnyPath)
         .global(true)

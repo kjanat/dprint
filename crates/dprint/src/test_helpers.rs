@@ -343,6 +343,7 @@ SUBCOMMANDS:
   config             Functionality related to the configuration file.
   file-paths         Prints the resolved file paths for the plugins based on the args and configuration.
   resolved-config    Prints the resolved configuration for the plugins based on the args and configuration.
+  schema             Prints a JSON schema of the configuration file, including the plugins' configuration.
   incremental-state  Prints the state used to determine whether the incremental cache would be invalidated.
   format-times       Prints the amount of time it takes to format each file. Use this for debugging.
   clear-cache        Deletes the plugin cache directory.
@@ -354,7 +355,7 @@ SUBCOMMANDS:
 More details at `dprint help <SUBCOMMAND>`
 
 OPTIONS:
-  -c, --config [<config>]             Path or url to JSON configuration file, the configuration text itself (a `{...}` object), or `-` to read it from stdin. Defaults to dprint.json(c) or .dprint.json(c) in current or ancestor directory when not provided.
+  -c, --config [<config>]             Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. Defaults to dprint.json(c), .dprint.json(c), dprint.toml or .dprint.toml in current or ancestor directory when not provided.
       --config-discovery[=<BOOLEAN>]  Sets the config discovery mode. Set to `false` to completely disable, `ignore-descendants` to avoid finding config files in child directories, or `global` to only use the global config file.
       --plugins <urls/files>...       List of urls or file paths of plugins to use. This overrides what is specified in the config file.
   -L, --log-level <log-level>         Set log level [default: info] [possible values: debug, info, warn, error, silent]

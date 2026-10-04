@@ -58,6 +58,12 @@ pub trait Plugin {
   fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
     None
   }
+
+  /// The schema of the plugin's configuration when it's built into dprint, so
+  /// it isn't downloaded from the plugin info's `config_schema_url`.
+  fn config_schema(&self) -> Option<&'static str> {
+    None
+  }
 }
 
 pub struct FormatConfig {

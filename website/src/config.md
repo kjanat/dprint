@@ -37,6 +37,59 @@ See [Setup](/setup).
 }
 ```
 
+## TOML
+
+The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:
+
+<!-- dprint-ignore -->
+```toml
+#:schema https://dprint.dev/schemas/v0.json
+lineWidth = 80
+excludes = ["**/*-lock.json"]
+plugins = [
+  "https://plugins.dprint.dev/typescript-x.x.x.wasm",
+  "https://plugins.dprint.dev/json-x.x.x.wasm",
+  "https://plugins.dprint.dev/markdown-x.x.x.wasm",
+]
+
+# This applies to both JavaScript & TypeScript
+[typescript]
+quoteStyle = "preferSingle"
+"binaryExpression.operatorPosition" = "sameLine"
+
+[json]
+indentWidth = 2
+```
+
+Property names with a dot in them are quoted, like they are in JSON. Arrays of objects (ex. `"overrides"` or the exec plugin's `"commands"`) are arrays of tables, ex. `[[exec.commands]]`.
+
+Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
+
+### Schema
+
+`dprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
+
+```shellsession
+dprint schema > dprint.schema.json
+```
+
+<!-- dprint-ignore -->
+```toml
+#:schema ./dprint.schema.json
+```
+
+In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
+
+The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
+
+The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
+
+```toml
+[[schemas]]
+path = "dprint.schema.json"
+include = ["dprint.toml"]
+```
+
 ## Plugins
 
 The `plugins` property specifies which plugins to use for formatting. These may be URLs or file paths to a WebAssembly file of the plugin.
