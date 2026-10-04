@@ -27,7 +27,8 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
   }
   let compile_result = dprint_core::async_runtime::spawn_blocking({
     let environment = environment.clone();
-    move || environment.compile_wasm(&file_bytes)
+    let plugin_display = url_or_file_path.display().to_string();
+    move || environment.compile_wasm(&plugin_display, &file_bytes)
   })
   .await??;
   drop(guard);
