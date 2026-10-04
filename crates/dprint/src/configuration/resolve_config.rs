@@ -2487,15 +2487,75 @@ mod tests {
       )
     }
 
+    /// What the tests look at in a resolved configuration.
     struct Resolved {
       plugins: Vec<String>,
+      exec: Exec,
+      messages: Vec<String>,
+    }
+
+    /// The resolved exec configuration, with each command by what it runs.
+    #[derive(Debug, Default, PartialEq)]
+    struct Exec {
+      properties: ExecProperties,
+      overrides: Vec<ExecOverride>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct ExecOverride {
+      files: Vec<String>,
+      properties: ExecProperties,
+    }
+
+    #[derive(Debug, Default, PartialEq)]
+    struct ExecProperties {
       commands: Vec<String>,
       cwd: Option<String>,
-      /// The commands of every override, in order.
-      override_commands: Vec<String>,
-      override_cwds: Vec<String>,
-      exec_keys: Vec<String>,
-      messages: Vec<String>,
+      /// The names of the other properties, so that one a remote configuration
+      /// can't set (ex. `playWithFire`) doesn't go unnoticed.
+      other_keys: Vec<String>,
+    }
+
+    impl ExecProperties {
+      fn new(commands: &[&str], cwd: Option<&str>) -> Self {
+        Self {
+          commands: commands.iter().map(|command| command.to_string()).collect(),
+          cwd: cwd.map(ToOwned::to_owned),
+          other_keys: Vec::new(),
+        }
+      }
+
+      fn from_config(properties: &ConfigKeyMap) -> Self {
+        // what a command runs, or all of it when it doesn't say
+        let command_text = |command: &ConfigKeyValue| match command {
+          ConfigKeyValue::Object(object) => match object.get("command") {
+            Some(ConfigKeyValue::String(text)) => text.clone(),
+            _ => format!("{:?}", command),
+          },
+          _ => format!("{:?}", command),
+        };
+        Self {
+          commands: match properties.get("commands") {
+            Some(ConfigKeyValue::Array(commands)) => commands.iter().map(command_text).collect(),
+            Some(other) => vec![format!("{:?}", other)],
+            None => Vec::new(),
+          },
+          cwd: properties.get("cwd").map(|cwd| match cwd {
+            ConfigKeyValue::String(cwd) => cwd.clone(),
+            other => format!("{:?}", other),
+          }),
+          other_keys: properties.keys().filter(|key| *key != "commands" && *key != "cwd").cloned().collect(),
+        }
+      }
+    }
+
+    impl ExecOverride {
+      fn new(files: &str, commands: &[&str], cwd: Option<&str>) -> Self {
+        Self {
+          files: vec![files.to_string()],
+          properties: ExecProperties::new(commands, cwd),
+        }
+      }
     }
 
     fn resolve(local_config: &str, remote_config: &str) -> Result<Resolved, String> {
@@ -2514,33 +2574,22 @@ mod tests {
       environment.clone().run_in_runtime(async move {
         let result = get_result("/dprint.json", &environment).await.map_err(|err| err.to_string())?;
         let exec = match result.config_map.get("exec") {
-          Some(ConfigMapValue::PluginConfig(exec)) => exec.clone(),
-          _ => Default::default(),
-        };
-        let commands = |properties: &ConfigKeyMap| match properties.get("commands") {
-          Some(ConfigKeyValue::Array(commands)) => commands
-            .iter()
-            .map(|command| match command {
-              ConfigKeyValue::Object(command) => match command.get("command") {
-                Some(ConfigKeyValue::String(command)) => command.clone(),
-                _ => unreachable!(),
-              },
-              _ => unreachable!(),
-            })
-            .collect(),
-          _ => Vec::new(),
-        };
-        let cwd = |properties: &ConfigKeyMap| match properties.get("cwd") {
-          Some(ConfigKeyValue::String(cwd)) => Some(cwd.clone()),
-          _ => None,
+          Some(ConfigMapValue::PluginConfig(exec)) => Exec {
+            properties: ExecProperties::from_config(&exec.properties),
+            overrides: exec
+              .overrides
+              .iter()
+              .map(|override_config| ExecOverride {
+                files: override_config.files.clone(),
+                properties: ExecProperties::from_config(&override_config.properties),
+              })
+              .collect(),
+          },
+          _ => Exec::default(),
         };
         Ok(Resolved {
           plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
-          commands: commands(&exec.properties),
-          cwd: cwd(&exec.properties),
-          override_commands: exec.overrides.iter().flat_map(|o| commands(&o.properties)).collect(),
-          override_cwds: exec.overrides.iter().filter_map(|o| cwd(&o.properties)).collect(),
-          exec_keys: exec.properties.keys().cloned().collect(),
+          exec,
           messages: environment.take_stderr_messages(),
         })
       })
@@ -2566,6 +2615,8 @@ mod tests {
         .to_string()
     }
 
+    const ALL_REMOTE_COMMANDS: [&str; 3] = ["tombi format -", "rustfmt --edition 2024", "evil"];
+
     #[test]
     fn ignores_remote_exec_commands_by_default() {
       let result = resolve(
@@ -2574,7 +2625,7 @@ mod tests {
       )
       .unwrap();
       assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
-      assert_eq!(result.commands, Vec::<String>::new());
+      assert_eq!(result.exec, Exec::default());
       assert_eq!(
         result.messages,
         vec![
@@ -2592,6 +2643,7 @@ mod tests {
     fn ignores_the_remote_exec_plugin_by_default() {
       let result = resolve(&format!(r#"{{ "extends": "{}" }}"#, REMOTE_URL), &remote_config("")).unwrap();
       assert_eq!(result.plugins, Vec::<String>::new());
+      assert_eq!(result.exec, Exec::default());
       assert_eq!(result.messages.len(), 2);
       assert!(
         result.messages[1].starts_with("Note: The exec plugin in remote configuration is ignored"),
@@ -2608,9 +2660,14 @@ mod tests {
       )
       .unwrap();
       assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
-      assert_eq!(result.commands, vec!["tombi format -", "rustfmt --edition 2024", "evil"]);
       // the plugin doesn't see the setting
-      assert_eq!(result.exec_keys, vec!["commands"]);
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&ALL_REMOTE_COMMANDS, None),
+          overrides: Vec::new(),
+        }
+      );
       assert_eq!(result.messages, Vec::<String>::new());
     }
 
@@ -2623,7 +2680,13 @@ mod tests {
       .unwrap();
       assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
       // rustfmt's setup command runs rustup, which isn't listed
-      assert_eq!(result.commands, vec!["tombi format -"]);
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&["tombi format -"], None),
+          overrides: Vec::new(),
+        }
+      );
       assert_eq!(
         result.messages,
         vec![
@@ -2637,7 +2700,7 @@ mod tests {
     fn remote_config_cannot_allow_itself() {
       let result = resolve(&format!(r#"{{ "extends": "{}" }}"#, REMOTE_URL), &remote_config(r#""playWithFire": true,"#)).unwrap();
       assert_eq!(result.plugins, Vec::<String>::new());
-      assert_eq!(result.commands, Vec::<String>::new());
+      assert_eq!(result.exec, Exec::default());
       assert_eq!(
         result.messages[0],
         "Note: \"playWithFire\" is ignored in remote configuration (https://dprint.dev/exec.json). Specify it in a local configuration file."
@@ -2654,17 +2717,17 @@ mod tests {
         &remote_config(""),
       )
       .unwrap();
-      assert_eq!(result.commands, vec!["local"]);
+      assert_eq!(result.exec.properties, ExecProperties::new(&["local"], None));
     }
 
     #[test]
     fn allowed_remote_commands_win_over_lower_precedence_local_ones() {
       let local = |play_with_fire: &str| format!(r#"{{ "extends": ["{}", "./base.json"], "exec": {{ {} }} }}"#, REMOTE_URL, play_with_fire);
       let result = resolve(&local(r#""playWithFire": true"#), &remote_config("")).unwrap();
-      assert_eq!(result.commands, vec!["tombi format -", "rustfmt --edition 2024", "evil"]);
+      assert_eq!(result.exec.properties, ExecProperties::new(&ALL_REMOTE_COMMANDS, None));
       // when not allowed, the local ones apply
       let result = resolve(&local(""), &remote_config("")).unwrap();
-      assert_eq!(result.commands, vec!["local-base"]);
+      assert_eq!(result.exec.properties, ExecProperties::new(&["local-base"], None));
     }
 
     #[test]
@@ -2677,11 +2740,15 @@ mod tests {
         &remote_config_with_overrides(),
       )
       .unwrap();
-      assert_eq!(result.commands, vec!["./local"]);
-      // a relative command would otherwise run from the remote working directory
-      assert_eq!(result.cwd, None);
-      assert_eq!(result.override_commands, Vec::<String>::new());
-      assert_eq!(result.override_cwds, Vec::<String>::new());
+      // a relative command would otherwise run from the remote working
+      // directory, and the override is left without anything
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&["./local"], None),
+          overrides: Vec::new(),
+        }
+      );
       assert_eq!(
         result.messages,
         vec![
@@ -2708,9 +2775,13 @@ mod tests {
         &remote_config_with_overrides(),
       )
       .unwrap();
-      assert_eq!(result.override_commands, vec!["tombi format -"]);
-      assert_eq!(result.cwd, None);
-      assert_eq!(result.override_cwds, Vec::<String>::new());
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::default(),
+          overrides: vec![ExecOverride::new("**/*.txt", &["tombi format -"], None)],
+        }
+      );
       assert_eq!(
         result.messages[1],
         "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": evil"
@@ -2730,11 +2801,20 @@ mod tests {
         &format!(r#"{{ "exec": {{ "cwd": "/base-cwd", "overrides": [{}] }} }}"#, override_config("local-base")),
       )
       .unwrap();
-      // the remote configuration has precedence over the base it's listed before
-      assert_eq!(result.cwd, Some("/remote-cwd".to_string()));
-      assert_eq!(result.override_cwds, vec!["/remote-override-cwd"]);
-      // later overrides win, so they're ordered from lowest to highest precedence
-      assert_eq!(result.override_commands, vec!["local-base", "tombi format -", "evil", "local"]);
+      // The remote configuration has precedence over the base it's listed
+      // before. Later overrides win, so they're ordered from lowest to
+      // highest precedence.
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&[], Some("/remote-cwd")),
+          overrides: vec![
+            ExecOverride::new("**/*.txt", &["local-base"], None),
+            ExecOverride::new("**/*.txt", &["tombi format -", "evil"], Some("/remote-override-cwd")),
+            ExecOverride::new("**/*.txt", &["local"], None),
+          ],
+        }
+      );
     }
 
     #[test]
