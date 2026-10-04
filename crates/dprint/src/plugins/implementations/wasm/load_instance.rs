@@ -203,7 +203,9 @@ fn new_engine(optimize: bool) -> wasmtime::Engine {
   Engine::new(&config).expect("failed to create wasmtime engine")
 }
 
-#[cfg(test)]
+// a mapped file can't be replaced on Windows, which is why modules are only
+// mapped on unix
+#[cfg(all(test, unix))]
 mod test {
   use super::*;
   use crate::test_helpers::WASM_PLUGIN_BYTES;
