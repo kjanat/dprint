@@ -16,6 +16,8 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
 
 The CLI has this plugin built in. When a config references it, the CLI runs it in its own process rather than downloading it, so it works on every platform the CLI does (ex. FreeBSD). To download and run the separate plugin process instead, set `DPRINT_BUILTIN_EXEC=0`.
 
+Compared to the downloaded plugin, the built-in one kills a command that times out or is cancelled instead of leaving it running, and supports a `"setupTimeout"` option (default: `300` seconds) after which a `setupCommand` is killed.
+
 ## Install, Setup, and Configuration
 
 ```shellsession

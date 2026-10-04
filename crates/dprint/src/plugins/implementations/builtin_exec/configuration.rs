@@ -30,6 +30,11 @@ pub struct Configuration {
   /// Formatting commands to run
   pub commands: Vec<CommandConfiguration>,
   pub timeout: u32,
+  /// Seconds a setup command may run before it's killed. Not serialized
+  /// because it can't change formatting output, so it shouldn't invalidate
+  /// the incremental cache.
+  #[serde(skip_serializing)]
+  pub setup_timeout: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -111,6 +116,8 @@ impl Configuration {
       ),
       commands: Vec::new(),
       timeout: get_value(&mut config, "timeout", 30, &mut diagnostics),
+      // setup commands often install a tool, which can take a while
+      setup_timeout: get_value(&mut config, "setupTimeout", 300, &mut diagnostics),
     };
 
     let root_cache_key = get_nullable_value::<String>(&mut config, "cacheKey", &mut diagnostics);

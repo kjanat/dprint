@@ -42,7 +42,11 @@ struct ChildKillOnDrop(std::process::Child);
 
 impl Drop for ChildKillOnDrop {
   fn drop(&mut self) {
-    let _ignore = self.0.kill();
+    // both are no-ops for a child that already exited and was waited on.
+    // waiting reaps a killed child so it doesn't linger as a zombie
+    if self.0.kill().is_ok() {
+      let _ignore = self.0.wait();
+    }
   }
 }
 
@@ -153,7 +157,10 @@ pub async fn format_bytes(
   for command in select_commands(&config, &file_path)? {
     // run the command's setup once before formatting with it for the first time
     if let Some(setup_command) = &command.setup_command {
-      match setup_state.run_once(&command.cwd, setup_command, &token).await? {
+      match setup_state
+        .run_once(&command.cwd, setup_command, Duration::from_secs(config.setup_timeout as u64), &token)
+        .await?
+      {
         SetupRun::Completed => {}
         SetupRun::Cancelled => return Ok(None),
       }
@@ -189,34 +196,39 @@ pub async fn format_bytes(
       handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
     }
 
-    // write file text into child's stdin
-    if command.stdin {
+    // write file text into child's stdin. this happens within the timeout
+    // because a command that never reads its stdin would block the write
+    let stdin_write = if command.stdin {
       let mut stdin = child
         .stdin
         .take()
         .ok_or_else(|| FormatError::new("Cannot open the command's stdin. Perhaps you meant to set the command's \"stdin\" configuration to false?"))?;
       let file_bytes = file_bytes.into_owned();
-      dprint_core::async_runtime::spawn_blocking(move || {
-        stdin
-          .write_all(&file_bytes)
-          .map_err(|err| FormatError::new(format!("Cannot write into the command's stdin. {}", err)))
-      })
-      .await??;
-    }
+      Some(dprint_core::async_runtime::spawn_blocking(move || match stdin.write_all(&file_bytes) {
+        Ok(()) => Ok(()),
+        // the command exited without reading all its input, so let its exit
+        // status and output decide the result
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(FormatError::new(format!("Cannot write into the command's stdin. {}", err))),
+      }))
+    } else {
+      None
+    };
 
-    let child_completed = dprint_core::async_runtime::spawn_blocking(move || match child.wait() {
-      Ok(status) => Ok(status),
-      Err(e) => Err(FormatError::new(format!("Error while waiting for formatter to complete: {}", e))),
-    });
-
+    // the child stays owned by this function, so returning early on a timeout
+    // or cancellation drops it, which kills the process
     let result_future = async {
+      if let Some(stdin_write) = stdin_write {
+        stdin_write.await??;
+      }
+      // the output streams end when the formatter exits
       let handles_future = dprint_core::async_runtime::future::join_all(handles);
-      let (output_result, child_rs, handle_results) = tokio::join!(out_rx, child_completed, handles_future);
-      let exit_status = child_rs??;
-      let output = output_result?;
+      let (output_result, handle_results) = tokio::join!(out_rx, handles_future);
       for handle_result in handle_results {
         handle_result??; // surface any errors capturing
       }
+      let output = output_result?;
+      let exit_status = wait_for_exit(&mut child, "formatter").await?;
       Ok::<_, FormatError>((output, exit_status))
     };
 
@@ -294,6 +306,8 @@ fn timeout_err(config: &Configuration) -> FormatError {
 #[derive(Default, Clone)]
 pub struct SetupState {
   cells: Rc<RefCell<HashMap<String, Rc<OnceCell<()>>>>>,
+  /// Setup commands that timed out, so they aren't retried for every file.
+  timed_out: Rc<RefCell<HashMap<String, String>>>,
 }
 
 enum SetupRun {
@@ -304,29 +318,37 @@ enum SetupRun {
 enum SetupInitError {
   Cancelled,
   Failed(FormatError),
+  TimedOut(String),
 }
 
 impl SetupState {
-  async fn run_once(&self, cwd: &Path, setup_command: &SetupCommand, token: &Arc<dyn CancellationToken>) -> Result<SetupRun, FormatError> {
+  async fn run_once(&self, cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<SetupRun, FormatError> {
     // the cwd is part of the key because the same command run in different
     // directories may produce different results
     let key = format!("{}\0{} {}", cwd.display(), setup_command.executable, setup_command.args.join(" "));
+    if let Some(message) = self.timed_out.borrow().get(&key) {
+      return Err(FormatError::new(message.clone()));
+    }
     let cell = {
       let mut cells = self.cells.borrow_mut();
-      cells.entry(key).or_default().clone()
+      cells.entry(key.clone()).or_default().clone()
     };
     // get_or_try_init ensures only one caller runs the setup at a time and that
     // the others wait for it to finish; a failure is not cached so it can be
     // retried by the next file rather than poisoning all formatting
-    match cell.get_or_try_init(|| run_setup_command(cwd, setup_command, token)).await {
+    match cell.get_or_try_init(|| run_setup_command(cwd, setup_command, timeout, token)).await {
       Ok(()) => Ok(SetupRun::Completed),
       Err(SetupInitError::Cancelled) => Ok(SetupRun::Cancelled),
       Err(SetupInitError::Failed(err)) => Err(err),
+      Err(SetupInitError::TimedOut(message)) => {
+        self.timed_out.borrow_mut().insert(key, message.clone());
+        Err(FormatError::new(message))
+      }
     }
   }
 }
 
-async fn run_setup_command(cwd: &Path, setup_command: &SetupCommand, token: &Arc<dyn CancellationToken>) -> Result<(), SetupInitError> {
+async fn run_setup_command(cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<(), SetupInitError> {
   let mut child = ChildKillOnDrop(
     Command::new(&setup_command.executable)
       .current_dir(cwd)
@@ -346,24 +368,24 @@ async fn run_setup_command(cwd: &Path, setup_command: &SetupCommand, token: &Arc
     handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
   }
 
-  let child_completed = dprint_core::async_runtime::spawn_blocking(move || {
-    child
-      .wait()
-      .map_err(|e| FormatError::new(format!("Error while waiting for setup command to complete: {}", e)))
-  });
-
+  // the child stays owned by this function, so returning on a timeout or
+  // cancellation kills it
   let result_future = async {
     let handles_future = dprint_core::async_runtime::future::join_all(handles);
-    let (child_rs, handle_results) = tokio::join!(child_completed, handles_future);
-    let exit_status = child_rs??;
+    let handle_results = handles_future.await;
     for handle_result in handle_results {
       handle_result??; // surface any errors capturing
     }
-    Ok::<_, FormatError>(exit_status)
+    wait_for_exit(&mut child, "setup command").await
   };
 
   tokio::select! {
     _ = token.wait_cancellation() => Err(SetupInitError::Cancelled),
+    _ = tokio::time::sleep(timeout) => Err(SetupInitError::TimedOut(format!(
+      "Setup command '{}' did not finish within {} seconds, so it was killed. Increase the \"setupTimeout\" configuration if it needs longer.",
+      setup_command.executable,
+      timeout.as_secs(),
+    ))),
     result = result_future => match result {
       Ok(exit_status) if exit_status.success() => Ok(()),
       Ok(exit_status) => Err(SetupInitError::Failed(FormatError::new(format!(
@@ -376,6 +398,25 @@ async fn run_setup_command(cwd: &Path, setup_command: &SetupCommand, token: &Arc
         String::from_utf8_lossy(&err_rx.await.unwrap_or_default())
       )))),
       Err(err) => Err(SetupInitError::Failed(err)),
+    }
+  }
+}
+
+/// Waits for a child that has closed its output streams to exit. It's polled
+/// rather than waited on from another thread so that the child stays owned by
+/// the caller, whose drop kills it.
+async fn wait_for_exit(child: &mut ChildKillOnDrop, description: &str) -> Result<ExitStatus, FormatError> {
+  let mut delay = Duration::from_millis(1);
+  loop {
+    match child.try_wait() {
+      Ok(Some(status)) => return Ok(status),
+      Ok(None) => {
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_millis(50));
+      }
+      Err(err) => {
+        return Err(FormatError::new(format!("Error while waiting for {} to complete: {}", description, err)));
+      }
     }
   }
 }
@@ -428,6 +469,8 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
 mod test {
   use std::path::PathBuf;
   use std::sync::Arc;
+  use std::time::Duration;
+  use std::time::Instant;
 
   use dprint_core::configuration::ConfigKeyMap;
   use dprint_core::plugins::NullCancellationToken;
@@ -466,7 +509,9 @@ mod test {
   #[cfg(unix)]
   #[tokio::test]
   async fn should_error_output_empty_file() {
-    let config = resolve(serde_json::json!({ "commands": [{ "command": "sh -c \"cat > /dev/null\"", "exts": ["txt"] }] }));
+    // `true` exits without reading its input, which used to fail writing the
+    // input (a broken pipe) whenever it exited first
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "true", "exts": ["txt"] }] }));
     assert_eq!(
       format(&config, &"1".repeat(101), &SetupState::default()).await,
       Err(
@@ -497,5 +542,59 @@ mod test {
       assert_eq!(format(&config, "text", &setup_state).await, Ok(None));
     }
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x");
+  }
+
+  /// Gets whether the process running `sleep <seconds>` is still alive.
+  #[cfg(unix)]
+  fn sleep_is_running(seconds: &str) -> bool {
+    let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
+    String::from_utf8_lossy(&output.stdout)
+      .lines()
+      .any(|line| line.trim() == format!("sleep {}", seconds))
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn kills_a_formatter_that_times_out() {
+    // a unique duration so this test finds its own process
+    let config = resolve(serde_json::json!({ "timeout": 1, "commands": [{ "command": "sleep 31.7", "exts": ["txt"] }] }));
+    let start = Instant::now();
+    assert_eq!(
+      format(&config, "text", &SetupState::default()).await,
+      Err("Child process has not returned a result within 1 seconds.".to_string())
+    );
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(!sleep_is_running("31.7"), "the formatter should have been killed");
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn times_out_a_formatter_that_never_reads_its_stdin() {
+    // more than a pipe buffer, so writing it blocks until the formatter reads
+    let config = resolve(serde_json::json!({ "timeout": 1, "commands": [{ "command": "sleep 32.7", "exts": ["txt"] }] }));
+    let text = "a".repeat(1024 * 1024);
+    let start = Instant::now();
+    assert!(format(&config, &text, &SetupState::default()).await.is_err());
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(!sleep_is_running("32.7"), "the formatter should have been killed");
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn kills_a_setup_command_that_times_out_and_does_not_rerun_it() {
+    let config = resolve(serde_json::json!({
+      "setupTimeout": 1,
+      "commands": [{ "command": "cat", "setupCommand": "sleep 33.7", "exts": ["txt"] }]
+    }));
+    let setup_state = SetupState::default();
+    let expected = Err(
+      "Setup command 'sleep' did not finish within 1 seconds, so it was killed. Increase the \"setupTimeout\" configuration if it needs longer.".to_string(),
+    );
+    let start = Instant::now();
+    assert_eq!(format(&config, "text", &setup_state).await, expected);
+    assert!(!sleep_is_running("33.7"), "the setup command should have been killed");
+    // the next file fails right away instead of waiting out the timeout again
+    assert_eq!(format(&config, "text", &setup_state).await, expected);
+    assert!(start.elapsed() < Duration::from_secs(3));
   }
 }
