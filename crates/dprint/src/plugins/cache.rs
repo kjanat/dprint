@@ -549,8 +549,10 @@ where
     } = options;
     self.environment.mk_dir_all(plugins_dir(&self.environment))?;
     let source_checksum = get_sha256_checksum(&file_bytes);
+    // the Wasm plugin entry this one replaces, if any
+    let previous_meta = read_meta(hash, &self.environment).filter(|meta| meta.plugin_kind == PluginKind::Wasm);
     let dest = SetupPluginDest {
-      wasm_file_path: wasm_artifact_path(hash, &self.environment),
+      wasm_file_path: wasm_artifact_path(hash, Some(&source_checksum), &self.environment),
       process_dir_path: process_dir_path(hash, &self.environment),
     };
     let setup_result = setup_plugin(
@@ -565,7 +567,7 @@ where
     )
     .await?;
 
-    let meta = PluginCacheMeta {
+    let mut meta = PluginCacheMeta {
       source: cache_key.to_string(),
       signature: current_signature(&self.environment),
       plugin_kind,
@@ -574,11 +576,34 @@ where
       executable_sub_path: setup_result.executable_sub_path,
       local_stamps,
       source_checksum: Some(source_checksum),
+      previous_module_file_name: None,
     };
+    // The module of the build this one replaces is kept for processes that
+    // read the entry before and load the plugin later (ex. `dprint lsp`), and
+    // the one before it is removed.
+    let mut stale_module_paths = Vec::new();
+    if let Some(previous_meta) = &previous_meta {
+      let previous_module_path = previous_meta.artifact_file_path(hash, &self.environment);
+      if previous_module_path == setup_result.file_path {
+        // the same build compiled again
+        meta.previous_module_file_name = previous_meta.previous_module_file_name.clone();
+      } else {
+        meta.previous_module_file_name = previous_module_path.file_name().map(|name| name.to_string_lossy().into_owned());
+        stale_module_paths.extend(
+          previous_meta
+            .previous_module_file_path(&self.environment)
+            .filter(|path| *path != setup_result.file_path),
+        );
+      }
+    }
     // what the previously set up plugin resolved doesn't apply to this one
     let resolutions_path = resolutions_path(hash, &self.environment);
     let _ = self.environment.remove_file(&resolutions_path);
     write_meta(hash, &meta, &self.environment)?;
+    for path in stale_module_paths {
+      // best effort, as on Windows it can't be removed while being read
+      let _ = self.environment.remove_file(&path);
+    }
 
     Ok(PluginCacheItem {
       file_path: setup_result.file_path,
@@ -789,6 +814,7 @@ mod test {
       executable_sub_path: None,
       local_stamps: None,
       source_checksum: None,
+      previous_module_file_name: None,
     }
   }
 
@@ -802,7 +828,7 @@ mod test {
     let plugin_source = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_artifact_path(&hash, &environment);
+    let expected_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
 
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
     assert_eq!(file_path, expected_file_path);
@@ -900,7 +926,7 @@ mod test {
     let plugin_source = PluginSourceReference::new_local(original_file_path.clone());
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_artifact_path(&hash, &environment);
+    let expected_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
 
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
     assert_eq!(file_path, expected_file_path);
@@ -915,17 +941,32 @@ mod test {
     assert_eq!(stamps.len(), 1);
     assert_eq!(stamps[0].path, "/test.wasm");
 
-    // changing the file invalidates the cache and recompiles. The artifact keeps
-    // the same hash-derived filename (overwritten in place — no churn).
+    // changing the file invalidates the cache and recompiles. The new build's
+    // module is a file of its own (so a process that read the entry before
+    // never loads it), and the previous build's module is kept for such a
+    // process.
     environment.write_file_bytes(&original_file_path, &WASM_PLUGIN_0_1_0_BYTES).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
-    assert_eq!(item.file_path, expected_file_path);
+    let second_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)), &environment);
+    assert_eq!(item.file_path, second_file_path);
     assert_eq!(item.info.version, "0.1.0");
     assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert!(environment.path_exists(&file_path));
 
-    // forget removes it
-    plugin_cache.forget(&plugin_source).await.unwrap();
+    // the next build removes the one before the previous
+    let third_build = [WASM_PLUGIN_0_1_0_BYTES, &[0x00, 0x05, 0x04, b't', b'e', b's', b't']].concat();
+    environment.write_file_bytes(&original_file_path, &third_build).unwrap();
+    let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
+    let third_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(&third_build)), &environment);
+    assert_eq!(item.file_path, third_file_path);
+    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
     assert!(!environment.path_exists(&file_path));
+    assert!(environment.path_exists(&second_file_path));
+
+    // forget removes both that are left
+    plugin_cache.forget(&plugin_source).await.unwrap();
+    assert!(!environment.path_exists(&second_file_path));
+    assert!(!environment.path_exists(&third_file_path));
     assert!(read_meta(&hash, &environment).is_none());
 
     Ok(())
@@ -981,7 +1022,7 @@ mod test {
 
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let artifact = wasm_artifact_path(&hash, &environment);
+    let artifact = wasm_artifact_path(&hash, None, &environment);
     environment.mk_dir_all(plugins_dir(&environment)).unwrap();
     environment.write_file(&artifact, "compiled").unwrap();
     write_meta(&hash, &make_wasm_meta(&cache_key, "test-plugin", "1.0.0", &environment), &environment)?;
