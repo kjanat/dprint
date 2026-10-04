@@ -22,7 +22,6 @@ use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
-use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -33,6 +32,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
+use dprint_core::owned_child::OwnedChild;
 use dprint_core::plugins::PluginInfo;
 
 use super::super::NoRetrySetupError;
@@ -598,7 +598,8 @@ fn run_attempts<TEnvironment: Environment>(
 // ---- worker process ----
 
 struct ProcessWorker {
-  child: Child,
+  /// Killed (with anything it started) when this is dropped.
+  child: OwnedChild,
   pid: sysinfo::Pid,
   system: sysinfo::System,
   messages: mpsc::Receiver<std::io::Result<WorkerMessage>>,
@@ -617,7 +618,7 @@ impl ProcessWorker {
     if !optimize {
       command.arg(UNOPTIMIZED_ARG);
     }
-    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child = OwnedChild::spawn(command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
 
     // these threads end once the worker exits and its pipes close
     let mut stdin = child.stdin.take().unwrap();
@@ -720,16 +721,8 @@ impl Worker for ProcessWorker {
   }
 
   fn kill(&mut self) {
+    // also waits for it to exit
     let _ = self.child.kill();
-    let _ = self.child.wait();
-  }
-}
-
-impl Drop for ProcessWorker {
-  fn drop(&mut self) {
-    if !matches!(self.child.try_wait(), Ok(Some(_))) {
-      self.kill();
-    }
   }
 }
 

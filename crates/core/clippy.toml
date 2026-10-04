@@ -1,0 +1,3 @@
+disallowed-methods = [
+  { path = "std::process::Command::spawn", reason = "Spawn processes with dprint_core::owned_child::OwnedChild, which kills them and what they start when they're dropped. Waiting in place with `output` or `status` is fine." },
+]

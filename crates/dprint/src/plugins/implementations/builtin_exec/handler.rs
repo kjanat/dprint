@@ -2,8 +2,6 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,36 +32,12 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::oneshot::Sender;
 
+use dprint_core::owned_child::OwnedChild;
+
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
-
-struct ChildKillOnDrop(std::process::Child);
-
-impl Drop for ChildKillOnDrop {
-  fn drop(&mut self) {
-    // both are no-ops for a child that already exited and was waited on.
-    // waiting reaps a killed child so it doesn't linger as a zombie
-    if self.0.kill().is_ok() {
-      let _ignore = self.0.wait();
-    }
-  }
-}
-
-impl Deref for ChildKillOnDrop {
-  type Target = std::process::Child;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-impl DerefMut for ChildKillOnDrop {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.0
-  }
-}
 
 #[derive(Default)]
 pub struct ExecHandler {
@@ -170,16 +144,19 @@ pub async fn format_bytes(
     // format here
     let args = maybe_substitute_variables(&file_path, &config, command)?;
 
-    let mut child = ChildKillOnDrop(
+    // killed with whatever it started (ex. the `node` process of an npm
+    // installed command) once this returns, including on a timeout or
+    // cancellation. Untied, since a command runs for every file and ends
+    // on its own once dprint is gone and its pipes close.
+    let mut child = OwnedChild::spawn_untied(
       Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
         .current_dir(&command.cwd)
         .stdout(Stdio::piped())
         .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::piped())
-        .args(args)
-        .spawn()
-        .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?,
-    );
+        .args(args),
+    )
+    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
 
     // capturing stdout
     let (out_tx, out_rx) = oneshot::channel();
@@ -396,17 +373,16 @@ async fn run_setup_command(
   timeout: Duration,
   token: &Arc<dyn CancellationToken>,
 ) -> Result<(), SetupInitError> {
-  let mut child = ChildKillOnDrop(
+  let mut child = OwnedChild::spawn(
     Command::new(executable)
       .current_dir(cwd)
       .stdin(Stdio::null())
       // a plugin must not write to stdout (it's the protocol channel)
       .stdout(Stdio::null())
       .stderr(Stdio::piped())
-      .args(&setup_command.args)
-      .spawn()
-      .map_err(|e| SetupInitError::Failed(FormatError::new(format!("Cannot start setup command process: {}", e))))?,
-  );
+      .args(&setup_command.args),
+  )
+  .map_err(|e| SetupInitError::Failed(FormatError::new(format!("Cannot start setup command process: {}", e))))?;
 
   // capture stderr to surface it if the command fails
   let (err_tx, err_rx) = oneshot::channel();
@@ -449,7 +425,7 @@ async fn run_setup_command(
 /// Waits for a child that has closed its output streams to exit. It's polled
 /// rather than waited on from another thread so that the child stays owned by
 /// the caller, whose drop kills it.
-async fn wait_for_exit(child: &mut ChildKillOnDrop, description: &str) -> Result<ExitStatus, FormatError> {
+async fn wait_for_exit(child: &mut OwnedChild, description: &str) -> Result<ExitStatus, FormatError> {
   let mut delay = Duration::from_millis(1);
   loop {
     match child.try_wait() {

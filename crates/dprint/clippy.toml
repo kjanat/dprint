@@ -1,4 +1,5 @@
 disallowed-methods = [
+  { path = "std::process::Command::spawn", reason = "Spawn processes with dprint_core::owned_child::OwnedChild, which kills them and what they start when they're dropped. Waiting in place with `output` or `status` is fine." },
   { path = "std::env::current_dir", reason = "File system operations should be done using an environment" },
   { path = "std::path::Path::exists", reason = "File system operations should be done using an environment" },
   { path = "std::path::Path::canonicalize", reason = "File system operations should be done using an environment" },

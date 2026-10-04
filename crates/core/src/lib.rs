@@ -15,3 +15,6 @@ pub mod plugins;
 
 #[cfg(feature = "async_runtime")]
 pub mod async_runtime;
+
+#[cfg(feature = "process")]
+pub mod owned_child;
