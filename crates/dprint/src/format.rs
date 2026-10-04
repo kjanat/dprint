@@ -3,6 +3,7 @@ use anyhow::bail;
 use dprint_core::async_runtime::future;
 use dprint_core::plugins::NullCancellationToken;
 use std::borrow::Cow;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::environment::Environment;
+use crate::incremental::FileMetadata;
 use crate::incremental::IncrementalFile;
 use crate::resolution::GetPluginResult;
 use crate::resolution::InitializedPluginWithConfig;
@@ -21,6 +23,8 @@ use crate::resolution::PluginsScope;
 use crate::resolution::PluginsScopeAndPaths;
 use crate::utils::ErrorCountLogger;
 use crate::utils::Semaphore;
+use sys_traits::FsMetadata;
+use sys_traits::FsMetadataValue;
 
 struct TaskWork {
   semaphore: Rc<Semaphore>,
@@ -141,15 +145,18 @@ where
         }
 
         let plugins = Rc::new(plugins);
-        let mut format_handles = Vec::with_capacity(task_work.file_paths.len());
-        for file_path in task_work.file_paths.into_iter() {
+        let file_paths = match &incremental_file {
+          Some(incremental_file) => remove_known_formatted_files(&environment, incremental_file, task_work.file_paths, max_threads).await,
+          None => task_work.file_paths,
+        };
+        let mut format_handles = Vec::with_capacity(file_paths.len());
+        for file_path in file_paths.into_iter() {
           let permit = match task_work.semaphore.acquire().await {
             Ok(permit) => permit,
             Err(_) => return, // semaphore was closed, so stop working
           };
           let semaphore = task_work.semaphore.clone();
           let environment = environment.clone();
-          let incremental_file = incremental_file.clone();
           let f = f.clone();
           let plugins = plugins.clone();
           let error_logger = error_logger.clone();
@@ -171,7 +178,7 @@ where
                 }
               }
             });
-            let result = run_for_file_path(environment, incremental_file, scope, plugins, file_path.clone(), ensure_stable_format, f).await;
+            let result = run_for_file_path(environment, scope, plugins, file_path.clone(), ensure_stable_format, f).await;
             long_format_token.cancel();
             if let Err(err) = result {
               match err {
@@ -214,10 +221,98 @@ where
     Err(RunParallelizedError::Failed(RunParallelizedFailedError { error_count }))
   };
 
+  /// Removes the files the incremental file knows are formatted. This checks
+  /// them in bulk on several threads because sending an unchanged file through
+  /// the formatting pipeline (permits, tasks and a blocking thread per file)
+  /// costs far more than checking it.
+  async fn remove_known_formatted_files<TEnvironment: Environment>(
+    environment: &TEnvironment,
+    incremental_file: &Arc<IncrementalFile<TEnvironment>>,
+    file_paths: Vec<PathBuf>,
+    thread_count: usize,
+  ) -> Vec<PathBuf> {
+    if !incremental_file.has_known_files() {
+      // nothing is known, so checking would only read every file twice
+      return file_paths;
+    }
+    let start = Instant::now();
+    let total_count = file_paths.len();
+    let thread_environment = environment.clone();
+    let incremental_file = incremental_file.clone();
+    // starting threads costs more than checking a few hundred files
+    const FILES_PER_THREAD: usize = 500;
+    let thread_count = thread_count.min(file_paths.len().div_ceil(FILES_PER_THREAD)).max(1);
+    let result = dprint_core::async_runtime::spawn_blocking(move || {
+      if thread_count == 1 {
+        return file_paths
+          .into_iter()
+          .filter(|file_path| !is_known_formatted(&thread_environment, &incremental_file, file_path))
+          .collect::<Vec<_>>();
+      }
+      let chunk_size = file_paths.len().div_ceil(thread_count);
+      std::thread::scope(|scope| {
+        let handles = file_paths
+          .chunks(chunk_size)
+          .map(|chunk| {
+            let environment = &thread_environment;
+            let incremental_file = &incremental_file;
+            scope.spawn(move || {
+              chunk
+                .iter()
+                .filter(|file_path| !is_known_formatted(environment, incremental_file, file_path))
+                .cloned()
+                .collect::<Vec<_>>()
+            })
+          })
+          .collect::<Vec<_>>();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
+      })
+    })
+    .await;
+    match result {
+      Ok(file_paths) => {
+        log_debug!(
+          environment,
+          "{} of {} file(s) unchanged since formatted ({}ms)",
+          total_count - file_paths.len(),
+          total_count,
+          start.elapsed().as_millis()
+        );
+        file_paths
+      }
+      // a panic, which the process panic hook already reports
+      Err(_) => Vec::new(),
+    }
+  }
+
+  fn is_known_formatted<TEnvironment: Environment>(environment: &TEnvironment, incremental_file: &IncrementalFile<TEnvironment>, file_path: &Path) -> bool {
+    let metadata = environment.fs_metadata(file_path).ok().and_then(|metadata| {
+      Some(FileMetadata {
+        len: metadata.len(),
+        modified: metadata.modified().ok()?,
+      })
+    });
+    if let Some(metadata) = &metadata
+      && incremental_file.is_file_known_formatted_by_metadata(file_path, metadata)
+    {
+      log_debug!(environment, "No change: {} (unmodified, so not read)", file_path.display());
+      return true;
+    }
+    // an error reading it is reported when formatting it
+    let Ok(file_text) = environment.read_file_bytes(file_path) else {
+      return false;
+    };
+    if incremental_file.is_file_known_formatted(file_path, &file_text, metadata.as_ref()) {
+      log_debug!(environment, "No change: {}", file_path.display());
+      true
+    } else {
+      false
+    }
+  }
+
   #[inline]
   async fn run_for_file_path<F, TEnvironment: Environment>(
     environment: TEnvironment,
-    incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
     scope: Rc<PluginsScope<TEnvironment>>,
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
@@ -228,22 +323,11 @@ where
     F: Fn(PathBuf, Vec<u8>, Vec<u8>, Instant, TEnvironment) -> Result<(), RunForFilePathError> + 'static + Clone + Send + Sync,
   {
     // it's a big perf improvement to do this work on a blocking thread
-    let result = dprint_core::async_runtime::spawn_blocking(move || {
+    let (file_path, file_text, environment) = dprint_core::async_runtime::spawn_blocking(move || {
       let file_text = environment.read_file_bytes(&file_path)?;
-
-      if let Some(incremental_file) = &incremental_file
-        && incremental_file.is_file_known_formatted(&file_text)
-      {
-        log_debug!(environment, "No change: {}", file_path.display());
-        return Ok::<_, std::io::Error>(None);
-      }
-      Ok(Some((file_path, file_text, environment)))
+      Ok::<_, std::io::Error>((file_path, file_text, environment))
     })
     .await??;
-
-    let Some((file_path, file_text, environment)) = result else {
-      return Ok(());
-    };
 
     let (start_instant, formatted_text) =
       run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text).await?;
