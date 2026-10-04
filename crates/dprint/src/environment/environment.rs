@@ -328,7 +328,8 @@ pub trait Environment:
   fn is_ci(&self) -> bool;
   fn is_terminal_interactive(&self) -> bool;
   fn log_level(&self) -> LogLevel;
-  fn compile_wasm(&self, wasm_bytes: &[u8]) -> Result<CompilationResult>;
+  /// Compiles a wasm plugin. `plugin_display` names the plugin in messages.
+  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8]) -> Result<CompilationResult>;
   fn wasm_cache_key(&self) -> String;
   /// Returns the current CPU usage as a value from 0-100.
   async fn cpu_usage(&self) -> u8;

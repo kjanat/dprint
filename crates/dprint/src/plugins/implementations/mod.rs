@@ -11,9 +11,13 @@ pub use public::*;
 pub use wasm::WASM_CACHE_VERSION;
 pub use wasm::WASM_PLUGIN_THREAD_STACK_SIZE;
 
+pub use wasm::COMPILE_WORKER_ARG as WASM_COMPILE_WORKER_ARG;
 pub use wasm::WasmModuleCreator;
+#[cfg(test)]
 pub use wasm::compile as compile_wasm;
+pub use wasm::compile_supervised as compile_wasm_supervised;
 pub use wasm::precompile_compatibility_hash as wasm_precompile_compatibility_hash;
+pub use wasm::run_compile_worker as run_wasm_compile_worker;
 
 pub use process::get_os_path as get_process_plugin_os_path;
 pub use process::parse_process_plugin_file;
