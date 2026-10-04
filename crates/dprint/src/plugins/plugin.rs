@@ -50,6 +50,12 @@ pub trait Plugin: Send + Sync {
 
   /// Gets if this is a process plugin.
   fn is_process_plugin(&self) -> bool;
+
+  /// The schema of the plugin's configuration when it's built into dprint, so
+  /// it isn't downloaded from the plugin info's `config_schema_url`.
+  fn config_schema(&self) -> Option<&'static str> {
+    None
+  }
 }
 
 pub struct FormatConfig {

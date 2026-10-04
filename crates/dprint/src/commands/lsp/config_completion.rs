@@ -85,7 +85,11 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
       if let Ok(Some(scope)) = self.scope_container.resolve_by_path(parent).await {
         for plugin in scope.plugins.values() {
           let info = plugin.info();
-          let schema = self.fetch_schema(&info.config_schema_url).await;
+          let schema = match plugin.plugin.config_schema() {
+            // built into dprint, so there's nothing to download
+            Some(schema) => serde_json::from_str(schema).ok().map(Rc::new),
+            None => self.fetch_schema(&info.config_schema_url).await,
+          };
           plugins.push(PluginSchema {
             config_key: info.config_key.clone(),
             name: info.name.clone(),
@@ -965,6 +969,37 @@ mod test {
       .iter()
       .find(|i| i.label == label)
       .unwrap_or_else(|| panic!("missing completion: {}", label))
+  }
+
+  #[test]
+  fn completes_the_built_in_exec_properties_without_downloading() {
+    use crate::environment::TestEnvironmentBuilder;
+    use crate::plugins::PluginCache;
+    use crate::plugins::PluginResolver;
+
+    // no plugin files are served, so this would fail if it tried to download
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r#"{
+  "plugins": ["https://plugins.dprint.dev/exec-0.5.0.json@0000000000000000000000000000000000000000000000000000000000000000"],
+  "exec": { "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }
+}"#,
+      )
+      .build();
+    environment.clone().run_in_runtime(async move {
+      let plugin_resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+      let scope_container = Rc::new(LspPluginsScopeContainer::new(environment.clone(), plugin_resolver, None));
+      let completions = ConfigCompletions::new(environment.clone(), scope_container);
+      let items = completions
+        .completions(Path::new("/dprint.json"), r#"{ "exec": {  } }"#, lsp::Position::new(0, 12))
+        .await
+        .unwrap();
+      let labels = labels(&items);
+      // what only the built-in exec has
+      assert!(labels.contains(&"playWithFire".to_string()), "{:?}", labels);
+      assert!(labels.contains(&"setupTimeout".to_string()), "{:?}", labels);
+    });
   }
 
   #[test]

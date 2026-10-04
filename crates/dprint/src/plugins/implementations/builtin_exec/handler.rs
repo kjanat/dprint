@@ -495,7 +495,8 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
   c_args
 }
 
-#[cfg(test)]
+// the tests run shell commands
+#[cfg(all(test, unix))]
 #[allow(clippy::disallowed_methods)] // tests run real commands against real files
 mod test {
   use std::path::PathBuf;
@@ -530,14 +531,12 @@ mod test {
     .map_err(|err| err.to_string())
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn formats_with_stdin_and_stdout() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }));
     assert_eq!(format(&config, "hello\n", &SetupState::default()).await, Ok(Some("HELLO\n".to_string())));
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn should_error_output_empty_file() {
     // `true` exits without reading its input, which used to fail writing the
@@ -556,7 +555,6 @@ mod test {
     );
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_command_once_across_formats() {
     let dir = tempfile::tempdir().unwrap();
@@ -576,7 +574,6 @@ mod test {
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.
-  #[cfg(unix)]
   fn sleep_is_running(seconds: &str) -> bool {
     let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
     String::from_utf8_lossy(&output.stdout)
@@ -584,7 +581,6 @@ mod test {
       .any(|line| line.trim() == format!("sleep {}", seconds))
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_formatter_that_times_out() {
     // a unique duration so this test finds its own process
@@ -598,7 +594,6 @@ mod test {
     assert!(!sleep_is_running("31.7"), "the formatter should have been killed");
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn times_out_a_formatter_that_never_reads_its_stdin() {
     // more than a pipe buffer, so writing it blocks until the formatter reads
@@ -610,7 +605,6 @@ mod test {
     assert!(!sleep_is_running("32.7"), "the formatter should have been killed");
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_setup_command_that_times_out_and_does_not_rerun_it() {
     let config = resolve(serde_json::json!({

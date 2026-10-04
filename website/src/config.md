@@ -41,8 +41,9 @@ See [Setup](/setup).
 
 The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:
 
+<!-- dprint-ignore -->
 ```toml
-# :schema https://dprint.dev/schemas/v0.json
+#:schema https://dprint.dev/schemas/v0.json
 lineWidth = 80
 excludes = ["**/*-lock.json"]
 plugins = [
@@ -72,11 +73,22 @@ Create one with `dprint init --config dprint.toml`. Commands that edit the confi
 dprint schema > dprint.schema.json
 ```
 
+<!-- dprint-ignore -->
 ```toml
-# :schema ./dprint.schema.json
+#:schema ./dprint.schema.json
 ```
 
 In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
+
+The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
+
+The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
+
+```toml
+[[schemas]]
+path = "dprint.schema.json"
+include = ["dprint.toml"]
+```
 
 ## Plugins
 

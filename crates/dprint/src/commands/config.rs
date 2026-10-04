@@ -1655,6 +1655,13 @@ async fn get_config_schema_text<TEnvironment: Environment>(
   let mut schemas = Vec::new();
   for plugin in plugin_resolver.resolve_plugins(plugins).await? {
     let info = plugin.info();
+    if let Some(schema) = plugin.config_schema() {
+      schemas.push(PluginSchema {
+        config_key: info.config_key.clone(),
+        schema: serde_json::from_str(schema)?,
+      });
+      continue;
+    }
     if info.config_schema_url.is_empty() {
       continue;
     }
@@ -2118,6 +2125,34 @@ mod test {
       plugin["properties"]["ending"],
       serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin/definitions/ending" })
     );
+    assert!(plugin["properties"]["associations"].is_object());
+  }
+
+  #[test]
+  fn should_output_the_built_in_exec_schema() {
+    // no plugin files are served, so this would fail if it tried to download
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.toml",
+        "plugins = [\"https://plugins.dprint.dev/exec-0.5.0.json@0000000000000000000000000000000000000000000000000000000000000000\"]\n",
+      )
+      .build();
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    let output = environment.take_stdout_messages();
+    let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
+    assert_eq!(schema["properties"]["exec"], serde_json::json!({ "$ref": "#/definitions/plugin:exec" }));
+    let plugin = &schema["definitions"]["plugin:exec"];
+    // what only the built-in exec has
+    assert!(plugin["properties"]["playWithFire"].is_object());
+    assert!(plugin["properties"]["setupTimeout"].is_object());
+    let command = &plugin["properties"]["commands"]["items"];
+    assert!(command["properties"]["setupCommand"].is_object());
+    assert_eq!(
+      command["properties"]["exts"]["$ref"],
+      serde_json::json!("#/definitions/plugin:exec/definitions/stringOrStrings")
+    );
+    // and dprint's properties of every plugin table
     assert!(plugin["properties"]["associations"].is_object());
   }
 

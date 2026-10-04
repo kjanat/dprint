@@ -40,6 +40,11 @@ impl PluginWrapper {
     self.plugin.is_process_plugin()
   }
 
+  /// The schema of the plugin's configuration when it's built into dprint.
+  pub fn config_schema(&self) -> Option<&'static str> {
+    self.plugin.config_schema()
+  }
+
   pub async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
     self.initialized_plugin.get_or_try_init(|| self.plugin.initialize()).await.cloned()
   }

@@ -21,6 +21,7 @@ Compared to the downloaded plugin, the built-in one:
 - Kills a command that times out or is cancelled instead of leaving it running.
 - Supports a `"setupTimeout"` option (default: `300` seconds) after which a `setupCommand` is killed.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
+- Has its configuration schema built in, so [`dprint schema`](/config#schema) and the language server describe all of the options above without downloading it.
 
 ### Commands in remote configuration
 
