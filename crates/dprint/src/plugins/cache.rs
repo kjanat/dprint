@@ -548,6 +548,7 @@ where
       local_stamps,
     } = options;
     self.environment.mk_dir_all(plugins_dir(&self.environment))?;
+    let source_checksum = get_sha256_checksum(&file_bytes);
     let dest = SetupPluginDest {
       wasm_file_path: wasm_artifact_path(hash, &self.environment),
       process_dir_path: process_dir_path(hash, &self.environment),
@@ -572,6 +573,7 @@ where
       info: setup_result.plugin_info.clone(),
       executable_sub_path: setup_result.executable_sub_path,
       local_stamps,
+      source_checksum: Some(source_checksum),
     };
     // what the previously set up plugin resolved doesn't apply to this one
     let resolutions_path = resolutions_path(hash, &self.environment);
@@ -786,6 +788,7 @@ mod test {
       },
       executable_sub_path: None,
       local_stamps: None,
+      source_checksum: None,
     }
   }
 

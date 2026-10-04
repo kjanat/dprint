@@ -60,6 +60,12 @@ pub struct PluginCacheMeta {
   /// remote and versioned-npm sources, whose mere presence is a cache hit.
   #[serde(skip_serializing_if = "Option::is_none", default)]
   pub local_stamps: Option<Vec<LocalStamp>>,
+  /// SHA-256 of the plugin file it was set up from, which identifies the
+  /// build (see [`build_id`]) even when a url without a checksum serves a
+  /// different one under the same name and version. Absent in entries set up
+  /// before it was recorded.
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub source_checksum: Option<String>,
 }
 
 impl PluginCacheMeta {
@@ -160,8 +166,9 @@ pub fn artifact_id(meta: &PluginCacheMeta) -> u64 {
   hasher.finish()
 }
 
-/// Identifies the build of the plugin set up for an entry (its source, local
-/// file stamps, toolchain and info). Unlike [`artifact_id`], it stays the same
+/// Identifies the build of the plugin set up for an entry (its source and the
+/// checksum of its contents, local file stamps, toolchain and info). Unlike
+/// [`artifact_id`], it stays the same
 /// when the same plugin is compiled again, and only changes when it's a
 /// different one (ex. a local plugin that was rebuilt).
 pub fn build_id(meta: &PluginCacheMeta) -> u64 {
@@ -200,6 +207,7 @@ mod test {
       },
       executable_sub_path: None,
       local_stamps: None,
+      source_checksum: None,
     }
   }
 

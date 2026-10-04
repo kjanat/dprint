@@ -360,6 +360,29 @@ mod test {
   }
 
   #[tokio::test]
+  async fn should_error_when_another_process_set_up_another_build_of_the_same_version() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
+    let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
+    let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
+    let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
+      .await
+      .unwrap();
+
+    // the same plugin name and version, but other contents (an empty custom section)
+    let mut other_build = WASM_PLUGIN_BYTES.to_vec();
+    other_build.extend([0x00, 0x05, 0x04, b't', b'e', b's', b't']);
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", other_build.leak());
+    PluginCache::new(environment.clone()).forget_and_recreate(&plugin_reference).await.unwrap();
+    let err = plugin.initialize().await.err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while dprint was running. Run dprint again."
+    );
+    environment.take_stderr_messages();
+  }
+
+  #[tokio::test]
   async fn should_load_a_plugin_compiled_again_from_the_same_source() {
     let environment = TestEnvironment::new();
     environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
