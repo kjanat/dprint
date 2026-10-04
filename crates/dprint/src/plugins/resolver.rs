@@ -15,6 +15,7 @@ use super::implementations::create_plugin;
 use crate::environment::Environment;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
+use crate::plugins::PluginResolutionCache;
 use crate::plugins::PluginSourceReference;
 use crate::utils::AsyncCell;
 
@@ -39,6 +40,10 @@ impl PluginWrapper {
     self.plugin.is_process_plugin()
   }
 
+  pub fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
+    self.plugin.resolution_cache()
+  }
+
   pub async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
     self.initialized_plugin.get_or_try_init(|| self.plugin.initialize()).await.cloned()
   }
@@ -52,7 +57,7 @@ impl PluginWrapper {
 
 pub struct PluginResolver<TEnvironment: Environment> {
   environment: TEnvironment,
-  plugin_cache: PluginCache<TEnvironment>,
+  plugin_cache: Rc<PluginCache<TEnvironment>>,
   memory_cache: RefCell<HashMap<PluginSourceReference, Rc<tokio::sync::OnceCell<Rc<PluginWrapper>>>>>,
   wasm_module_creator: WasmModuleCreator,
   next_config_id: IdGenerator,
@@ -62,7 +67,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
   pub fn new(environment: TEnvironment, plugin_cache: PluginCache<TEnvironment>) -> Self {
     PluginResolver {
       environment,
-      plugin_cache,
+      plugin_cache: Rc::new(plugin_cache),
       memory_cache: Default::default(),
       wasm_module_creator: Default::default(),
       next_config_id: Default::default(),

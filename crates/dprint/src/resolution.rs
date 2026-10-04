@@ -57,6 +57,7 @@ use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
 use crate::plugins::OutputPluginConfigDiagnosticsError;
 use crate::plugins::PluginNameResolutionMaps;
+use crate::plugins::PluginResolution;
 use crate::plugins::PluginResolver;
 use crate::plugins::PluginWrapper;
 use crate::plugins::output_plugin_config_diagnostics;
@@ -1046,26 +1047,25 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     .into_iter()
     .map(|(plugin_config, plugin)| {
       let global_config = global_config.clone();
+      let environment = environment.clone();
       let overrides = resolve_plugin_config_overrides(plugin_config.overrides, &config_base_path, plugin_resolver)?;
       let next_config_id = plugin_resolver.next_config_id();
       Ok(
         async move {
-          let instance = plugin.initialize().await?;
           let format_config = Arc::new(FormatConfig {
             id: next_config_id,
             global: global_config,
             plugin: plugin_config.properties,
           });
-          let file_matching = instance.file_matching_info(format_config.clone()).await?;
-          let serialized_resolved_config = instance.resolved_config(format_config.clone()).await?;
+          let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
           Ok::<_, anyhow::Error>(Rc::new(PluginWithConfig::new(
             plugin,
             PluginWithConfigOptions {
               associations: plugin_config.associations,
               format_config,
-              file_matching,
+              file_matching: resolution.file_matching,
               overrides,
-              serialized_resolved_config,
+              serialized_resolved_config: resolution.resolved_config,
             },
           )))
         }
@@ -1080,6 +1080,29 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   }
 
   Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?)
+}
+
+/// Gets which files the plugin formats and its resolved configuration. A
+/// plugin that keeps what it resolved configurations to isn't loaded for it
+/// when it has resolved this configuration before.
+async fn resolve_plugin_config<TEnvironment: Environment>(
+  plugin: &PluginWrapper,
+  format_config: &Arc<FormatConfig>,
+  environment: &TEnvironment,
+) -> Result<PluginResolution> {
+  let resolution_cache = plugin.resolution_cache();
+  if let Some(resolution) = resolution_cache.and_then(|cache| cache.get(environment, format_config)) {
+    return Ok(resolution);
+  }
+  let instance = plugin.initialize().await?;
+  let resolution = PluginResolution {
+    file_matching: instance.file_matching_info(format_config.clone()).await?,
+    resolved_config: instance.resolved_config(format_config.clone()).await?,
+  };
+  if let Some(cache) = resolution_cache {
+    cache.set(environment, format_config, &resolution);
+  }
+  Ok(resolution)
 }
 
 /// Keeps only the highest precedence plugin for each plugin name.
