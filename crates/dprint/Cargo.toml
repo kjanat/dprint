@@ -35,7 +35,7 @@ rand = "=0.9.1"
 sha2 = "=0.10.9"
 similar = { workspace = true, features = ["inline"] }
 sys_traits = { workspace = true, features = ["real"] }
-sysinfo = { version = "=0.35.1", features = ["system"], default-features = false }
+sysinfo = { version = "=0.39.6", features = ["system"], default-features = false }
 tar = "=0.4.45"
 text-size = "=1.1.1"
 tokio = { workspace = true, features = ["io-std"] }
