@@ -1,7 +1,10 @@
+mod builtin_exec;
+mod in_process;
 mod process;
 mod public;
 mod wasm;
 
+pub use builtin_exec::create_builtin_exec_plugin;
 pub use public::*;
 pub use wasm::WASM_CACHE_VERSION;
 pub use wasm::WASM_PLUGIN_THREAD_STACK_SIZE;
