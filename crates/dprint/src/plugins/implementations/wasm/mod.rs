@@ -7,6 +7,7 @@ mod setup_wasm_plugin;
 pub use compile::*;
 use instance::*;
 pub use load_instance::WASM_PLUGIN_THREAD_STACK_SIZE;
+pub use load_instance::WasmModule;
 pub use load_instance::WasmModuleCreator;
 pub use load_instance::precompile_compatibility_hash;
 use load_instance::*;
