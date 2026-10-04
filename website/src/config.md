@@ -64,15 +64,19 @@ Property names with a dot in them are quoted, like they are in JSON. Arrays of o
 
 Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
 
-### Editor support with tombi
+### Schema
 
-[Tombi](https://github.com/tombi-toml/tombi) reads the `#:schema` comment to validate and complete the file. It can also give each plugin's table its plugin's schema through "sub schemas". Print those for your configuration file with:
+`dprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
 
 ```shellsession
-dprint tombi-schemas >> tombi.toml
+dprint schema > dprint.schema.json
 ```
 
-The plugins' schemas are versioned, so run it again after updating plugins.
+```toml
+# :schema ./dprint.schema.json
+```
+
+In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
 
 ## Plugins
 
