@@ -4271,6 +4271,70 @@ text2"
   }
 
   #[test]
+  fn should_skip_reading_unmodified_files_incrementally() {
+    let not_read_msg = "No change: /file.txt (unmodified, so not read)";
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .initialize()
+      .build();
+    let run = |args: Vec<&str>| {
+      environment.clear_logs();
+      run_test_cli(args, &environment).unwrap();
+      environment.take_stderr_messages().iter().any(|msg| msg.contains(not_read_msg))
+    };
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text_formatted").unwrap();
+
+    // the file was modified just now, so its metadata isn't trusted yet
+    assert!(!run(vec!["check", "--log-level=debug"]));
+    // later, the file's text is known formatted, so its metadata is remembered
+    environment.set_fs_time(1_000_100);
+    assert!(!run(vec!["check", "--log-level=debug"]));
+    // and from then on the unmodified file isn't read
+    assert!(run(vec!["check", "--log-level=debug"]));
+
+    // proof it isn't read: text of the same size with the same modification
+    // time goes unnoticed (this is the trade-off of not reading)
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "TEXT_FORMATTED").unwrap();
+    environment.set_fs_time(1_000_100);
+    assert!(run(vec!["check", "--log-level=debug"]));
+
+    // a change in size is noticed and the file is formatted
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text2").unwrap();
+    environment.set_fs_time(1_000_100);
+    assert!(!run(vec!["fmt", "--log-level=debug"]));
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text2_formatted");
+  }
+
+  #[test]
+  fn should_read_files_modified_right_before_the_run_incrementally() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .initialize()
+      .build();
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text_formatted").unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+
+    // modified 2 seconds before each run: within the timestamp precision of
+    // some file systems, so a later change could keep the same metadata
+    environment.set_fs_time(1_000_002);
+    for _ in 0..2 {
+      environment.clear_logs();
+      run_test_cli(vec!["check", "--log-level=debug"], &environment).unwrap();
+      let messages = environment.take_stderr_messages();
+      assert!(messages.iter().any(|msg| msg == "[DEBUG] No change: /file.txt"), "{:?}", messages);
+    }
+  }
+
+  #[test]
   fn should_check_config_diagnostics_when_config_changes_with_incremental() {
     // regression test for https://github.com/dprint/dprint/issues/403
     let file_path1 = "/file1.txt";
