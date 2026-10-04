@@ -158,6 +158,8 @@ dprint check --fail-fast
 
 By default, dprint will only format files that have changed since the last time you formatted the code in order to drastically improve performance.
 
+dprint remembers the size and modification time of files it has seen formatted, and doesn't read a file again while both stay the same. Files modified within a few seconds before a run are always read, since some file systems store modification times too coarsely to notice a second change. Running with `--incremental=false` reads and formats every file.
+
 If you want to disable this functionality, you may specify `--incremental=false` on the CLI:
 
 ```sh

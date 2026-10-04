@@ -1,5 +1,6 @@
 mod incremental_file;
 
+pub use incremental_file::FileMetadata;
 pub use incremental_file::IncrementalFile;
 
 use crate::configuration::ResolvedConfig;
