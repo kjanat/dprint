@@ -42,7 +42,7 @@ rustls-pemfile = "=2.1.2"
 sha2 = "=0.10.9"
 similar = { workspace = true, features = ["inline"] }
 sys_traits = { workspace = true, features = ["real"] }
-sysinfo = { version = "=0.35.1", features = ["system"], default-features = false }
+sysinfo = { version = "=0.39.6", features = ["system"], default-features = false }
 tar = "=0.4.45"
 text-size = "=1.1.1"
 tokio = { workspace = true, features = ["io-std"] }
@@ -76,16 +76,35 @@ workspace = true
 # wasm plugin runtime (wasmtime). default features are disabled to keep the
 # binary small — we only need to compile and run modules synchronously;
 # component-model, async, winch, the wat parser, wasm GC, the on-disk cache and
-# the pooling allocator are all unused.
+# the pooling allocator are all unused. `parallel-compilation` is kept: without
+# it Cranelift compiles a module's functions one at a time, which made the
+# uncached "Compiling <plugin>" step ~3.5x slower on a 4 core machine.
 # most targets: native Cranelift codegen.
 [target."cfg(not(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\")))".dependencies]
-wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "demangle", "addr2line"] }
+wasmtime = { version = "=43.0.2", default-features = false, features = [
+  "cranelift",
+  "parallel-compilation",
+  "runtime",
+  "std",
+  "anyhow",
+  "demangle",
+  "addr2line",
+] }
 # powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
 # lacks the signal-based traps native code needs, so these compile to Pulley
 # bytecode (still via Cranelift) and interpret it. the `pulley` feature adds the
 # bytecode emitter; the interpreter is already part of `runtime`.
 [target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
-wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "demangle", "addr2line", "pulley"] }
+wasmtime = { version = "=43.0.2", default-features = false, features = [
+  "cranelift",
+  "parallel-compilation",
+  "runtime",
+  "std",
+  "anyhow",
+  "demangle",
+  "addr2line",
+  "pulley",
+] }
 [target."cfg(windows)".dependencies]
 winreg = "=0.55.0"
 
