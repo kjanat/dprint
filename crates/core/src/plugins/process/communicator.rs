@@ -137,6 +137,29 @@ struct Context {
   host_format_callbacks: RcIdStore<HostFormatCallback>,
 }
 
+/// Kills the plugin process if it's dropped before the communicator takes
+/// ownership of it, ex. when the caller gives up on a plugin that never
+/// finishes the handshake.
+struct KillChildOnDrop(Option<Child>);
+
+impl KillChildOnDrop {
+  fn child(&mut self) -> &mut Child {
+    self.0.as_mut().unwrap()
+  }
+
+  fn into_inner(mut self) -> Child {
+    self.0.take().unwrap()
+  }
+}
+
+impl Drop for KillChildOnDrop {
+  fn drop(&mut self) {
+    if let Some(child) = &mut self.0 {
+      let _ = child.kill();
+    }
+  }
+}
+
 /// Communicates with a process plugin.
 pub struct ProcessPluginCommunicator {
   child: RefCell<Option<Child>>,
@@ -166,20 +189,22 @@ impl ProcessPluginCommunicator {
     }
 
     let shutdown_flag = Arc::new(AtomicFlag::default());
-    let mut child = Command::new(executable_file_path)
-      .args(&args)
-      .stdin(Stdio::piped())
-      .stderr(Stdio::piped())
-      .stdout(Stdio::piped())
-      .spawn()
-      .map_err(|err| CommunicatorError::StartProcess {
-        executable: executable_file_path.display().to_string(),
-        args: args.join(" "),
-        error: err,
-      })?;
+    let mut child = KillChildOnDrop(Some(
+      Command::new(executable_file_path)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| CommunicatorError::StartProcess {
+          executable: executable_file_path.display().to_string(),
+          args: args.join(" "),
+          error: err,
+        })?,
+    ));
 
     // read and output stderr prefixed
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child.child().stderr.take().unwrap();
     crate::async_runtime::spawn_blocking({
       let shutdown_flag = shutdown_flag.clone();
       let on_std_err = on_std_err.clone();
@@ -189,8 +214,8 @@ impl ProcessPluginCommunicator {
     });
 
     // verify the schema version
-    let mut stdout_reader = MessageReader::new(child.stdout.take().unwrap());
-    let mut stdin_writer = MessageWriter::new(child.stdin.take().unwrap());
+    let mut stdout_reader = MessageReader::new(child.child().stdout.take().unwrap());
+    let mut stdin_writer = MessageWriter::new(child.child().stdin.take().unwrap());
 
     let (mut stdout_reader, stdin_writer, schema_version) = crate::async_runtime::spawn_blocking(move || {
       let schema_version = get_plugin_schema_version(&mut stdout_reader, &mut stdin_writer).map_err(CommunicatorError::SchemaVerification)?;
@@ -200,7 +225,7 @@ impl ProcessPluginCommunicator {
 
     if schema_version != PLUGIN_SCHEMA_VERSION {
       // kill the child to prevent it from ouputting to stderr
-      let _ = child.kill();
+      let _ = child.child().kill();
       let err = if schema_version < PLUGIN_SCHEMA_VERSION {
         CommunicatorError::PluginTooOld {
           actual: schema_version,
@@ -268,7 +293,7 @@ impl ProcessPluginCommunicator {
     });
 
     Ok(Self {
-      child: RefCell::new(Some(child)),
+      child: RefCell::new(Some(child.into_inner())),
       context,
     })
   }
