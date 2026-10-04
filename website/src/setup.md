@@ -97,4 +97,12 @@ By default, dprint only runs for a short period of time and so it will try to ta
 
 Separately, dprint reads directories on several threads when discovering files in order to better saturate the disk. This is I/O bound, so the number of read threads is independent of `DPRINT_MAX_THREADS`. You can override it with the `DPRINT_GLOB_READ_THREADS` environment variable (ex. `DPRINT_GLOB_READ_THREADS=8`), though the default is suitable for most setups.
 
+## Stalled Plugin Setup
+
+The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`.
+
+Process plugins are watched the same way while they start: one that hasn't reported its plugin info within 20 seconds is killed and started once more.
+
+To compile Wasm plugins inside the dprint process instead, without this supervision, set `DPRINT_WASM_COMPILE_WORKER=0`.
+
 Next step: [Configuration](/config)
