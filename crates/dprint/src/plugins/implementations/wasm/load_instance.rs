@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 use anyhow::bail;
 use wasmtime::Config;
@@ -145,6 +147,23 @@ impl WasmModuleCreator {
       }
     }
   }
+
+  /// Creates a module from a file holding the serialized native artifact
+  /// produced by `compile`. The file is mapped into memory rather than read,
+  /// so nothing is copied and only the pages that are used get loaded.
+  ///
+  /// The file must not change while the module is alive. The plugin cache
+  /// replaces a file by renaming a new one over it, which leaves the mapped
+  /// file as it was.
+  pub fn create_from_serialized_file(&self, file_path: &Path) -> Result<WasmModule> {
+    // SAFETY: see `create_from_serialized`, and the file isn't changed in place
+    unsafe {
+      match Module::deserialize_file(&self.engine, file_path) {
+        Ok(module) => WasmModule::new(module, self.engine.clone()),
+        Err(err) => bail!("Error deserializing compiled wasm module: {:#}", err),
+      }
+    }
+  }
 }
 
 /// The amount of wasm stack the plugin may use. wasmtime's default is 512KB,
@@ -181,4 +200,35 @@ fn new_engine(optimize: bool) -> wasmtime::Engine {
   }
   config.max_wasm_stack(MAX_WASM_STACK_SIZE);
   Engine::new(&config).expect("failed to create wasmtime engine")
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+  use crate::test_helpers::WASM_PLUGIN_BYTES;
+
+  fn plugin_name(module: &WasmModule) -> String {
+    let linker = super::super::create_identity_import_object(module.version(), module.engine()).unwrap();
+    let mut store = module.new_store(WasmHostState::Empty);
+    let instance = load_instance(&mut store, module, &linker).unwrap();
+    super::super::create_wasm_plugin_instance(store, instance).unwrap().plugin_info().unwrap().name
+  }
+
+  #[test]
+  #[allow(clippy::disallowed_methods)] // the module is mapped from a real file
+  fn creates_a_module_from_a_serialized_file() {
+    let bytes = super::super::compile(WASM_PLUGIN_BYTES).unwrap().bytes;
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("plugin.cwasm");
+    std::fs::write(&file_path, &bytes).unwrap();
+    let wasm_module_creator = WasmModuleCreator::default();
+    let module = wasm_module_creator.create_from_serialized_file(&file_path).unwrap();
+
+    // replacing the file the way the plugin cache does leaves the module as it was
+    let temp_file_path = dir.path().join("plugin.cwasm.tmp");
+    std::fs::write(&temp_file_path, b"not a module").unwrap();
+    std::fs::rename(&temp_file_path, &file_path).unwrap();
+    assert_eq!(plugin_name(&module), "test-plugin");
+    assert!(wasm_module_creator.create_from_serialized_file(&file_path).is_err());
+  }
 }
