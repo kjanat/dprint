@@ -103,7 +103,7 @@ pub fn precompile_compatibility_hash() -> u64 {
   *HASH.get_or_init(|| {
     use std::hash::Hash;
     let mut hasher = crate::utils::FastInsecureHasher::default();
-    new_engine().precompile_compatibility_hash().hash(&mut hasher);
+    new_engine(true).precompile_compatibility_hash().hash(&mut hasher);
     hasher.finish()
   })
 }
@@ -117,11 +117,18 @@ pub struct WasmModuleCreator {
 
 impl Default for WasmModuleCreator {
   fn default() -> Self {
-    Self { engine: new_engine() }
+    Self { engine: new_engine(true) }
   }
 }
 
 impl WasmModuleCreator {
+  /// A creator whose engine compiles without Cranelift's optimizations. Only
+  /// used to compile; the artifacts it produces still load in the default
+  /// engine (optimization level doesn't affect artifact compatibility).
+  pub fn new_unoptimized() -> Self {
+    Self { engine: new_engine(false) }
+  }
+
   pub fn create_from_wasm_bytes(&self, wasm_bytes: &[u8]) -> Result<WasmModule> {
     let module = Module::new(&self.engine, wasm_bytes)?;
     WasmModule::new(module, self.engine.clone())
@@ -178,13 +185,11 @@ pub const MAX_WASM_STACK_SIZE: usize = 1024 * 1024;
 /// recoverable trap) before exhausting the native stack (a crash).
 pub const WASM_PLUGIN_THREAD_STACK_SIZE: usize = MAX_WASM_STACK_SIZE + 3 * 1024 * 1024;
 
-fn new_engine() -> wasmtime::Engine {
+fn new_engine(optimize: bool) -> wasmtime::Engine {
   let mut config = Config::new();
-  #[cfg(not(use_pulley))]
-  {
-    // optimize natively compiled plugins for speed
-    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-  }
+  // optimize plugins for speed. compiling without optimizations is only a
+  // fallback for when an optimized compile stalls (see compile_worker.rs)
+  config.cranelift_opt_level(if optimize { wasmtime::OptLevel::Speed } else { wasmtime::OptLevel::None });
   #[cfg(use_pulley)]
   {
     // no native Cranelift backend (or signal-based traps) for this target, so

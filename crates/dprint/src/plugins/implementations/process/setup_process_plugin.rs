@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::bail;
+use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::process::ProcessPluginCommunicator;
 use serde::Deserialize;
 use serde::Serialize;
@@ -7,9 +8,11 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str;
+use std::time::Duration;
 
 use crate::environment::Environment;
 use crate::plugins::implementations::SetupPluginResult;
+use crate::plugins::implementations::SetupRetriesExhaustedError;
 use crate::plugins::npm_resolution::extract_tarball_replacing;
 use crate::utils::PathSource;
 use crate::utils::extract_zip;
@@ -152,6 +155,11 @@ async fn setup_from_tarball<TEnvironment: Environment>(
   start_communicator_and_collect_info(executable_path, executable_sub_path.to_string(), plugin_version, plugin_name, environment).await
 }
 
+/// Process plugins report their plugin info within milliseconds of starting,
+/// so one that hasn't after this long is stuck.
+const PLUGIN_INFO_TIMEOUT: Duration = Duration::from_secs(20);
+const PLUGIN_INFO_ATTEMPTS: usize = 2;
+
 async fn start_communicator_and_collect_info<TEnvironment: Environment>(
   plugin_executable_file_path: PathBuf,
   executable_sub_path: String,
@@ -160,8 +168,57 @@ async fn start_communicator_and_collect_info<TEnvironment: Environment>(
   environment: &TEnvironment,
 ) -> Result<SetupPluginResult> {
   let executable_path = super::get_test_safe_executable_path(&plugin_version, plugin_executable_file_path.clone(), environment);
-  let communicator = ProcessPluginCommunicator::new_with_init(&executable_path, {
+  let mut failures: Vec<String> = Vec::new();
+  for attempt in 1..=PLUGIN_INFO_ATTEMPTS {
+    // the plugin process is killed when this future is dropped, so a stuck
+    // process doesn't outlive the attempt
+    let failure = match tokio::time::timeout(PLUGIN_INFO_TIMEOUT, collect_plugin_info(&executable_path, &plugin_name, environment)).await {
+      Ok(Ok(plugin_info)) => {
+        return Ok(SetupPluginResult {
+          plugin_info,
+          file_path: plugin_executable_file_path,
+          executable_sub_path: Some(executable_sub_path),
+        });
+      }
+      Ok(Err(err)) => format!("{:#}", err),
+      Err(_) => format!("it didn't report its plugin info within {}s, so it was killed", PLUGIN_INFO_TIMEOUT.as_secs()),
+    };
+    if attempt < PLUGIN_INFO_ATTEMPTS {
+      log_warn!(
+        environment,
+        "Starting {} failed: {}. Retrying (attempt {} of {}).",
+        plugin_name,
+        failure.trim_end_matches('.'),
+        attempt + 1,
+        PLUGIN_INFO_ATTEMPTS,
+      );
+    }
+    failures.push(failure);
+  }
+  // keep the message as is when it failed the same way each time
+  failures.dedup();
+  let message = if failures.len() == 1 {
+    failures.remove(0)
+  } else {
+    format!(
+      "Failed starting {} after {} attempts:\n{}",
+      plugin_name,
+      PLUGIN_INFO_ATTEMPTS,
+      failures
+        .iter()
+        .enumerate()
+        .map(|(i, failure)| format!("  {}. {}", i + 1, failure))
+        .collect::<Vec<_>>()
+        .join("\n")
+    )
+  };
+  Err(SetupRetriesExhaustedError(message).into())
+}
+
+async fn collect_plugin_info<TEnvironment: Environment>(executable_path: &Path, plugin_name: &str, environment: &TEnvironment) -> Result<PluginInfo> {
+  let communicator = ProcessPluginCommunicator::new_with_init(executable_path, {
     let environment = environment.clone();
+    let plugin_name = plugin_name.to_string();
     move |error_message| {
       // consider messages from process plugins as warnings
       if environment.log_level().is_warn() {
@@ -172,12 +229,7 @@ async fn start_communicator_and_collect_info<TEnvironment: Environment>(
   .await?;
   let plugin_info = communicator.plugin_info().await?;
   communicator.shutdown().await;
-
-  Ok(SetupPluginResult {
-    plugin_info,
-    file_path: plugin_executable_file_path,
-    executable_sub_path: Some(executable_sub_path),
-  })
+  Ok(plugin_info)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
