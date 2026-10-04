@@ -39,7 +39,7 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 }
 ```
 
-A remote configuration can't allow itself.
+This includes the commands in its `"overrides"`. Its `"cwd"` (the directory commands run in, which decides what a command with a relative path runs, including your local commands) is only used with `"playWithFire": true`. A remote configuration can't allow itself.
 
 ## Install, Setup, and Configuration
 
