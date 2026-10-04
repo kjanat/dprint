@@ -5,6 +5,7 @@ mod get_global_config;
 mod get_init_config_file_text;
 mod get_plugin_config_map;
 mod manipulation;
+mod remote_exec;
 mod resolve_config;
 mod resolve_main_config_path;
 mod types;

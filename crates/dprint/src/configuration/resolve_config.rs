@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use super::remote_exec::RemoteExec;
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -172,9 +176,15 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   .map_err(|err| anyhow::anyhow!("{:#}\n    at {}", err, config_path_and_text.source.display()))?;
 
   let plugins_vec = take_plugins_array_from_config_map(&mut config_map, &base_source, environment)?; // always take this out of the config map
+  let remote_exec = Rc::new(RefCell::new(RemoteExec::default()));
   let plugins = filter_duplicate_plugin_sources({
     // filter out any non-wasm plugins from remote config
     if !config_path_and_text.source.is_local() {
+      // the exec plugin and its commands only run when local config allows it
+      let plugins_vec =
+        remote_exec
+          .borrow_mut()
+          .take_from_remote_config(&mut config_map, plugins_vec, &ConfigMap::new(), &config_path_and_text.source, environment);
       filter_non_wasm_plugins(plugins_vec, environment) // NEVER REMOVE THIS STATEMENT
     } else {
       plugins_vec
@@ -218,7 +228,10 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   };
 
   // resolve extends
-  Ok(resolve_extends(resolved_config, extends, base_source, environment.clone()).await?)
+  let mut resolved_config = resolve_extends(resolved_config, extends, base_source, environment.clone(), remote_exec.clone()).await?;
+  let remote_exec = std::mem::take(&mut *remote_exec.borrow_mut());
+  remote_exec.apply(&mut resolved_config.config_map, &mut resolved_config.plugins, environment)?;
+  Ok(resolved_config)
 }
 
 /// Merges the ancestor (`parent`) configuration into a nested configuration
@@ -291,6 +304,7 @@ fn resolve_extends<TEnvironment: Environment>(
   extends: Vec<String>,
   base_path: PathSource,
   environment: TEnvironment,
+  remote_exec: Rc<RefCell<RemoteExec>>,
 ) -> LocalBoxFuture<'static, Result<ResolvedConfig>> {
   // boxed because of recursion
   async move {
@@ -298,7 +312,7 @@ fn resolve_extends<TEnvironment: Environment>(
       let resolved_file = resolve_url_or_file_path_to_file_with_cache(&url_or_file_path, &base_path, &environment)
         .await?
         .into_text()?;
-      resolved_config = match handle_config_file(&resolved_file, resolved_config, &environment).await {
+      resolved_config = match handle_config_file(&resolved_file, resolved_config, &environment, remote_exec.clone()).await {
         Ok(resolved_config) => resolved_config,
         Err(err) => bail!("{:#}\n    at {}", err, resolved_file.source.display()),
       }
@@ -312,6 +326,7 @@ async fn handle_config_file<TEnvironment: Environment>(
   config_path_and_text: &ResolvedFilePathWithText,
   mut resolved_config: ResolvedConfig,
   environment: &TEnvironment,
+  remote_exec: Rc<RefCell<RemoteExec>>,
 ) -> Result<ResolvedConfig> {
   let mut new_config_map = get_config_map_from_path(ConfigPathContext {
     current: config_path_and_text.as_ref(),
@@ -355,6 +370,14 @@ async fn handle_config_file<TEnvironment: Environment>(
   // The assumption here is that the user won't be malicious to themselves.
   let plugins = take_plugins_array_from_config_map(&mut new_config_map, &config_path_and_text.source.parent(), environment)?;
   let plugins = if !config_path_and_text.source.is_local() {
+    // the exec plugin and its commands only run when local config allows it
+    let plugins = remote_exec.borrow_mut().take_from_remote_config(
+      &mut new_config_map,
+      plugins,
+      &resolved_config.config_map,
+      &config_path_and_text.source,
+      environment,
+    );
     filter_non_wasm_plugins(plugins, environment)
   } else {
     plugins
@@ -370,7 +393,7 @@ async fn handle_config_file<TEnvironment: Environment>(
 
   merge_config_map_into(&mut resolved_config.config_map, new_config_map)?;
 
-  resolve_extends(resolved_config, extends, config_path_and_text.source.parent(), environment.clone()).await
+  resolve_extends(resolved_config, extends, config_path_and_text.source.parent(), environment.clone(), remote_exec).await
 }
 
 /// Merges the lower precedence `source` config map into the higher precedence
@@ -2438,6 +2461,188 @@ mod tests {
         "Locked configurations cannot have their properties overridden."
       )
     );
+  }
+
+  mod remote_exec {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    const EXEC_PLUGIN: &str = "npm:@dprint/exec@0.7.3/plugin.json@abc";
+    const REMOTE_URL: &str = "https://dprint.dev/exec.json";
+
+    fn remote_config(exec_extra: &str) -> String {
+      format!(
+        r#"{{
+          "exec": {{
+            {}
+            "commands": [
+              {{ "command": "tombi format -", "exts": ["toml"] }},
+              {{ "command": "rustfmt --edition 2024", "exts": ["rs"], "setupCommand": "rustup component add rustfmt" }},
+              {{ "command": "evil", "exts": ["txt"] }}
+            ]
+          }},
+          "plugins": ["{}"]
+        }}"#,
+        exec_extra, EXEC_PLUGIN
+      )
+    }
+
+    struct Resolved {
+      plugins: Vec<String>,
+      commands: Vec<String>,
+      exec_keys: Vec<String>,
+      messages: Vec<String>,
+    }
+
+    fn resolve(local_config: &str, remote_config: &str) -> Result<Resolved, String> {
+      let environment = TestEnvironment::new();
+      environment.write_file("/dprint.json", local_config).unwrap();
+      environment
+        .write_file("/base.json", r#"{ "exec": { "commands": [{ "command": "local-base", "exts": ["md"] }] } }"#)
+        .unwrap();
+      environment.add_remote_file(REMOTE_URL, remote_config.to_string().leak().as_bytes());
+      environment.clone().run_in_runtime(async move {
+        let result = get_result("/dprint.json", &environment).await.map_err(|err| err.to_string())?;
+        let exec = match result.config_map.get("exec") {
+          Some(ConfigMapValue::PluginConfig(exec)) => exec.properties.clone(),
+          _ => Default::default(),
+        };
+        let commands = match exec.get("commands") {
+          Some(ConfigKeyValue::Array(commands)) => commands
+            .iter()
+            .map(|command| match command {
+              ConfigKeyValue::Object(command) => match command.get("command") {
+                Some(ConfigKeyValue::String(command)) => command.clone(),
+                _ => unreachable!(),
+              },
+              _ => unreachable!(),
+            })
+            .collect(),
+          _ => Vec::new(),
+        };
+        Ok(Resolved {
+          plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
+          commands,
+          exec_keys: exec.keys().cloned().collect(),
+          messages: environment.take_stderr_messages(),
+        })
+      })
+    }
+
+    #[test]
+    fn ignores_remote_exec_commands_by_default() {
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "plugins": ["{}"] }}"#, REMOTE_URL, EXEC_PLUGIN),
+        &remote_config(""),
+      )
+      .unwrap();
+      assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
+      assert_eq!(result.commands, Vec::<String>::new());
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: The exec commands in remote configuration (https://dprint.dev/exec.json) are ignored for security reasons. ",
+            "To run them, specify \"playWithFire\" in the exec configuration of a local configuration file ",
+            "(`true` or the programs they may run)."
+          )
+          .to_string()
+        ]
+      );
+    }
+
+    #[test]
+    fn ignores_the_remote_exec_plugin_by_default() {
+      let result = resolve(&format!(r#"{{ "extends": "{}" }}"#, REMOTE_URL), &remote_config("")).unwrap();
+      assert_eq!(result.plugins, Vec::<String>::new());
+      assert_eq!(result.messages.len(), 2);
+      assert!(
+        result.messages[1].starts_with("Note: The exec plugin in remote configuration is ignored"),
+        "{:?}",
+        result.messages
+      );
+    }
+
+    #[test]
+    fn runs_any_remote_exec_command_when_playing_with_fire() {
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+        &remote_config(""),
+      )
+      .unwrap();
+      assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
+      assert_eq!(result.commands, vec!["tombi format -", "rustfmt --edition 2024", "evil"]);
+      // the plugin doesn't see the setting
+      assert_eq!(result.exec_keys, vec!["commands"]);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
+    #[test]
+    fn runs_remote_exec_commands_of_listed_programs() {
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": ["tombi", "rustfmt"] }} }}"#, REMOTE_URL),
+        &remote_config(""),
+      )
+      .unwrap();
+      assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
+      // rustfmt's setup command runs rustup, which isn't listed
+      assert_eq!(result.commands, vec!["tombi format -"]);
+      assert_eq!(
+        result.messages,
+        vec![
+          "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": rustup, evil"
+            .to_string()
+        ]
+      );
+    }
+
+    #[test]
+    fn remote_config_cannot_allow_itself() {
+      let result = resolve(&format!(r#"{{ "extends": "{}" }}"#, REMOTE_URL), &remote_config(r#""playWithFire": true,"#)).unwrap();
+      assert_eq!(result.plugins, Vec::<String>::new());
+      assert_eq!(result.commands, Vec::<String>::new());
+      assert_eq!(
+        result.messages[0],
+        "Note: \"playWithFire\" is ignored in remote configuration (https://dprint.dev/exec.json). Specify it in a local configuration file."
+      );
+    }
+
+    #[test]
+    fn higher_precedence_local_commands_win() {
+      let result = resolve(
+        &format!(
+          r#"{{ "extends": "{}", "exec": {{ "playWithFire": true, "commands": [{{ "command": "local", "exts": ["txt"] }}] }} }}"#,
+          REMOTE_URL
+        ),
+        &remote_config(""),
+      )
+      .unwrap();
+      assert_eq!(result.commands, vec!["local"]);
+    }
+
+    #[test]
+    fn allowed_remote_commands_win_over_lower_precedence_local_ones() {
+      let local = |play_with_fire: &str| format!(r#"{{ "extends": ["{}", "./base.json"], "exec": {{ {} }} }}"#, REMOTE_URL, play_with_fire);
+      let result = resolve(&local(r#""playWithFire": true"#), &remote_config("")).unwrap();
+      assert_eq!(result.commands, vec!["tombi format -", "rustfmt --edition 2024", "evil"]);
+      // when not allowed, the local ones apply
+      let result = resolve(&local(""), &remote_config("")).unwrap();
+      assert_eq!(result.commands, vec!["local-base"]);
+    }
+
+    #[test]
+    fn errors_for_an_invalid_value() {
+      let err = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": "yes" }} }}"#, REMOTE_URL),
+        &remote_config(""),
+      )
+      .err();
+      assert_eq!(
+        err,
+        Some("Expected \"exec.playWithFire\" to be true, false, or an array of programs.".to_string())
+      );
+    }
   }
 
   #[test]
