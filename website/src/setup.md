@@ -99,7 +99,7 @@ Separately, dprint reads directories on several threads when discovering files i
 
 ## Stalled Plugin Setup
 
-The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`.
+The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
 
 Process plugins are watched the same way while they start: one that hasn't reported its plugin info within 20 seconds is killed and started once more.
 

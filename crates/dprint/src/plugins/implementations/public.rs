@@ -14,11 +14,12 @@ use crate::plugins::PluginSourceReference;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
 
-/// Setting up a plugin failed even though the setup was already retried, so
-/// it shouldn't be retried again.
+/// Setting up a plugin failed in a way the plugin cache shouldn't retry by
+/// setting it up again: the setup already retried what retrying can fix, or
+/// the failure is the plugin's own (ex. it isn't a dprint plugin).
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct SetupRetriesExhaustedError(pub String);
+pub struct NoRetrySetupError(pub String);
 
 pub struct SetupPluginResult {
   pub file_path: PathBuf,
@@ -72,7 +73,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
 ) -> Result<Box<dyn Plugin>> {
   let cache_item = match plugin_cache.get_plugin_cache_item(plugin_reference).await {
     Ok(cache_item) => cache_item,
-    Err(err) if err.downcast_ref::<SetupRetriesExhaustedError>().is_some() => return Err(err),
+    Err(err) if err.downcast_ref::<NoRetrySetupError>().is_some() => return Err(err),
     Err(err) => {
       log_debug!(
         environment,

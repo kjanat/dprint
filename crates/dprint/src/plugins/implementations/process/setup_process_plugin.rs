@@ -11,8 +11,8 @@ use std::str;
 use std::time::Duration;
 
 use crate::environment::Environment;
+use crate::plugins::implementations::NoRetrySetupError;
 use crate::plugins::implementations::SetupPluginResult;
-use crate::plugins::implementations::SetupRetriesExhaustedError;
 use crate::plugins::npm_resolution::extract_tarball_replacing;
 use crate::utils::PathSource;
 use crate::utils::extract_zip;
@@ -212,7 +212,7 @@ async fn start_communicator_and_collect_info<TEnvironment: Environment>(
         .join("\n")
     )
   };
-  Err(SetupRetriesExhaustedError(message).into())
+  Err(NoRetrySetupError(message).into())
 }
 
 async fn collect_plugin_info<TEnvironment: Environment>(executable_path: &Path, plugin_name: &str, environment: &TEnvironment) -> Result<PluginInfo> {

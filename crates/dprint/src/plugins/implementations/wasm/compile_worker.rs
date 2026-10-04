@@ -26,15 +26,16 @@ use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
-use anyhow::bail;
 use dprint_core::plugins::PluginInfo;
 
-use super::super::SetupRetriesExhaustedError;
+use super::super::NoRetrySetupError;
 use super::WASM_PLUGIN_THREAD_STACK_SIZE;
 use super::compile::WasmSetupStep;
 use super::compile::compile_with_steps;
@@ -68,11 +69,12 @@ pub fn compile_supervised<TEnvironment: Environment>(environment: &TEnvironment,
     }
   };
   let wasm_bytes: Arc<[u8]> = Arc::from(wasm_bytes);
-  let max_threads = environment.max_threads();
+  let (max_workers, threads_per_worker) = worker_parallelism(environment.max_threads());
+  let _slot = WORKER_SLOTS.acquire(max_workers);
   let mut attempt = 0;
   run_attempts(environment, plugin_display, wasm_bytes.len(), &Limits::default(), |optimize| {
     attempt += 1;
-    match ProcessWorker::spawn(&executable, wasm_bytes.clone(), optimize, max_threads) {
+    match ProcessWorker::spawn(&executable, wasm_bytes.clone(), optimize, threads_per_worker) {
       Ok(worker) => Ok(SpawnedWorker::Worker(Box::new(worker))),
       // the worker couldn't start at all, so there's nothing to supervise
       Err(err) if attempt == 1 => {
@@ -89,18 +91,73 @@ pub fn compile_supervised<TEnvironment: Environment>(environment: &TEnvironment,
   })
 }
 
+/// How many workers may run at once, and how many threads each one compiles
+/// with, so that together they use at most `max_threads` threads.
+///
+/// Every plugin of a cold cache is set up at the same time and a worker is a
+/// process of its own, so without a limit each one would compile with
+/// `max_threads` threads (and its own memory). Cranelift compiles a module's
+/// functions in parallel and the largest plugin decides how long a cold setup
+/// takes, so a worker gets up to 4 threads, and a larger budget runs more
+/// workers at once.
+fn worker_parallelism(max_threads: usize) -> (usize, usize) {
+  let threads_per_worker = max_threads.clamp(1, 4);
+  ((max_threads / threads_per_worker).max(1), threads_per_worker)
+}
+
+/// Limits how many compile workers run at once (see `worker_parallelism`).
+struct WorkerSlots {
+  running: Mutex<usize>,
+  freed: Condvar,
+}
+
+static WORKER_SLOTS: WorkerSlots = WorkerSlots {
+  running: Mutex::new(0),
+  freed: Condvar::new(),
+};
+
+impl WorkerSlots {
+  fn acquire(&'static self, limit: usize) -> WorkerSlot {
+    let mut running = self.running.lock().unwrap_or_else(|err| err.into_inner());
+    while *running >= limit {
+      running = self.freed.wait(running).unwrap_or_else(|err| err.into_inner());
+    }
+    *running += 1;
+    WorkerSlot(self)
+  }
+}
+
+struct WorkerSlot(&'static WorkerSlots);
+
+impl Drop for WorkerSlot {
+  fn drop(&mut self) {
+    *self.0.running.lock().unwrap_or_else(|err| err.into_inner()) -= 1;
+    self.0.freed.notify_one();
+  }
+}
+
 /// Runs this process as a compile worker: reads a wasm module from stdin, sets
 /// it up, and reports each step as it starts followed by the result on stdout.
 pub fn run_compile_worker(args: &[OsString]) -> i32 {
   let optimize = !args.iter().any(|arg| arg == UNOPTIMIZED_ARG);
-  let mut wasm_bytes = Vec::new();
-  if let Err(err) = std::io::stdin().lock().read_to_end(&mut wasm_bytes) {
-    #[allow(clippy::print_stderr)]
-    {
-      eprintln!("Error reading the wasm module from stdin: {:#}", err);
+  let wasm_bytes = match read_module(&mut std::io::stdin().lock()) {
+    Ok(wasm_bytes) => wasm_bytes,
+    Err(err) => {
+      #[allow(clippy::print_stderr)]
+      {
+        eprintln!("Error reading the wasm module from stdin: {:#}", err);
+      }
+      return 1;
     }
-    return 1;
-  }
+  };
+  // The parent keeps stdin open while it supervises this worker, and the OS
+  // closes it when the parent exits, even when it's killed. Exit then, rather
+  // than finishing (or spinning in) a setup nothing is waiting for.
+  std::thread::spawn(|| {
+    let mut byte = [0; 1];
+    while let Ok(1..) = std::io::stdin().read(&mut byte) {}
+    std::process::exit(1);
+  });
   // plugin code runs on the native stack, so use the stack size plugins run with
   let handle = std::thread::Builder::new().stack_size(WASM_PLUGIN_THREAD_STACK_SIZE).spawn(move || {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
@@ -122,6 +179,19 @@ pub fn run_compile_worker(args: &[OsString]) -> i32 {
     Ok(handle) => handle.join().unwrap_or(1),
     Err(_) => 1,
   }
+}
+
+// ---- protocol (worker stdin) ----
+
+/// Writes the module with its length first, so the worker knows when it has
+/// all of it while stdin stays open.
+fn write_module(writer: &mut impl Write, wasm_bytes: &[u8]) -> std::io::Result<()> {
+  write_chunk(writer, wasm_bytes)?;
+  writer.flush()
+}
+
+fn read_module(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
+  read_chunk(reader)
 }
 
 // ---- protocol (worker stdout) ----
@@ -478,7 +548,8 @@ fn run_attempts<TEnvironment: Environment>(
         }
         return Ok(result);
       }
-      AttemptOutcome::PluginError(message) => bail!("{}", message),
+      // the plugin fails the same way however often it's set up
+      AttemptOutcome::PluginError(message) => return Err(NoRetrySetupError(message).into()),
       AttemptOutcome::Failed(failure) => {
         if failure.step() == Some(WasmSetupStep::Compile) {
           compile_failures += 1;
@@ -509,7 +580,7 @@ fn run_attempts<TEnvironment: Environment>(
     }
   }
   Err(
-    SetupRetriesExhaustedError(format!(
+    NoRetrySetupError(format!(
       "Failed compiling {} after {} attempts:\n{}",
       plugin_display,
       MAX_ATTEMPTS,
@@ -532,15 +603,17 @@ struct ProcessWorker {
   system: sysinfo::System,
   messages: mpsc::Receiver<std::io::Result<WorkerMessage>>,
   stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+  /// Closes the worker's stdin when dropped.
+  _close_stdin: mpsc::Sender<()>,
 }
 
 impl ProcessWorker {
-  fn spawn(executable: &Path, wasm_bytes: Arc<[u8]>, optimize: bool, max_threads: usize) -> Result<Self> {
+  fn spawn(executable: &Path, wasm_bytes: Arc<[u8]>, optimize: bool, threads: usize) -> Result<Self> {
     let mut command = Command::new(executable);
     command.arg(COMPILE_WORKER_ARG);
     // wasmtime compiles a module's functions in parallel on rayon's global
-    // thread pool, so cap it the same way as the rest of dprint
-    command.env("RAYON_NUM_THREADS", max_threads.to_string());
+    // thread pool, so give it this worker's share (see `worker_parallelism`)
+    command.env("RAYON_NUM_THREADS", threads.to_string());
     if !optimize {
       command.arg(UNOPTIMIZED_ARG);
     }
@@ -548,9 +621,13 @@ impl ProcessWorker {
 
     // these threads end once the worker exits and its pipes close
     let mut stdin = child.stdin.take().unwrap();
+    let (close_stdin, stdin_closed) = mpsc::channel::<()>();
     std::thread::spawn(move || {
-      // dropping stdin afterwards closes it, so the worker knows it has the whole module
-      let _ = stdin.write_all(&wasm_bytes);
+      if write_module(&mut stdin, &wasm_bytes).is_ok() {
+        // stdin stays open while this worker is supervised. The worker exits
+        // once it closes, which happens however this process ends.
+        let _ = stdin_closed.recv();
+      }
     });
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let (sender, messages) = mpsc::channel();
@@ -583,6 +660,7 @@ impl ProcessWorker {
       system: sysinfo::System::new(),
       messages,
       stderr: Some(stderr),
+      _close_stdin: close_stdin,
     })
   }
 
@@ -701,6 +779,57 @@ mod test {
       _ => unreachable!(),
     }
     assert!(read_message(&mut reader).unwrap().is_none());
+  }
+
+  #[test]
+  fn protocol_sends_the_module_with_its_length() {
+    let mut bytes = Vec::new();
+    write_module(&mut bytes, b"\0asm module").unwrap();
+    // followed by nothing while stdin stays open, so the length tells the
+    // worker when it has the whole module
+    assert_eq!(read_module(&mut bytes.as_slice()).unwrap(), b"\0asm module");
+    // the parent exited part way through sending it
+    assert!(read_module(&mut &bytes[..bytes.len() - 1]).is_err());
+  }
+
+  #[test]
+  fn splits_the_threads_between_workers() {
+    // (max threads) -> (workers at once, threads per worker)
+    assert_eq!(worker_parallelism(1), (1, 1));
+    assert_eq!(worker_parallelism(2), (1, 2));
+    assert_eq!(worker_parallelism(4), (1, 4));
+    assert_eq!(worker_parallelism(6), (1, 4));
+    assert_eq!(worker_parallelism(8), (2, 4));
+    assert_eq!(worker_parallelism(16), (4, 4));
+  }
+
+  #[test]
+  fn limits_how_many_workers_run_at_once() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    static SLOTS: WorkerSlots = WorkerSlots {
+      running: Mutex::new(0),
+      freed: Condvar::new(),
+    };
+    static RUNNING: AtomicUsize = AtomicUsize::new(0);
+    static MAX_RUNNING: AtomicUsize = AtomicUsize::new(0);
+    let handles = (0..8)
+      .map(|_| {
+        std::thread::spawn(|| {
+          let _slot = SLOTS.acquire(2);
+          let running = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+          MAX_RUNNING.fetch_max(running, Ordering::SeqCst);
+          std::thread::sleep(Duration::from_millis(20));
+          RUNNING.fetch_sub(1, Ordering::SeqCst);
+        })
+      })
+      .collect::<Vec<_>>();
+    for handle in handles {
+      handle.join().unwrap();
+    }
+    assert_eq!(MAX_RUNNING.load(Ordering::SeqCst), 2);
+    assert_eq!(*SLOTS.running.lock().unwrap(), 0);
   }
 
   #[test]
@@ -984,8 +1113,11 @@ mod test {
     let mut events = steps_until(WasmSetupStep::Compile);
     events.push(WorkerEvent::Message(WorkerMessage::Error("Invalid schema version".to_string())));
     let mut attempts = Attempts::new(vec![(events, Then::Block)]);
-    assert_eq!(attempts.run().unwrap_err().to_string(), "Invalid schema version");
+    let err = attempts.run().unwrap_err();
+    assert_eq!(err.to_string(), "Invalid schema version");
     assert_eq!(attempts.spawned_optimized, vec![true]);
+    // nor should the plugin cache set it up again
+    assert!(err.downcast_ref::<NoRetrySetupError>().is_some());
   }
 
   #[test]
