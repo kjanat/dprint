@@ -160,6 +160,16 @@ pub fn artifact_id(meta: &PluginCacheMeta) -> u64 {
   hasher.finish()
 }
 
+/// Identifies the build of the plugin set up for an entry (its source, local
+/// file stamps, toolchain and info). Unlike [`artifact_id`], it stays the same
+/// when the same plugin is compiled again, and only changes when it's a
+/// different one (ex. a local plugin that was rebuilt).
+pub fn build_id(meta: &PluginCacheMeta) -> u64 {
+  let mut meta = meta.clone();
+  meta.created_time = 0;
+  artifact_id(&meta)
+}
+
 pub fn process_dir_path(hash: &str, environment: &impl Environment) -> PathBuf {
   plugins_dir(environment).join(hash)
 }

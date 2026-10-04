@@ -17,6 +17,7 @@ use super::cache_fs_locks::CacheFsLockPool;
 use super::cache_meta::LocalStamp;
 use super::cache_meta::PluginCacheMeta;
 use super::cache_meta::artifact_id;
+use super::cache_meta::build_id;
 use super::cache_meta::current_signature;
 use super::cache_meta::entry_hash;
 use super::cache_meta::plugins_dir;
@@ -48,6 +49,8 @@ pub struct PluginCacheItem {
   pub info: PluginInfo,
   pub plugin_kind: PluginKind,
   pub resolution_cache: PluginResolutionCache,
+  /// Identifies the build of the plugin (see [`PluginCache::cached_build_id`]).
+  pub build_id: u64,
 }
 
 /// What [`PluginCache::resolve_npm_for_add`] resolved: the plugin kind, the
@@ -170,6 +173,17 @@ where
       return npm_resolution::find_npm_plugin_local_path(&npm_source.specifier, config_dir, &self.environment).ok();
     }
     Some(path_source.clone())
+  }
+
+  /// Identifies the build of the plugin that's set up for the source now,
+  /// without setting it up. It's `None` when none is. Another dprint process
+  /// can set a plugin up again at any time (ex. after a local plugin was
+  /// rebuilt), so this tells whether that happened.
+  pub fn cached_build_id(&self, source_reference: &PluginSourceReference) -> Option<u64> {
+    let cache_source = self.cache_source_for_forget(&source_reference.path_source)?;
+    let cache_key = self.compute_cache_key(&cache_source).ok()?;
+    let meta = read_meta(&entry_hash(&cache_key, &self.environment), &self.environment)?;
+    (meta.source == cache_key).then(|| build_id(&meta))
   }
 
   pub async fn get_plugin_cache_item(&self, source_reference: &PluginSourceReference) -> Result<PluginCacheItem> {
@@ -569,6 +583,7 @@ where
       info: setup_result.plugin_info,
       plugin_kind,
       resolution_cache: PluginResolutionCache::new(resolutions_path, artifact_id(&meta)),
+      build_id: build_id(&meta),
     })
   }
 
@@ -588,6 +603,7 @@ where
     Some(PluginCacheItem {
       file_path: meta.artifact_file_path(hash, &self.environment),
       resolution_cache: PluginResolutionCache::new(resolutions_path(hash, &self.environment), artifact_id(&meta)),
+      build_id: build_id(&meta),
       info: meta.info,
       plugin_kind: meta.plugin_kind,
     })

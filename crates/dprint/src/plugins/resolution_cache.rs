@@ -12,7 +12,7 @@ use crate::plugins::FormatConfig;
 use crate::utils::FastInsecureHasher;
 
 /// Changes when what's stored changes, which makes older files misses.
-const RESOLUTIONS_FILE_VERSION: u32 = 1;
+const RESOLUTIONS_FILE_VERSION: u32 = 2;
 /// How many configurations to keep per plugin (ex. for a few projects that
 /// configure a plugin differently).
 const MAX_RESOLUTIONS: usize = 8;
@@ -99,13 +99,12 @@ impl PluginResolutionCache {
   fn key(&self, config: &FormatConfig) -> u64 {
     let mut hasher = FastInsecureHasher::default();
     hasher.write_u64(self.artifact_id);
-    // in order, so the same configuration is the same key
+    // As JSON, which unlike `ConfigKeyValue`'s hash keeps where arrays and
+    // objects end (ex. `[[], true]` and `[[true]]` hash the same), so that
+    // only the same configuration is the same key. In order, so the order of
+    // the properties doesn't matter.
     let plugin_config = config.plugin.iter().collect::<BTreeMap<_, _>>();
-    plugin_config.len().hash(&mut hasher);
-    for (key, value) in plugin_config {
-      key.hash(&mut hasher);
-      value.hash(&mut hasher);
-    }
+    hasher.write(&serde_json::to_vec(&plugin_config).unwrap_or_default());
     config.global.hash(&mut hasher);
     hasher.finish()
   }
@@ -131,6 +130,20 @@ mod test {
         ..Default::default()
       },
     }
+  }
+
+  #[test]
+  fn keys_configurations_by_their_structure() {
+    let cache = PluginResolutionCache::new(PathBuf::from("/resolutions.json"), 1);
+    let array = |values: Vec<ConfigKeyValue>| ConfigKeyValue::Array(values);
+    // the same values, nested differently
+    let a = config(&[("value", array(vec![array(vec![]), ConfigKeyValue::Bool(true)]))], None);
+    let b = config(&[("value", array(vec![array(vec![ConfigKeyValue::Bool(true)])]))], None);
+    assert_ne!(cache.key(&a), cache.key(&b));
+    // the order of the properties doesn't matter
+    let c = config(&[("a", ConfigKeyValue::Bool(true)), ("b", ConfigKeyValue::Bool(false))], None);
+    let d = config(&[("b", ConfigKeyValue::Bool(false)), ("a", ConfigKeyValue::Bool(true))], None);
+    assert_eq!(cache.key(&c), cache.key(&d));
   }
 
   fn resolution(ext: &str) -> PluginResolution {

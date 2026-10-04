@@ -366,16 +366,18 @@ where
   where
     F: Fn(PathBuf, Vec<u8>, Vec<u8>, Instant, TEnvironment) -> Result<(), RunForFilePathError> + 'static + Clone + Send + Sync,
   {
+    // the plugins that failed to initialize were reported, and as no file of
+    // the group can be formatted, stopping the group skips reading the rest
+    let Some(plugins) = group_plugins.get(&environment, error_logger).await else {
+      return Err(RunForFilePathError::Stop);
+    };
+
     // it's a big perf improvement to do this work on a blocking thread
     let (file_path, file_text, environment) = dprint_core::async_runtime::spawn_blocking(move || {
       let file_text = environment.read_file_bytes(&file_path)?;
       Ok::<_, std::io::Error>((file_path, file_text, environment))
     })
     .await??;
-
-    let Some(plugins) = group_plugins.get(&environment, error_logger).await else {
-      return Ok(());
-    };
 
     let (start_instant, formatted_text) =
       run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text).await?;

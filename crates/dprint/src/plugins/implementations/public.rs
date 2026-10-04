@@ -1,6 +1,5 @@
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::bail;
 use dprint_core::async_runtime::FutureExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -101,6 +100,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
         let file_path = cache_item.file_path.clone();
         let wasm_module_creator = wasm_module_creator.clone();
         let info = cache_item.info.clone();
+        let build_id = cache_item.build_id;
         move || {
           load_wasm_module(
             environment.clone(),
@@ -108,6 +108,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
             plugin_reference.clone(),
             file_path.clone(),
             info.clone(),
+            build_id,
             wasm_module_creator.clone(),
           )
           .boxed_local()
@@ -145,18 +146,31 @@ pub async fn create_plugin<TEnvironment: Environment>(
 /// The module can fail to read or deserialize (ex. it was compiled for a CPU
 /// with different features, or by a different wasm engine/rustc version, or
 /// the cache file is corrupt). When that happens, this forgets the cache,
-/// recompiles from source, and tries once more. `info` is what the run knows
-/// of the plugin from the cache, which the recompiled plugin must match.
+/// recompiles from source, and tries once more.
+///
+/// `info` and `build_id` are of the build the run started with, whose info
+/// and resolutions it already matched files and resolved configuration with.
+/// The module loaded must be of that build.
 async fn load_wasm_module<TEnvironment: Environment>(
   environment: TEnvironment,
   plugin_cache: Rc<PluginCache<TEnvironment>>,
   plugin_reference: PluginSourceReference,
   file_path: PathBuf,
   info: PluginInfo,
+  build_id: u64,
   wasm_module_creator: WasmModuleCreator,
 ) -> Result<wasm::WasmModule> {
   let result = match load_compiled_wasm_module_in_background(&environment, file_path, &wasm_module_creator).await {
-    Ok(module) => Ok(module),
+    Ok(module) => {
+      // Another dprint process may have set the plugin up again since this
+      // run created it (ex. a local plugin that was rebuilt while `dprint lsp`
+      // runs), which replaces the module at the same path. One that's still
+      // being set up when this checks goes unnoticed.
+      if plugin_cache.cached_build_id(&plugin_reference).is_some_and(|current| current != build_id) {
+        return Err(changed_while_running_error(&plugin_reference, &info, None));
+      }
+      Ok(module)
+    }
     Err(err) => {
       log_debug!(
         environment,
@@ -164,18 +178,11 @@ async fn load_wasm_module<TEnvironment: Environment>(
         err
       );
       match plugin_cache.forget_and_recreate(&plugin_reference).await {
-        // The source served a different plugin (ex. a url without a checksum
-        // that now has a new version). The run already matched files and
-        // resolved configuration with what the cache said about the old one,
-        // so it can't switch. The new one stays cached for the next run.
-        Ok(cache_item) if cache_item.info != info => bail!(
-          "Error loading plugin {}: it changed while dprint was running ({} {} is now {} {}). Run dprint again.",
-          plugin_reference.display(),
-          info.name,
-          info.version,
-          cache_item.info.name,
-          cache_item.info.version,
-        ),
+        // the source is a different plugin now (ex. a url without a checksum
+        // that serves a new version), which stays cached for the next run
+        Ok(cache_item) if cache_item.build_id != build_id => {
+          return Err(changed_while_running_error(&plugin_reference, &info, Some(&cache_item.info)));
+        }
         Ok(cache_item) => load_compiled_wasm_module_in_background(&environment, cache_item.file_path, &wasm_module_creator).await,
         Err(err) => Err(err),
       }
@@ -190,6 +197,23 @@ async fn load_wasm_module<TEnvironment: Environment>(
       Err(err).with_context(|| format!("Error loading plugin {}", plugin_reference.display()))
     }
   }
+}
+
+/// The error for a plugin whose build changed while dprint was running. The
+/// run can't switch to the new build midway, as it matched files and resolved
+/// configuration with the old one.
+fn changed_while_running_error(plugin_reference: &PluginSourceReference, info: &PluginInfo, new_info: Option<&PluginInfo>) -> anyhow::Error {
+  let change = match new_info {
+    Some(new_info) if new_info.name != info.name || new_info.version != info.version => {
+      format!(" ({} {} is now {} {})", info.name, info.version, new_info.name, new_info.version)
+    }
+    _ => String::new(),
+  };
+  anyhow::anyhow!(
+    "Error loading plugin {}: it changed while dprint was running{}. Run dprint again.",
+    plugin_reference.display(),
+    change
+  )
 }
 
 async fn load_compiled_wasm_module_in_background<TEnvironment: Environment>(
@@ -311,6 +335,45 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     assert_eq!(cache_item.info.version, "0.1.0");
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[tokio::test]
+  async fn should_error_when_another_process_set_up_a_different_build() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
+    let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
+    let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
+    let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
+      .await
+      .unwrap();
+
+    // ex. another dprint process sets it up again after the url changed,
+    // replacing the module this plugin would load
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_0_1_0_BYTES);
+    PluginCache::new(environment.clone()).forget_and_recreate(&plugin_reference).await.unwrap();
+    let err = plugin.initialize().await.err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while dprint was running. Run dprint again."
+    );
+    environment.take_stderr_messages();
+  }
+
+  #[tokio::test]
+  async fn should_load_a_plugin_compiled_again_from_the_same_source() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
+    let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
+    let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
+    let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
+      .await
+      .unwrap();
+
+    // the same build compiled again isn't a change
+    PluginCache::new(environment.clone()).forget_and_recreate(&plugin_reference).await.unwrap();
+    let plugin = plugin.initialize().await.unwrap();
+    assert!(plugin.license_text().await.is_ok());
+    environment.take_stderr_messages();
   }
 
   // https://github.com/dprint/dprint/issues/734
