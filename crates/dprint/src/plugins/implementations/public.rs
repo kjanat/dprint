@@ -93,7 +93,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
       // compiled for a CPU with different features, or by a different
       // wasm engine/rustc version, or the cache file is corrupt). When that happens,
       // forget the cache, recompile from source, and try once more.
-      let plugin = match create_wasm_plugin(&environment, &cache_item, wasm_module_creator) {
+      let plugin = match create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await {
         Ok(plugin) => plugin,
         Err(err) => {
           log_debug!(
@@ -104,7 +104,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
 
           // forget and try again
           let cache_item = plugin_cache.forget_and_recreate(plugin_reference).await?;
-          create_wasm_plugin(&environment, &cache_item, wasm_module_creator)?
+          create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await?
         }
       };
       Ok(Box::new(plugin))
@@ -132,12 +132,20 @@ pub async fn create_plugin<TEnvironment: Environment>(
 /// Reads the cached compiled Wasm module and loads it, verifying it can run on
 /// this machine. Returns an error when the cache is unreadable or the module
 /// can't be loaded so the caller can recompile from source.
-fn create_wasm_plugin<TEnvironment: Environment>(
+async fn create_wasm_plugin<TEnvironment: Environment>(
   environment: &TEnvironment,
   cache_item: &PluginCacheItem,
   wasm_module_creator: &WasmModuleCreator,
 ) -> Result<wasm::WasmPlugin<TEnvironment>> {
-  let module = load_compiled_wasm_module(environment, &cache_item.file_path, wasm_module_creator)?;
+  // the plugins are resolved concurrently on one thread, so this loads them
+  // in parallel rather than one after the other
+  let module = dprint_core::async_runtime::spawn_blocking({
+    let environment = environment.clone();
+    let file_path = cache_item.file_path.clone();
+    let wasm_module_creator = wasm_module_creator.clone();
+    move || load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator)
+  })
+  .await??;
   Ok(wasm::WasmPlugin::new(module, cache_item.info.clone(), environment.clone()))
 }
 
