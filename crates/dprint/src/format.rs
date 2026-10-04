@@ -28,6 +28,43 @@ struct TaskWork {
   file_paths: Vec<PathBuf>,
 }
 
+type InitializedPlugins = Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>;
+
+/// The plugins that format a group of files, which are initialized when the
+/// first of the files needs formatting. When every file is unchanged since the
+/// last run, they aren't loaded at all.
+struct GroupPlugins {
+  plugins: Vec<Rc<PluginWithConfig>>,
+  /// `None` when they failed to initialize, which was already reported.
+  initialized: tokio::sync::OnceCell<Option<InitializedPlugins>>,
+}
+
+impl GroupPlugins {
+  async fn get<TEnvironment: Environment>(&self, environment: &TEnvironment, error_logger: &ErrorCountLogger<TEnvironment>) -> Option<InitializedPlugins> {
+    self
+      .initialized
+      .get_or_init(|| async {
+        let mut plugins = Vec::with_capacity(self.plugins.len());
+        for plugin in &self.plugins {
+          match plugin.get_or_create_checking_config_diagnostics(environment).await {
+            Ok(GetPluginResult::Success(initialized_plugin)) => plugins.push((plugin.clone(), initialized_plugin)),
+            Ok(GetPluginResult::HadDiagnostics(count)) => {
+              error_logger.add_error_count(count);
+              return None;
+            }
+            Err(err) => {
+              error_logger.log_error(&format!("Error creating plugin {}. Message: {}", plugin.name(), err));
+              return None;
+            }
+          }
+        }
+        Some(Rc::new(plugins))
+      })
+      .await
+      .clone()
+  }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct EnsureStableFormat(pub bool);
 
@@ -121,26 +158,10 @@ where
       let scope = scope.clone();
       async move {
         let _semaphore_permits = SemaphorePermitReleaser { index, semaphores };
-        // resolve the plugins
-        let mut plugins = Vec::with_capacity(task_work.plugins.len());
-        for plugin in task_work.plugins {
-          let result = match plugin.get_or_create_checking_config_diagnostics(&environment).await {
-            Ok(result) => result,
-            Err(err) => {
-              error_logger.log_error(&format!("Error creating plugin {}. Message: {}", plugin.name(), err));
-              return;
-            }
-          };
-          plugins.push(match result {
-            GetPluginResult::HadDiagnostics(count) => {
-              error_logger.add_error_count(count);
-              return;
-            }
-            GetPluginResult::Success(initialized_plugin) => (plugin, initialized_plugin),
-          })
-        }
-
-        let plugins = Rc::new(plugins);
+        let plugins = Rc::new(GroupPlugins {
+          plugins: task_work.plugins,
+          initialized: Default::default(),
+        });
         let mut format_handles = Vec::with_capacity(task_work.file_paths.len());
         for file_path in task_work.file_paths.into_iter() {
           let permit = match task_work.semaphore.acquire().await {
@@ -171,7 +192,17 @@ where
                 }
               }
             });
-            let result = run_for_file_path(environment, incremental_file, scope, plugins, file_path.clone(), ensure_stable_format, f).await;
+            let result = run_for_file_path(
+              environment,
+              incremental_file,
+              scope,
+              plugins,
+              &error_logger,
+              file_path.clone(),
+              ensure_stable_format,
+              f,
+            )
+            .await;
             long_format_token.cancel();
             if let Err(err) = result {
               match err {
@@ -215,11 +246,13 @@ where
   };
 
   #[inline]
+  #[allow(clippy::too_many_arguments)]
   async fn run_for_file_path<F, TEnvironment: Environment>(
     environment: TEnvironment,
     incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
     scope: Rc<PluginsScope<TEnvironment>>,
-    plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
+    group_plugins: Rc<GroupPlugins>,
+    error_logger: &ErrorCountLogger<TEnvironment>,
     file_path: PathBuf,
     ensure_stable_format: EnsureStableFormat,
     f: F,
@@ -242,6 +275,9 @@ where
     .await??;
 
     let Some((file_path, file_text, environment)) = result else {
+      return Ok(());
+    };
+    let Some(plugins) = group_plugins.get(&environment, error_logger).await else {
       return Ok(());
     };
 

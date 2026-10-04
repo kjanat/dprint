@@ -19,6 +19,8 @@ use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::process::HostFormatCallback;
 
+use super::PluginResolutionCache;
+
 /// Looks for a [`CriticalFormatError`] in an `anyhow::Error`, whether it was
 /// stored directly or wrapped in a [`FormatError`].
 pub fn maybe_critical_format_error(err: &anyhow::Error) -> Option<&CriticalFormatError> {
@@ -42,7 +44,7 @@ pub fn anyhow_to_format_error(err: anyhow::Error) -> FormatError {
 }
 
 #[async_trait(?Send)]
-pub trait Plugin: Send + Sync {
+pub trait Plugin {
   fn info(&self) -> &PluginInfo;
 
   /// Initializes the plugin.
@@ -50,6 +52,12 @@ pub trait Plugin: Send + Sync {
 
   /// Gets if this is a process plugin.
   fn is_process_plugin(&self) -> bool;
+
+  /// Where what the plugin resolved configurations to is kept, for a plugin
+  /// whose resolution only depends on the configuration.
+  fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
+    None
+  }
 }
 
 pub struct FormatConfig {

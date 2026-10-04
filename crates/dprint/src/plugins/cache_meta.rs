@@ -127,6 +127,7 @@ pub fn write_meta(hash: &str, meta: &PluginCacheMeta, environment: &impl Environ
 pub fn remove_entry(hash: &str, environment: &impl Environment) {
   let _ = environment.remove_file(meta_path(hash, environment));
   let _ = environment.remove_file(wasm_artifact_path(hash, environment));
+  let _ = environment.remove_file(resolutions_path(hash, environment));
   environment.try_remove_dir_all(process_dir_path(hash, environment));
 }
 
@@ -146,6 +147,19 @@ pub fn wasm_artifact_path(hash: &str, environment: &impl Environment) -> PathBuf
 }
 
 /// Destination directory a process plugin is extracted into.
+/// What the plugin resolved configurations to (see `PluginResolutionCache`).
+pub fn resolutions_path(hash: &str, environment: &impl Environment) -> PathBuf {
+  plugins_dir(environment).join(format!("{hash}.resolutions.json"))
+}
+
+/// Identifies the plugin set up for an entry, which changes whenever it's set
+/// up again (ex. a local plugin that was rebuilt).
+pub fn artifact_id(meta: &PluginCacheMeta) -> u64 {
+  let mut hasher = FastInsecureHasher::default();
+  hasher.write(serde_json::to_string(meta).unwrap_or_default().as_bytes());
+  hasher.finish()
+}
+
 pub fn process_dir_path(hash: &str, environment: &impl Environment) -> PathBuf {
   plugins_dir(environment).join(hash)
 }
@@ -206,11 +220,13 @@ mod test {
     environment.write_file(&wasm_artifact_path("h", &environment), "compiled").unwrap();
     environment.mk_dir_all(process_dir_path("h", &environment)).unwrap();
     environment.write_file(&process_dir_path("h", &environment).join("exe"), "bin").unwrap();
+    environment.write_file(resolutions_path("h", &environment), "{}").unwrap();
 
     remove_entry("h", &environment);
 
     assert!(read_meta("h", &environment).is_none());
     assert!(!environment.path_exists(&wasm_artifact_path("h", &environment)));
     assert!(!environment.path_exists(&process_dir_path("h", &environment)));
+    assert!(!environment.path_exists(resolutions_path("h", &environment)));
   }
 }

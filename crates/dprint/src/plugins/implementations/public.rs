@@ -1,6 +1,9 @@
+use anyhow::Context;
 use anyhow::Result;
+use dprint_core::async_runtime::FutureExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use dprint_core::plugins::PluginInfo;
 
@@ -10,7 +13,6 @@ use super::wasm;
 use crate::environment::Environment;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
-use crate::plugins::PluginCacheItem;
 use crate::plugins::PluginSourceReference;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
@@ -60,7 +62,7 @@ pub async fn setup_plugin<TEnvironment: Environment>(options: SetupPluginOptions
 }
 
 pub async fn create_plugin<TEnvironment: Environment>(
-  plugin_cache: &PluginCache<TEnvironment>,
+  plugin_cache: &Rc<PluginCache<TEnvironment>>,
   environment: TEnvironment,
   plugin_reference: &PluginSourceReference,
   wasm_module_creator: &WasmModuleCreator,
@@ -81,25 +83,31 @@ pub async fn create_plugin<TEnvironment: Environment>(
 
   match cache_item.plugin_kind {
     PluginKind::Wasm => {
-      // The cached compiled module can fail to read or deserialize (ex. it was
-      // compiled for a CPU with different features, or by a different
-      // wasm engine/rustc version, or the cache file is corrupt). When that happens,
-      // forget the cache, recompile from source, and try once more.
-      let plugin = match create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await {
-        Ok(plugin) => plugin,
-        Err(err) => {
-          log_debug!(
-            environment,
-            "Error loading Wasm plugin from cache. Forgetting from cache and retrying. Message: {:#}",
-            err
-          );
-
-          // forget and try again
-          let cache_item = plugin_cache.forget_and_recreate(plugin_reference).await?;
-          create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await?
+      // the module is loaded once the plugin is used, so a plugin that has
+      // nothing to format (ex. its files are unchanged) is never loaded
+      let load_module = {
+        let environment = environment.clone();
+        let plugin_cache = plugin_cache.clone();
+        let plugin_reference = plugin_reference.clone();
+        let file_path = cache_item.file_path.clone();
+        let wasm_module_creator = wasm_module_creator.clone();
+        move || {
+          load_wasm_module(
+            environment.clone(),
+            plugin_cache.clone(),
+            plugin_reference.clone(),
+            file_path.clone(),
+            wasm_module_creator.clone(),
+          )
+          .boxed_local()
         }
       };
-      Ok(Box::new(plugin))
+      Ok(Box::new(wasm::WasmPlugin::new(
+        cache_item.info,
+        Box::new(load_module),
+        cache_item.resolution_cache,
+        environment,
+      )))
     }
     PluginKind::Process => {
       let cache_item = if !environment.path_exists(&cache_item.file_path) {
@@ -121,24 +129,57 @@ pub async fn create_plugin<TEnvironment: Environment>(
   }
 }
 
-/// Reads the cached compiled Wasm module and loads it, verifying it can run on
-/// this machine. Returns an error when the cache is unreadable or the module
-/// can't be loaded so the caller can recompile from source.
-async fn create_wasm_plugin<TEnvironment: Environment>(
+/// Loads a Wasm plugin's cached compiled module.
+///
+/// The module can fail to read or deserialize (ex. it was compiled for a CPU
+/// with different features, or by a different wasm engine/rustc version, or
+/// the cache file is corrupt). When that happens, this forgets the cache,
+/// recompiles from source, and tries once more.
+async fn load_wasm_module<TEnvironment: Environment>(
+  environment: TEnvironment,
+  plugin_cache: Rc<PluginCache<TEnvironment>>,
+  plugin_reference: PluginSourceReference,
+  file_path: PathBuf,
+  wasm_module_creator: WasmModuleCreator,
+) -> Result<wasm::WasmModule> {
+  let result = match load_compiled_wasm_module_in_background(&environment, file_path, &wasm_module_creator).await {
+    Ok(module) => Ok(module),
+    Err(err) => {
+      log_debug!(
+        environment,
+        "Error loading Wasm plugin from cache. Forgetting from cache and retrying. Message: {:#}",
+        err
+      );
+      match plugin_cache.forget_and_recreate(&plugin_reference).await {
+        Ok(cache_item) => load_compiled_wasm_module_in_background(&environment, cache_item.file_path, &wasm_module_creator).await,
+        Err(err) => Err(err),
+      }
+    }
+  };
+  match result {
+    Ok(module) => Ok(module),
+    Err(err) => {
+      if let Err(forget_err) = plugin_cache.forget(&plugin_reference).await {
+        log_debug!(environment, "Error forgetting {}: {:#}", plugin_reference.display(), forget_err);
+      }
+      Err(err).with_context(|| format!("Error loading plugin {}", plugin_reference.display()))
+    }
+  }
+}
+
+async fn load_compiled_wasm_module_in_background<TEnvironment: Environment>(
   environment: &TEnvironment,
-  cache_item: &PluginCacheItem,
+  file_path: PathBuf,
   wasm_module_creator: &WasmModuleCreator,
-) -> Result<wasm::WasmPlugin<TEnvironment>> {
-  // the plugins are resolved concurrently on one thread, so this loads them
-  // in parallel rather than one after the other
-  let module = dprint_core::async_runtime::spawn_blocking({
+) -> Result<wasm::WasmModule> {
+  // the plugins are used concurrently on one thread, so this loads them in
+  // parallel rather than one after the other
+  dprint_core::async_runtime::spawn_blocking({
     let environment = environment.clone();
-    let file_path = cache_item.file_path.clone();
     let wasm_module_creator = wasm_module_creator.clone();
     move || load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator)
   })
-  .await??;
-  Ok(wasm::WasmPlugin::new(module, cache_item.info.clone(), environment.clone()))
+  .await?
 }
 
 fn load_compiled_wasm_module<TEnvironment: Environment>(
@@ -193,12 +234,34 @@ mod test {
     assert!(load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator).is_err());
   }
 
+  #[tokio::test]
+  async fn should_not_retry_loading_a_plugin_that_failed_to_load() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
+    let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
+    let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
+    let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
+    let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
+      .await
+      .unwrap();
+    environment.take_stderr_messages();
+
+    // neither the compiled module nor the plugin it's compiled from load
+    environment.write_file_bytes(&cache_item.file_path, b"corrupt").unwrap();
+    environment.add_remote_file("https://plugins.dprint.dev/test.wasm", b"corrupt");
+    assert!(plugin.initialize().await.is_err());
+    assert!(!environment.take_stderr_messages().is_empty());
+    // so it isn't recompiled again
+    assert!(plugin.initialize().await.is_err());
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
   // https://github.com/dprint/dprint/issues/734
   #[tokio::test]
   async fn should_recompile_when_cached_wasm_module_fails_to_load() {
     let environment = TestEnvironment::new();
     environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
-    let plugin_cache = PluginCache::new(environment.clone());
+    let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
     let wasm_module_creator = WasmModuleCreator::default();
     let plugin_reference = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
 
@@ -209,11 +272,16 @@ mod test {
     // corrupt the cached compiled module so it can't be deserialized/instantiated
     environment.write_file_bytes(&cache_item.file_path, b"corrupt").unwrap();
 
-    // creating the plugin should recompile from source instead of failing
+    // creating the plugin doesn't load the module
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &wasm_module_creator)
       .await
       .unwrap();
     assert_eq!(plugin.info().name, "test-plugin");
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+
+    // initializing it does, which recompiles from source instead of failing
+    let plugin = plugin.initialize().await.unwrap();
+    assert!(plugin.license_text().await.is_ok());
     assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
   }
 }

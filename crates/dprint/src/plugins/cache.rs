@@ -11,16 +11,19 @@ use dprint_core::plugins::PluginInfo;
 use sys_traits::FsMetadata;
 use sys_traits::FsMetadataValue;
 
+use super::PluginResolutionCache;
 use super::cache_fs_locks::CacheFsLockGuard;
 use super::cache_fs_locks::CacheFsLockPool;
 use super::cache_meta::LocalStamp;
 use super::cache_meta::PluginCacheMeta;
+use super::cache_meta::artifact_id;
 use super::cache_meta::current_signature;
 use super::cache_meta::entry_hash;
 use super::cache_meta::plugins_dir;
 use super::cache_meta::process_dir_path;
 use super::cache_meta::read_meta;
 use super::cache_meta::remove_entry;
+use super::cache_meta::resolutions_path;
 use super::cache_meta::to_unix_millis;
 use super::cache_meta::wasm_artifact_path;
 use super::cache_meta::write_meta;
@@ -44,6 +47,7 @@ pub struct PluginCacheItem {
   pub file_path: PathBuf,
   pub info: PluginInfo,
   pub plugin_kind: PluginKind,
+  pub resolution_cache: PluginResolutionCache,
 }
 
 /// What [`PluginCache::resolve_npm_for_add`] resolved: the plugin kind, the
@@ -555,12 +559,16 @@ where
       executable_sub_path: setup_result.executable_sub_path,
       local_stamps,
     };
+    // what the previously set up plugin resolved doesn't apply to this one
+    let resolutions_path = resolutions_path(hash, &self.environment);
+    let _ = self.environment.remove_file(&resolutions_path);
     write_meta(hash, &meta, &self.environment)?;
 
     Ok(PluginCacheItem {
       file_path: setup_result.file_path,
       info: setup_result.plugin_info,
       plugin_kind,
+      resolution_cache: PluginResolutionCache::new(resolutions_path, artifact_id(&meta)),
     })
   }
 
@@ -579,6 +587,7 @@ where
     }
     Some(PluginCacheItem {
       file_path: meta.artifact_file_path(hash, &self.environment),
+      resolution_cache: PluginResolutionCache::new(resolutions_path(hash, &self.environment), artifact_id(&meta)),
       info: meta.info,
       plugin_kind: meta.plugin_kind,
     })

@@ -34,18 +34,29 @@ use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
 use crate::plugins::Plugin;
+use crate::plugins::PluginResolutionCache;
 use crate::plugins::implementations::wasm::create_wasm_plugin_instance;
 
+/// Loads a plugin's compiled module.
+pub type LoadWasmModule = Box<dyn Fn() -> LocalBoxFuture<'static, Result<WasmModule>>>;
+
 pub struct WasmPlugin<TEnvironment: Environment> {
-  module: WasmModule,
+  load_module: LoadWasmModule,
+  /// The loaded module, or why it failed to load, which isn't tried again
+  /// (loading recompiles the plugin when its cached module fails to load).
+  module: tokio::sync::OnceCell<Result<WasmModule, String>>,
+  resolution_cache: PluginResolutionCache,
   environment: TEnvironment,
   plugin_info: PluginInfo,
 }
 
 impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
-  pub fn new(module: WasmModule, plugin_info: PluginInfo, environment: TEnvironment) -> Self {
+  /// Creates the plugin, which loads its module once it's initialized.
+  pub fn new(plugin_info: PluginInfo, load_module: LoadWasmModule, resolution_cache: PluginResolutionCache, environment: TEnvironment) -> Self {
     WasmPlugin {
-      module,
+      load_module,
+      module: Default::default(),
+      resolution_cache,
       environment,
       plugin_info,
     }
@@ -62,12 +73,22 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     false
   }
 
+  fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
+    Some(&self.resolution_cache)
+  }
+
   async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
+    let module = self
+      .module
+      .get_or_init(|| async { (self.load_module)().await.map_err(|err| format!("{:#}", err)) })
+      .await
+      .clone()
+      .map_err(|err| anyhow!(err))?;
     let environment = self.environment.clone();
     let plugin_name = self.info().name.clone();
     let plugin: Rc<dyn InitializedPlugin> = Rc::new(InitializedWasmPlugin::new(
       plugin_name.clone(),
-      self.module.clone(),
+      module,
       Arc::new({
         move |module: &WasmModule, host_format_sender| {
           let (linker, host_state) = create_pools_import_object(environment.clone(), &plugin_name, module.version(), module.engine(), host_format_sender)?;

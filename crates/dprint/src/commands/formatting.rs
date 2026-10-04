@@ -4044,6 +4044,69 @@ text2"
   }
 
   #[test]
+  fn should_only_load_wasm_plugins_that_format_files() {
+    let file_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file(file_path, "text")
+      .initialize()
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
+    environment.clear_logs();
+
+    // breaks the plugin's compiled module, so loading the plugin recompiles it
+    let break_compiled_module = || {
+      let plugins_dir = environment.get_cache_dir().join("plugins");
+      let compiled_modules = environment
+        .dir_info(&plugins_dir)
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry {
+          crate::environment::DirEntry::File { path, .. } if path.extension().is_some_and(|ext| ext == "cwasm") => Some(path),
+          _ => None,
+        })
+        .collect::<Vec<_>>();
+      assert_eq!(compiled_modules.len(), 1);
+      environment.write_file_bytes(&compiled_modules[0], b"broken").unwrap();
+    };
+    let compiling = vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string()];
+
+    // there's nothing to format, so the plugin isn't loaded
+    break_compiled_module();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+
+    // a changed file loads it
+    environment.write_file(file_path, "changed").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "changed_formatted");
+    assert_eq!(environment.take_stderr_messages(), compiling);
+
+    // and so does a configuration it hasn't resolved before
+    break_compiled_module();
+    environment
+      .write_file(
+        "./dprint.json",
+        r#"{ "test-plugin": { "ending": "custom" }, "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .unwrap();
+    environment.write_file(file_path, "text").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom");
+    assert_eq!(environment.take_stderr_messages(), compiling);
+    environment.clear_logs();
+
+    // which it then knows without loading it
+    break_compiled_module();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
   fn should_format_incrementally_when_specified_on_cli() {
     let file_path1 = "/subdir/file1.txt";
     let no_change_msg = "No change: /subdir/file1.txt";
