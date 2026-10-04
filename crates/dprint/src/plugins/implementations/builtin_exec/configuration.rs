@@ -317,6 +317,15 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
   (Some(config), diagnostics)
 }
 
+/// Splits a command into its program and arguments.
+pub fn split_command(command: &str) -> Vec<String> {
+  splitty::split_unquoted_whitespace(command)
+    .unwrap_quotes(true)
+    .filter(|p| !p.is_empty())
+    .map(String::from)
+    .collect()
+}
+
 fn parse_setup_command(command_obj: &mut ConfigKeyMap, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
   let raw = get_nullable_value::<String>(command_obj, "setupCommand", diagnostics)?;
   let mut parts = splitty::split_unquoted_whitespace(&raw)

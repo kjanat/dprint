@@ -27,11 +27,22 @@ const BUILTIN_EXEC_ENV_VAR: &str = "DPRINT_BUILTIN_EXEC";
 
 /// Creates the built-in exec plugin when the reference is to the exec plugin.
 pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> Option<Box<dyn Plugin>> {
-  if !is_exec_plugin_reference(reference) || environment.env_var(BUILTIN_EXEC_ENV_VAR).is_some_and(|value| value == "0") {
+  if !is_builtin_exec_reference(environment, reference) {
     return None;
   }
   log_debug!(environment, "Using the built-in exec plugin for {}", reference.display());
   Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default)))
+}
+
+/// Whether the reference is to the exec plugin, which dprint runs built in
+/// rather than downloading it.
+pub fn is_builtin_exec_reference<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> bool {
+  is_exec_plugin_reference(reference) && environment.env_var(BUILTIN_EXEC_ENV_VAR).is_none_or(|value| value != "0")
+}
+
+/// The program an exec command runs, split from its arguments the way exec does.
+pub fn exec_command_program(command: &str) -> Option<String> {
+  configuration::split_command(command).into_iter().next()
 }
 
 fn is_exec_plugin_reference(reference: &PluginSourceReference) -> bool {
