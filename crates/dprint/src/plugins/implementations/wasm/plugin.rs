@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use dprint_core::configuration::ConfigKeyMap;
@@ -40,11 +41,22 @@ use crate::plugins::implementations::wasm::create_wasm_plugin_instance;
 /// Loads a plugin's compiled module.
 pub type LoadWasmModule = Box<dyn Fn() -> LocalBoxFuture<'static, Result<WasmModule>>>;
 
+/// How long a module that failed to load isn't tried again, as loading it
+/// again can mean downloading and compiling the plugin. A CLI run is over
+/// well before then, so it doesn't try again, while a long running process
+/// such as `dprint lsp` gets over a failure that was temporary (ex. no
+/// network while the plugin needed compiling).
+const LOAD_FAILURE_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+enum ModuleLoad {
+  Loaded(WasmModule),
+  Failed { message: String, at: Instant },
+}
+
 pub struct WasmPlugin<TEnvironment: Environment> {
   load_module: LoadWasmModule,
-  /// The loaded module, or why it failed to load, which isn't tried again
-  /// (loading recompiles the plugin when its cached module fails to load).
-  module: tokio::sync::OnceCell<Result<WasmModule, String>>,
+  module: tokio::sync::Mutex<Option<ModuleLoad>>,
+  load_failure_retry_after: Duration,
   resolution_cache: PluginResolutionCache,
   environment: TEnvironment,
   plugin_info: PluginInfo,
@@ -56,9 +68,35 @@ impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
     WasmPlugin {
       load_module,
       module: Default::default(),
+      load_failure_retry_after: LOAD_FAILURE_RETRY_AFTER,
       resolution_cache,
       environment,
       plugin_info,
+    }
+  }
+
+  /// The plugin's module, loaded the first time it's needed. A failure is
+  /// returned again until `load_failure_retry_after` passed.
+  async fn load_module(&self) -> Result<WasmModule> {
+    let mut module = self.module.lock().await;
+    match &*module {
+      Some(ModuleLoad::Loaded(module)) => return Ok(module.clone()),
+      Some(ModuleLoad::Failed { message, at }) if at.elapsed() < self.load_failure_retry_after => return Err(anyhow!("{}", message)),
+      _ => {}
+    }
+    match (self.load_module)().await {
+      Ok(loaded) => {
+        *module = Some(ModuleLoad::Loaded(loaded.clone()));
+        Ok(loaded)
+      }
+      Err(err) => {
+        let message = format!("{:#}", err);
+        *module = Some(ModuleLoad::Failed {
+          message: message.clone(),
+          at: Instant::now(),
+        });
+        Err(anyhow!(message))
+      }
     }
   }
 }
@@ -78,12 +116,7 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
   }
 
   async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
-    let module = self
-      .module
-      .get_or_init(|| async { (self.load_module)().await.map_err(|err| format!("{:#}", err)) })
-      .await
-      .clone()
-      .map_err(|err| anyhow!(err))?;
+    let module = self.load_module().await?;
     let environment = self.environment.clone();
     let plugin_name = self.info().name.clone();
     let plugin: Rc<dyn InitializedPlugin> = Rc::new(InitializedWasmPlugin::new(
@@ -473,5 +506,62 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
 
   async fn shutdown(&self) {
     // do nothing
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use std::cell::Cell;
+
+  use super::*;
+  use crate::environment::TestEnvironment;
+  use crate::plugins::implementations::wasm::WasmModuleCreator;
+  use crate::plugins::implementations::wasm::compile;
+  use crate::test_helpers::WASM_PLUGIN_BYTES;
+
+  /// A plugin whose module fails to load the first time, and the count of
+  /// times it was loaded.
+  fn plugin_failing_to_load_once(load_failure_retry_after: Duration) -> (WasmPlugin<TestEnvironment>, Rc<Cell<usize>>) {
+    let loads = Rc::new(Cell::new(0));
+    let compiled = compile(WASM_PLUGIN_BYTES).unwrap().bytes;
+    let load_module: LoadWasmModule = Box::new({
+      let loads = loads.clone();
+      move || {
+        loads.set(loads.get() + 1);
+        let result = if loads.get() == 1 {
+          Err(anyhow!("no network"))
+        } else {
+          WasmModuleCreator::default().create_from_serialized(&compiled)
+        };
+        async move { result }.boxed_local()
+      }
+    });
+    let info = PluginInfo {
+      name: "test-plugin".to_string(),
+      version: "0.1.0".to_string(),
+      config_key: "test".to_string(),
+      help_url: String::new(),
+      config_schema_url: String::new(),
+      update_url: None,
+    };
+    let resolution_cache = PluginResolutionCache::new(PathBuf::from("/resolutions.json"), 0);
+    let mut plugin = WasmPlugin::new(info, load_module, resolution_cache, TestEnvironment::new());
+    plugin.load_failure_retry_after = load_failure_retry_after;
+    (plugin, loads)
+  }
+
+  #[tokio::test]
+  async fn returns_a_load_failure_again_until_it_may_be_retried() {
+    let (plugin, loads) = plugin_failing_to_load_once(LOAD_FAILURE_RETRY_AFTER);
+    assert_eq!(plugin.load_module().await.err().unwrap().to_string(), "no network");
+    assert_eq!(plugin.load_module().await.err().unwrap().to_string(), "no network");
+    assert_eq!(loads.get(), 1);
+
+    // once it may be retried, ex. in a long running `dprint lsp`
+    let (plugin, loads) = plugin_failing_to_load_once(Duration::ZERO);
+    assert!(plugin.load_module().await.is_err());
+    assert!(plugin.load_module().await.is_ok());
+    assert!(plugin.load_module().await.is_ok());
+    assert_eq!(loads.get(), 2);
   }
 }
