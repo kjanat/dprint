@@ -119,21 +119,23 @@ impl PluginWithConfig {
   /// This is used for the "incremental" feature to tell if a plugin has changed state.
   pub fn incremental_hash(&self, hasher: &mut impl Hasher) {
     use std::hash::Hash;
-    // list everything in here that would affect formatting
-    hasher.write(self.info().name.as_bytes());
-    hasher.write(self.info().version.as_bytes());
+    // list everything in here that would affect formatting, with the strings'
+    // `Hash`, which ends them, so where one ends is part of the hash
+    self.info().name.hash(hasher);
+    self.info().version.hash(hasher);
 
     // serialize the config keys in order to prevent the hash from changing
     let sorted_config = self.format_config.plugin.iter().collect::<BTreeMap<_, _>>();
+    sorted_config.len().hash(hasher);
     for (key, value) in sorted_config {
-      hasher.write(key.as_bytes());
+      key.hash(hasher);
       value.hash(hasher);
     }
 
     // include the plugin's resolved config so that anything it derives at
     // resolution time but isn't present in the raw config map (ex. the exec
     // plugin folding `cacheKeyFiles` contents into its `cacheKey`) busts the cache
-    hasher.write(self.serialized_resolved_config.as_bytes());
+    self.serialized_resolved_config.hash(hasher);
 
     if let Some(associations) = &self.associations {
       associations.len().hash(hasher);
