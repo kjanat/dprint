@@ -9,6 +9,7 @@
 //! serves those references itself instead of downloading the plugin.
 
 mod configuration;
+mod executable;
 mod handler;
 
 use crate::environment::Environment;

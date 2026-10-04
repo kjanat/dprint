@@ -37,6 +37,7 @@ use tokio::sync::oneshot::Sender;
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
+use super::executable::resolve_executable;
 
 struct ChildKillOnDrop(std::process::Child);
 
@@ -170,7 +171,7 @@ pub async fn format_bytes(
     let args = maybe_substitute_variables(&file_path, &config, command);
 
     let mut child = ChildKillOnDrop(
-      Command::new(&command.executable)
+      Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
         .current_dir(&command.cwd)
         .stdout(Stdio::piped())
         .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
@@ -308,6 +309,10 @@ pub struct SetupState {
   cells: Rc<RefCell<HashMap<String, Rc<OnceCell<()>>>>>,
   /// Setup commands that timed out, so they aren't retried for every file.
   timed_out: Rc<RefCell<HashMap<String, String>>>,
+  /// Executables found through PATHEXT, keyed by the executable and its cwd.
+  /// Only found ones are kept, since a setup command may install one later.
+  #[cfg_attr(not(windows), allow(dead_code))]
+  executables: Rc<RefCell<HashMap<(String, PathBuf), PathBuf>>>,
 }
 
 enum SetupRun {
@@ -322,6 +327,22 @@ enum SetupInitError {
 }
 
 impl SetupState {
+  fn resolve_executable(&self, executable: &str, cwd: &Path) -> PathBuf {
+    if !cfg!(windows) {
+      // nothing to resolve
+      return PathBuf::from(executable);
+    }
+    let key = (executable.to_string(), cwd.to_path_buf());
+    if let Some(path) = self.executables.borrow().get(&key) {
+      return path.clone();
+    }
+    let path = resolve_executable(executable, cwd);
+    if path.as_os_str() != executable {
+      self.executables.borrow_mut().insert(key, path.clone());
+    }
+    path
+  }
+
   async fn run_once(&self, cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<SetupRun, FormatError> {
     // the cwd is part of the key because the same command run in different
     // directories may produce different results
@@ -336,7 +357,11 @@ impl SetupState {
     // get_or_try_init ensures only one caller runs the setup at a time and that
     // the others wait for it to finish; a failure is not cached so it can be
     // retried by the next file rather than poisoning all formatting
-    match cell.get_or_try_init(|| run_setup_command(cwd, setup_command, timeout, token)).await {
+    let executable = self.resolve_executable(&setup_command.executable, cwd);
+    match cell
+      .get_or_try_init(|| run_setup_command(cwd, &executable, setup_command, timeout, token))
+      .await
+    {
       Ok(()) => Ok(SetupRun::Completed),
       Err(SetupInitError::Cancelled) => Ok(SetupRun::Cancelled),
       Err(SetupInitError::Failed(err)) => Err(err),
@@ -348,9 +373,15 @@ impl SetupState {
   }
 }
 
-async fn run_setup_command(cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<(), SetupInitError> {
+async fn run_setup_command(
+  cwd: &Path,
+  executable: &Path,
+  setup_command: &SetupCommand,
+  timeout: Duration,
+  token: &Arc<dyn CancellationToken>,
+) -> Result<(), SetupInitError> {
   let mut child = ChildKillOnDrop(
-    Command::new(&setup_command.executable)
+    Command::new(executable)
       .current_dir(cwd)
       .stdin(Stdio::null())
       // a plugin must not write to stdout (it's the protocol channel)
