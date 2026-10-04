@@ -168,7 +168,7 @@ pub async fn format_bytes(
     }
 
     // format here
-    let args = maybe_substitute_variables(&file_path, &config, command);
+    let args = maybe_substitute_variables(&file_path, &config, command)?;
 
     let mut child = ChildKillOnDrop(
       Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
@@ -291,10 +291,26 @@ async fn handle_child_exit_status(ok_text: Vec<u8>, err_rx: Receiver<Vec<u8>>, e
     return Ok(ok_text);
   }
   Err(FormatError::new(format!(
-    "Child process exited with code {}: {}",
-    exit_status.code().unwrap(),
-    String::from_utf8_lossy(&err_rx.await.expect("Could not propagate error message from child process"))
+    "Child process exited with {}: {}",
+    exit_status_text(exit_status),
+    String::from_utf8_lossy(&err_rx.await.unwrap_or_default())
   )))
+}
+
+/// How a process that didn't succeed ended. A process killed by a signal has
+/// no exit code.
+fn exit_status_text(exit_status: ExitStatus) -> String {
+  if let Some(code) = exit_status.code() {
+    return format!("code {}", code);
+  }
+  #[cfg(unix)]
+  {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(signal) = exit_status.signal() {
+      return format!("signal {}", signal);
+    }
+  }
+  "an unknown status".to_string()
 }
 
 fn timeout_err(config: &Configuration) -> FormatError {
@@ -420,12 +436,9 @@ async fn run_setup_command(
     result = result_future => match result {
       Ok(exit_status) if exit_status.success() => Ok(()),
       Ok(exit_status) => Err(SetupInitError::Failed(FormatError::new(format!(
-        "Setup command '{}' exited with code {}: {}",
+        "Setup command '{}' exited with {}: {}",
         setup_command.executable,
-        exit_status
-          .code()
-          .map(|code| code.to_string())
-          .unwrap_or_else(|| "unknown".to_string()),
+        exit_status_text(exit_status),
         String::from_utf8_lossy(&err_rx.await.unwrap_or_default())
       )))),
       Err(err) => Err(SetupInitError::Failed(err)),
@@ -462,7 +475,7 @@ where
   Ok(())
 }
 
-fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command: &CommandConfiguration) -> Vec<String> {
+fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command: &CommandConfiguration) -> Result<Vec<String>, FormatError> {
   let mut handlebars = Handlebars::new();
   handlebars.set_strict_mode(true);
 
@@ -485,14 +498,17 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
     timeout: config.timeout,
   };
 
-  let mut c_args = vec![];
-  for arg in &command.args {
-    let formatted = handlebars
-      .render_template(arg, &vars)
-      .unwrap_or_else(|err| panic!("Cannot format: {}\n\n{}", arg, err));
-    c_args.push(formatted);
-  }
-  c_args
+  // an argument can be valid template syntax yet use a variable that doesn't
+  // exist (ex. `{{filePath}}`), which strict mode only finds when rendering
+  command
+    .args
+    .iter()
+    .map(|arg| {
+      handlebars
+        .render_template(arg, &vars)
+        .map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err)))
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -553,6 +569,24 @@ mod test {
         )
         .to_string()
       )
+    );
+  }
+
+  #[tokio::test]
+  async fn errors_for_an_unknown_template_variable() {
+    // valid template syntax, but the variable is `file_path`
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] }));
+    let err = format(&config, "text", &SetupState::default()).await.unwrap_err();
+    assert!(err.starts_with("Cannot substitute the variables in argument '{{filePath}}': "), "{}", err);
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn errors_for_a_formatter_killed_by_a_signal() {
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "sh -c \"kill -TERM $$\"", "exts": ["txt"] }] }));
+    assert_eq!(
+      format(&config, "text", &SetupState::default()).await,
+      Err("Child process exited with signal 15: ".to_string())
     );
   }
 
