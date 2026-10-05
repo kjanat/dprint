@@ -19,8 +19,8 @@ The CLI has version 0.7.3 of this plugin built in. When a config references that
 Compared to the downloaded plugin, the built-in one:
 
 - Kills a command that times out or is cancelled instead of leaving it running.
-- Supports a `"setupTimeout"` option (default: `300` seconds) after which a `setupCommand` is killed.
-- Runs a `setupCommand` once for the files that need it, also when formatting them in parallel. Its outcome, including a failure or a timeout, applies to every file rather than being retried for each one, and it may run for the longest `"setupTimeout"` of the configurations that use it. A file whose formatting is cancelled stops waiting for it, and it's killed once no file waits for it.
+- Supports a `"setupTimeout"` option (default: `300` seconds): how long a file waits for its `setupCommand`, which is killed once no file waits for it.
+- Runs a `setupCommand` once for the files that need it, also when formatting them in parallel. Each file waits for it until its own `"setupTimeout"` or until its formatting is cancelled, while it keeps running for the files that still wait. Its success applies to every file after it. A failure (it couldn't start, it exited unsuccessfully, or the last file waiting for it timed out) applies to every file for 10 seconds rather than being retried for each one, after which the next file runs it again, waiting twice as long after each failure in a row, up to 10 minutes. So a long running process such as an editor's language server recovers once what made it fail is fixed.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
 - Passes `{{file_path}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, where the plugin escaped them for HTML (ex. a `&` in a file path became `&amp;`). They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
 
