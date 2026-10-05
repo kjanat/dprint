@@ -432,7 +432,7 @@ enum Waited {
 }
 
 impl SetupState {
-  #[cfg(test)]
+  #[cfg(all(test, unix))]
   fn with_first_retry_delay(first_retry_delay: Duration) -> Self {
     Self {
       first_retry_delay,
