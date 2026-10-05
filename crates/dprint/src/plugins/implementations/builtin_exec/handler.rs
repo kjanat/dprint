@@ -24,9 +24,6 @@ use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::PluginResolveConfigurationResult;
-use handlebars::Handlebars;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
@@ -38,6 +35,8 @@ use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
+use super::template::TemplateValues;
+use super::template::render_template;
 
 #[derive(Default)]
 pub struct ExecHandler {
@@ -464,38 +463,19 @@ where
 }
 
 fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command: &CommandConfiguration) -> Result<Vec<String>, FormatError> {
-  let mut handlebars = Handlebars::new();
-  handlebars.set_strict_mode(true);
-
-  #[derive(Clone, Serialize, Deserialize)]
-  struct TemplateVariables {
-    file_path: String,
-    line_width: u32,
-    use_tabs: bool,
-    indent_width: u8,
-    cwd: String,
-    timeout: u32,
-  }
-
-  let vars = TemplateVariables {
-    file_path: file_path.to_string_lossy().to_string(),
+  let values = TemplateValues {
+    file_path,
     line_width: config.line_width,
     use_tabs: config.use_tabs,
     indent_width: config.indent_width,
-    cwd: command.cwd.to_string_lossy().to_string(),
+    cwd: &command.cwd,
     timeout: config.timeout,
   };
-
-  // an argument can be valid template syntax yet use a variable that doesn't
-  // exist (ex. `{{filePath}}`), which strict mode only finds when rendering
+  // the configuration only has valid templates, but say what's wrong if not
   command
     .args
     .iter()
-    .map(|arg| {
-      handlebars
-        .render_template(arg, &vars)
-        .map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err)))
-    })
+    .map(|arg| render_template(arg, &values).map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err))))
     .collect()
 }
 
@@ -522,6 +502,7 @@ mod test {
     Arc::new(result.config)
   }
 
+  #[cfg(unix)]
   async fn format(config: &Arc<Configuration>, text: &str, setup_state: &SetupState) -> Result<Option<String>, String> {
     format_with_token(config, text, setup_state, Arc::new(NullCancellationToken)).await
   }
@@ -671,12 +652,22 @@ mod test {
     );
   }
 
+  #[cfg(unix)]
   #[tokio::test]
-  async fn errors_for_an_unknown_template_variable() {
-    // valid template syntax, but the variable is `file_path`
-    let config = resolve(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] }));
-    let err = format(&config, "text", &SetupState::default()).await.unwrap_err();
-    assert!(err.starts_with("Cannot substitute the variables in argument '{{filePath}}': "), "{}", err);
+  async fn passes_variables_to_the_command_as_they_are() {
+    // not escaped for HTML, like Handlebars did
+    let file_path = r#"/dir/a&b <"c"> 'd'.txt"#;
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "printf %s {{file_path}}", "exts": ["txt"] }] }));
+    let formatted = format_bytes(
+      PathBuf::from(file_path),
+      b"text".to_vec(),
+      config,
+      Arc::new(NullCancellationToken),
+      &SetupState::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(formatted, Some(file_path.as_bytes().to_vec()));
   }
 
   #[cfg(unix)]
