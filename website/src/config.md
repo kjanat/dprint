@@ -65,28 +65,11 @@ Property names with a dot in them are quoted, like they are in JSON. Arrays of o
 
 Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
 
-### Schema
-
-`dprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
-
-```shellsession
-dprint schema > dprint.schema.json
-```
-
-<!-- dprint-ignore -->
-```toml
-#:schema ./dprint.schema.json
-```
-
-In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
-
-The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
-
-The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
+The `#:schema` comment gives editors that read it (ex. [tombi](https://github.com/tombi-toml/tombi)) dprint's schema of the file. The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
 
 ```toml
 [[schemas]]
-path = "dprint.schema.json"
+path = "https://dprint.dev/schemas/v0.json"
 include = ["dprint.toml"]
 ```
 

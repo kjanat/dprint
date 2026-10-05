@@ -41,11 +41,6 @@ impl PluginWrapper {
     self.plugin.is_process_plugin()
   }
 
-  /// The schema of the plugin's configuration when it's built into dprint.
-  pub fn config_schema(&self) -> Option<&'static str> {
-    self.plugin.config_schema()
-  }
-
   pub fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
     self.plugin.resolution_cache()
   }

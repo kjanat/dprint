@@ -53,12 +53,6 @@ pub trait Plugin {
   /// Gets if this is a process plugin.
   fn is_process_plugin(&self) -> bool;
 
-  /// The schema of the plugin's configuration when it's built into dprint, so
-  /// it isn't downloaded from the plugin info's `config_schema_url`.
-  fn config_schema(&self) -> Option<&'static str> {
-    None
-  }
-
   /// Where what the plugin resolved configurations to is kept, for a plugin
   /// whose resolution only depends on the configuration.
   fn resolution_cache(&self) -> Option<&PluginResolutionCache> {

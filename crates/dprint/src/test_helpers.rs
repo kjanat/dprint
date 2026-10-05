@@ -343,7 +343,6 @@ SUBCOMMANDS:
   config             Functionality related to the configuration file.
   file-paths         Prints the resolved file paths for the plugins based on the args and configuration.
   resolved-config    Prints the resolved configuration for the plugins based on the args and configuration.
-  schema             Prints a JSON schema of the configuration file, including the plugins' configuration.
   incremental-state  Prints the state used to determine whether the incremental cache would be invalidated.
   format-times       Prints the amount of time it takes to format each file. Use this for debugging.
   clear-cache        Deletes the plugin cache directory.

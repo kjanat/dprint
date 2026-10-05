@@ -28,15 +28,13 @@ pub struct InProcessPlugin<THandler: AsyncPluginHandler> {
   // a constructor rather than the handler itself because a plugin must be
   // `Send + Sync`, which handlers needn't be
   create_handler: fn() -> THandler,
-  config_schema: &'static str,
 }
 
 impl<THandler: AsyncPluginHandler> InProcessPlugin<THandler> {
-  pub fn new(create_handler: fn() -> THandler, config_schema: &'static str) -> Self {
+  pub fn new(create_handler: fn() -> THandler) -> Self {
     Self {
       info: create_handler().plugin_info(),
       create_handler,
-      config_schema,
     }
   }
 }
@@ -56,10 +54,6 @@ impl<THandler: AsyncPluginHandler> Plugin for InProcessPlugin<THandler> {
 
   fn is_process_plugin(&self) -> bool {
     false
-  }
-
-  fn config_schema(&self) -> Option<&'static str> {
-    Some(self.config_schema)
   }
 }
 
