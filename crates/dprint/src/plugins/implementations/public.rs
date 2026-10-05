@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 use std::path::PathBuf;
 
 use dprint_core::plugins::PluginInfo;
@@ -92,7 +93,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
       // compiled for a CPU with different features, or by a different
       // wasm engine/rustc version, or the cache file is corrupt). When that happens,
       // forget the cache, recompile from source, and try once more.
-      let plugin = match create_wasm_plugin(&environment, &cache_item, wasm_module_creator) {
+      let plugin = match create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await {
         Ok(plugin) => plugin,
         Err(err) => {
           log_debug!(
@@ -103,7 +104,7 @@ pub async fn create_plugin<TEnvironment: Environment>(
 
           // forget and try again
           let cache_item = plugin_cache.forget_and_recreate(plugin_reference).await?;
-          create_wasm_plugin(&environment, &cache_item, wasm_module_creator)?
+          create_wasm_plugin(&environment, &cache_item, wasm_module_creator).await?
         }
       };
       Ok(Box::new(plugin))
@@ -131,13 +132,48 @@ pub async fn create_plugin<TEnvironment: Environment>(
 /// Reads the cached compiled Wasm module and loads it, verifying it can run on
 /// this machine. Returns an error when the cache is unreadable or the module
 /// can't be loaded so the caller can recompile from source.
-fn create_wasm_plugin<TEnvironment: Environment>(
+async fn create_wasm_plugin<TEnvironment: Environment>(
   environment: &TEnvironment,
   cache_item: &PluginCacheItem,
   wasm_module_creator: &WasmModuleCreator,
 ) -> Result<wasm::WasmPlugin<TEnvironment>> {
-  let file_bytes = environment.read_file_bytes(&cache_item.file_path)?;
-  wasm::WasmPlugin::new(&file_bytes, cache_item.info.clone(), wasm_module_creator, environment.clone())
+  // the plugins are resolved concurrently on one thread, so this loads them
+  // in parallel rather than one after the other
+  let module = dprint_core::async_runtime::spawn_blocking({
+    let environment = environment.clone();
+    let file_path = cache_item.file_path.clone();
+    let wasm_module_creator = wasm_module_creator.clone();
+    move || load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator)
+  })
+  .await??;
+  Ok(wasm::WasmPlugin::new(module, cache_item.info.clone(), environment.clone()))
+}
+
+fn load_compiled_wasm_module<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  file_path: &Path,
+  wasm_module_creator: &WasmModuleCreator,
+) -> Result<wasm::WasmModule> {
+  // Mapping the file instead of reading it skips copying the module twice
+  // (into a buffer, then into executable memory), which is most of the time
+  // it takes to load a large plugin. Not on Windows, where a mapped file can't
+  // be deleted or replaced, so `dprint clear-cache` would fail while a
+  // language server has the plugin loaded.
+  if cfg!(unix) && environment.is_real() {
+    match wasm_module_creator.create_from_serialized_file(file_path) {
+      Ok(module) => return Ok(module),
+      // ex. the cache directory is on a file system mounted noexec, which
+      // doesn't allow mapping its files as executable
+      Err(err) => log_debug!(
+        environment,
+        "Failed mapping compiled Wasm module {}, so reading it instead: {:#}",
+        file_path.display(),
+        err
+      ),
+    }
+  }
+  let file_bytes = environment.read_file_bytes(file_path)?;
+  wasm_module_creator.create_from_serialized(&file_bytes)
 }
 
 #[cfg(test)]
@@ -145,6 +181,25 @@ mod test {
   use super::*;
   use crate::environment::TestEnvironment;
   use crate::test_helpers::WASM_PLUGIN_BYTES;
+
+  #[test]
+  #[allow(clippy::disallowed_methods)] // a real environment needs real files
+  fn loads_compiled_wasm_modules_in_a_real_environment() {
+    let environment = crate::environment::RealEnvironment::new(crate::environment::RealEnvironmentOptions {
+      log_level: crate::utils::LogLevel::Info,
+      is_stdout_machine_readable: false,
+    })
+    .unwrap();
+    let wasm_module_creator = WasmModuleCreator::default();
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("plugin.cwasm");
+    std::fs::write(&file_path, wasm::compile(WASM_PLUGIN_BYTES).unwrap().bytes).unwrap();
+    assert!(load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator).is_ok());
+
+    // an invalid module fails both ways, so the caller recompiles it
+    std::fs::write(&file_path, b"not a module").unwrap();
+    assert!(load_compiled_wasm_module(&environment, &file_path, &wasm_module_creator).is_err());
+  }
 
   // https://github.com/dprint/dprint/issues/734
   #[tokio::test]
