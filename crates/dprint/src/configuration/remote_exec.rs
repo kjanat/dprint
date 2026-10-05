@@ -20,7 +20,9 @@
 //! Which program a command runs is read the way the exec plugin 0.7.3 reads
 //! it. So a list of programs is only checked when the exec plugin that runs
 //! the commands is that version, and otherwise remote commands only run with
-//! `"playWithFire": true`.
+//! `"playWithFire": true`. A command's own `cwd` decides what a program it
+//! runs by a relative path (ex. `./formatter`) is, so a remote command that
+//! sets both only runs with `"playWithFire": true` as well.
 //!
 //! A nested configuration that inherits its ancestor's configuration and
 //! specifies `"playWithFire"` itself only runs the remote commands it inherits
@@ -28,6 +30,8 @@
 //! configuration specified apart from the rest of its exec configuration (see
 //! [`RemoteExecProvenance`]), so the inherited exec configuration is made again
 //! with it, rather than what was allowed being looked for in what was merged.
+
+use std::path::Path;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -140,6 +144,9 @@ struct IgnoredSourceCommands {
   programs: Vec<String>,
   /// Their properties the exec plugin 0.7.3 doesn't have, without duplicates.
   properties: Vec<String>,
+  /// The programs they run by a relative path in a `cwd` of their own,
+  /// without duplicates.
+  relative_programs: Vec<String>,
 }
 
 /// The remote properties that may decide what runs a policy ignored, as the
@@ -160,7 +167,14 @@ impl IgnoredProperties {
 }
 
 impl IgnoredCommands {
-  fn add(&mut self, source: &str, count: usize, programs: impl IntoIterator<Item = String>, properties: impl IntoIterator<Item = String>) {
+  fn add(
+    &mut self,
+    source: &str,
+    count: usize,
+    programs: impl IntoIterator<Item = String>,
+    properties: impl IntoIterator<Item = String>,
+    relative_programs: impl IntoIterator<Item = String>,
+  ) {
     let index = match self.0.iter().position(|ignored| ignored.source == source) {
       Some(index) => index,
       None => {
@@ -169,6 +183,7 @@ impl IgnoredCommands {
           count: 0,
           programs: Vec::new(),
           properties: Vec::new(),
+          relative_programs: Vec::new(),
         });
         self.0.len() - 1
       }
@@ -183,6 +198,11 @@ impl IgnoredCommands {
     for property in properties {
       if !ignored.properties.contains(&property) {
         ignored.properties.push(property);
+      }
+    }
+    for program in relative_programs {
+      if !ignored.relative_programs.contains(&program) {
+        ignored.relative_programs.push(program);
       }
     }
   }
@@ -499,6 +519,14 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
             ignored.properties.join(", ")
           ));
         }
+        if !ignored.relative_programs.is_empty() {
+          reasons.push(format!(
+            "run a program by a relative path in a \"{}\" they set, which decides what that path is, so only with \"{}\": true: {}",
+            CWD_KEY,
+            PLAY_WITH_FIRE_KEY,
+            ignored.relative_programs.join(", ")
+          ));
+        }
         log_warn!(
           environment,
           "Note: Ignored {} exec command(s) in remote configuration ({}) that {}",
@@ -644,7 +672,7 @@ fn allowed_commands_value(commands: ConfigKeyValue, policy: &Policy, source: &st
       (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
     }
     (_, Policy::None) => {
-      ignored.add(source, 1, [], []);
+      ignored.add(source, 1, [], [], []);
       None
     }
     (commands, _) => Some(commands),
@@ -656,7 +684,7 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
   match policy {
     Policy::None => {
       if !commands.is_empty() {
-        ignored.add(source, commands.len(), [], []);
+        ignored.add(source, commands.len(), [], [], []);
       }
       Vec::new()
     }
@@ -669,8 +697,9 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
         .filter(|program| !is_allowed(program, programs))
         .collect::<Vec<_>>();
       let unknown_properties = not_allowed.iter().flat_map(unknown_command_keys).collect::<Vec<_>>();
+      let relative_programs = not_allowed.iter().flat_map(programs_relative_to_own_cwd).collect::<Vec<_>>();
       if !not_allowed.is_empty() {
-        ignored.add(source, not_allowed.len(), not_allowed_programs, unknown_properties);
+        ignored.add(source, not_allowed.len(), not_allowed_programs, unknown_properties, relative_programs);
       }
       allowed
     }
@@ -719,10 +748,12 @@ fn command_allowed(command: &ConfigKeyValue, programs: &[String]) -> bool {
   let ConfigKeyValue::Object(object) = command else {
     return false;
   };
-  // a command must say what it runs to be checked, and other properties
-  // than the exec plugin 0.7.3's might change what it runs
+  // a command must say what it runs to be checked, other properties than
+  // the exec plugin 0.7.3's might change what it runs, and its own working
+  // directory decides what a program it runs by a relative path is
   matches!(object.get("command"), Some(ConfigKeyValue::String(_)))
     && unknown_command_keys(command).is_empty()
+    && programs_relative_to_own_cwd(command).is_empty()
     && command_programs(command).iter().all(|program| is_allowed(program, programs))
 }
 
@@ -734,6 +765,27 @@ fn unknown_command_keys(command: &ConfigKeyValue) -> Vec<String> {
   }
 }
 
+/// The programs a command runs by a relative path (ex. `./formatter`) while
+/// setting the working directory (`cwd`) that path is relative to. A list of
+/// programs allows the path, but the command would decide what file it is.
+fn programs_relative_to_own_cwd(command: &ConfigKeyValue) -> Vec<String> {
+  let ConfigKeyValue::Object(object) = command else {
+    return Vec::new();
+  };
+  if !object.contains_key(CWD_KEY) {
+    return Vec::new();
+  }
+  command_programs(command).into_iter().filter(|program| is_relative_path(program)).collect()
+}
+
+/// Whether a program is a path relative to the command's working directory,
+/// rather than a name (found on the PATH, not in the working directory) or an
+/// absolute path, as the exec plugin resolves them on this platform.
+fn is_relative_path(program: &str) -> bool {
+  let path = Path::new(program);
+  !path.is_absolute() && path.components().count() > 1
+}
+
 fn is_allowed(program: &str, programs: &[String]) -> bool {
   programs.iter().any(|allowed| {
     if cfg!(windows) {
@@ -742,4 +794,31 @@ fn is_allowed(program: &str, programs: &[String]) -> bool {
       allowed == program
     }
   })
+}
+
+#[cfg(test)]
+mod test {
+  use super::is_relative_path;
+
+  #[test]
+  fn tells_a_relative_path_from_a_name_and_an_absolute_path() {
+    // a name is found on the PATH, whatever the working directory
+    assert!(!is_relative_path("tombi"));
+    assert!(!is_relative_path("tombi.cmd"));
+    // a path with a directory is relative to the working directory
+    assert!(is_relative_path("./formatter"));
+    assert!(is_relative_path("bin/fmt"));
+    assert!(is_relative_path("../fmt"));
+    if cfg!(windows) {
+      assert!(is_relative_path(".\\formatter"));
+      assert!(!is_relative_path("C:\\tools\\fmt.exe"));
+      // relative to the working directory's drive
+      assert!(is_relative_path("\\tools\\fmt.exe"));
+      assert!(is_relative_path("/opt/fmt"));
+    } else {
+      assert!(!is_relative_path("/opt/fmt"));
+      // a name with a backslash in it
+      assert!(!is_relative_path(".\\formatter"));
+    }
+  }
 }
