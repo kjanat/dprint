@@ -5,10 +5,13 @@ on:
   push: &m { branches: [main, master] }
   pull_request: *m
 permissions: {}
+
 jobs:
   build:
-    runs-on: ubuntu-slim
-    permissions: { content: &r read }
+    runs-on: &slim ubuntu-slim
+    timeout-minutes: 5
+    cancel-timeout-minutes: 1
+    permissions: { contents: &r read }
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,9 +26,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with: { path: "website/_site" }
+
   deploy:
     needs: build
-    runs-on: ubuntu-slim
+    runs-on: *slim
+    timeout-minutes: 2
+    cancel-timeout-minutes: 1
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.repository_owner == 'kjanat'
     permissions: { contents: *r, pages: &w write, id-token: *w }
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     concurrency: { group: "pages-deploy", cancel-in-progress: false }
