@@ -78,9 +78,11 @@ dprint schema > dprint.schema.json
 #:schema ./dprint.schema.json
 ```
 
-In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
+In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it. After `dprint add --package-json`, that's with the version added to `package.json`, before it's installed.
 
-The plugins' schemas are copied in, with their references pointed at where they're copied to (or, for other files, at their full url). dprint's schema is draft-07, so a plugin schema of another JSON schema draft (ex. 2020-12) is referred to by its url instead, which `dprint schema` warns about: editors may then report dprint's own properties of that plugin's table (ex. `associations`) as unknown.
+The schema describes one configuration file, so it doesn't require what another file may provide (ex. the commands of an [extended](#extending-a-different-configuration-file) configuration). For a configuration file that [inherits](#directory-specific-configuration) (`"inherit": true`), it includes the plugins it inherits, from the configuration file of the closest ancestor directory with one (or else the global configuration file).
+
+The plugins' schemas are copied in, with their references pointed at where they're copied to (or, for other files, at their full url). dprint's schema is draft-07, so a plugin schema of another JSON schema draft (ex. 2020-12) is referred to by its url instead, which `dprint schema` warns about: editors may then report dprint's own properties of that plugin's table (ex. `associations`) as unknown. The same goes for a plugin schema whose table is described by another file (ex. a `$ref` to another url).
 
 The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
 

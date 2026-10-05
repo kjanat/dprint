@@ -16,6 +16,7 @@ use std::rc::Rc;
 use url::Url;
 
 use crate::arg_parser::CliArgs;
+use crate::arg_parser::ConfigArg;
 use crate::arg_parser::FilePatternArgs;
 use crate::arg_parser::OutputResolvedConfigSubCommand;
 use crate::configuration::GetInitConfigFileTextOptions;
@@ -188,7 +189,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
   let file_text = environment.read_file(&config_file_path)?;
   let file_text = ConfigFileFormat::from_file(&config_file_path, &file_text).add_plugins(&file_text, &[], &entries)?;
   environment.write_file(&config_file_path, &file_text)?;
-  update_config_schema_file(environment, plugin_resolver, &config_file_path).await;
+  update_config_schema_file(environment, plugin_resolver, &config_file_path, &[]).await;
   log_stdout_info!(
     environment,
     "\nAdded {} to {}",
@@ -286,7 +287,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
   // Track npm packages we still need to write to package.json after the
   // config update succeeds. Walked-up package.json lookup happens once at
   // the end so a batch add only touches the file once.
-  let mut package_json_additions: Vec<(String, String)> = Vec::new();
+  let mut package_json_additions: Vec<PackageJsonAddition> = Vec::new();
   // npm packages whose pre-existing config entry should be dropped before the
   // freshly-resolved specifier is appended (so re-adding replaces rather than
   // duplicates). Applied alongside the additions in the single read/write below.
@@ -346,10 +347,11 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
   let file_text = environment.read_file(&config_path)?;
   let file_text = ConfigFileFormat::from_file(&config_path, &file_text).add_plugins(&file_text, &npm_packages_to_replace, &plugin_urls_to_add)?;
   environment.write_file(&config_path, &file_text)?;
-  update_config_schema_file(environment, plugin_resolver, &config_path).await;
+  update_config_schema_file(environment, plugin_resolver, &config_path, &package_json_additions).await;
 
   if update_package_json && !package_json_additions.is_empty() {
-    apply_package_json_additions(&config_path, &package_json_additions, environment)?;
+    let entries = package_json_additions.iter().map(PackageJsonAddition::entry).collect::<Vec<_>>();
+    apply_package_json_additions(&config_path, &entries, environment)?;
   }
 
   Ok(())
@@ -377,7 +379,52 @@ struct ResolvedNpmPluginAdd {
   /// The package name, so the caller can drop any pre-existing entry for the
   /// same package before appending this one.
   package_name: String,
-  package_json_addition: Option<(String, String)>,
+  package_json_addition: Option<PackageJsonAddition>,
+}
+
+/// An npm plugin `dprint add --package-json` adds to package.json's
+/// devDependencies. The configuration file refers to it without a version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageJsonAddition {
+  name: String,
+  /// The version that was resolved, which is added as a caret range.
+  version: String,
+  /// The plugin file within the package.
+  path: String,
+  /// Whether `path` was specified rather than to be detected.
+  path_was_explicit: bool,
+}
+
+impl PackageJsonAddition {
+  /// Its devDependencies entry: the package and a caret range of the version.
+  fn entry(&self) -> (String, String) {
+    (self.name.clone(), format!("^{}", self.version))
+  }
+
+  /// A reference to the plugin at the version, which doesn't need it to be
+  /// installed.
+  async fn versioned_reference<TEnvironment: Environment>(
+    &self,
+    base_dir: Option<&CanonicalizedPathBuf>,
+    plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+  ) -> Result<PluginSourceReference> {
+    let specifier = crate::utils::NpmSpecifier {
+      name: self.name.clone(),
+      version: Some(self.version.clone()),
+      path: self.path.clone(),
+    };
+    let resolution = plugin_resolver.resolve_npm_for_add(&specifier, self.path_was_explicit, base_dir).await?;
+    Ok(PluginSourceReference {
+      path_source: PathSource::new_npm(
+        crate::utils::NpmSpecifier {
+          path: resolution.path,
+          ..specifier
+        },
+        base_dir.cloned(),
+      ),
+      checksum: Some(resolution.checksum),
+    })
+  }
 }
 
 /// Resolves a plugin name or URL to a plugin URL to add to the config.
@@ -388,7 +435,7 @@ struct ResolvedNpmPluginAdd {
 /// devDependencies entry via `package_json_additions`.
 async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
   options: ResolvePluginUrlOptions<'_>,
-  package_json_additions: &mut Vec<(String, String)>,
+  package_json_additions: &mut Vec<PackageJsonAddition>,
   npm_packages_to_replace: &mut Vec<String>,
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
@@ -684,7 +731,12 @@ async fn resolve_npm_plugin_to_add<TEnvironment: Environment>(
       )
       .await
       .with_context(|| format!("Resolving latest version for package.json entry of {}", name))?;
-      Some((name.clone(), format!("^{}", info.version)))
+      Some(PackageJsonAddition {
+        name: name.clone(),
+        version: info.version.to_string(),
+        path: parsed.specifier.path.clone(),
+        path_was_explicit: explicit_path,
+      })
     } else {
       None
     };
@@ -1057,7 +1109,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       dry_run_texts.insert(config_path.clone(), file_text);
     } else {
       environment.write_file(config_path, &file_text)?;
-      update_config_schema_file(environment, plugin_resolver, config_path).await;
+      update_config_schema_file(environment, plugin_resolver, config_path, &[]).await;
     }
   }
 
@@ -1651,7 +1703,17 @@ pub async fn output_config_schema<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<()> {
-  let config = resolve_config_from_args(args, environment).await?;
+  // a configuration file with the plugins it inherits, which it may
+  // configure, like the schema file next to it is regenerated with
+  let config_file = match &args.config {
+    _ if !args.plugins.is_empty() => None,
+    Some(ConfigArg::Text(_)) => None,
+    _ => resolve_main_config_path_and_bytes(args, environment).await?,
+  };
+  let config = match config_file {
+    Some(config_file) => resolve_config_with_ancestors_from_path_with_bytes(&config_file, environment).await?,
+    None => resolve_config_from_args(args, environment).await?,
+  };
   let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
   environment.log_machine_readable(text.as_bytes());
   Ok(())
@@ -1709,18 +1771,21 @@ async fn download_json(environment: &impl Environment, url: &str) -> Result<(Url
 }
 
 /// Regenerates the schema file next to a configuration file whose plugins
-/// changed, when there's one.
+/// changed, when there's one. `package_json_additions` are the plugins just
+/// added to package.json, which may not be installed yet.
 async fn update_config_schema_file<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   config_path: &CanonicalizedPathBuf,
+  package_json_additions: &[PackageJsonAddition],
 ) {
   let schema_path = AsRef::<Path>::as_ref(config_path).with_file_name(CONFIG_SCHEMA_FILE_NAME);
   if !environment.path_is_file(&schema_path) {
     return;
   }
   let result = async {
-    let config = resolve_config_from_path_with_bytes(
+    // with the plugins it inherits, which its file may configure
+    let config = resolve_config_with_ancestors_from_path_with_bytes(
       &ResolvedConfigPathWithText {
         source: PathSource::new_local(config_path.clone()),
         is_first_download: false,
@@ -1731,7 +1796,18 @@ async fn update_config_schema_file<TEnvironment: Environment>(
       environment,
     )
     .await?;
-    let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
+    let mut plugins = config.plugins.sources;
+    for plugin in &mut plugins {
+      if let PathSource::Npm(npm) = &plugin.path_source
+        && npm.specifier.version.is_none()
+        && let Some(addition) = package_json_additions.iter().find(|addition| addition.name == npm.specifier.name)
+      {
+        // it's resolved from node_modules, where it may not be until it's
+        // installed, so use the version it will be
+        *plugin = addition.versioned_reference(npm.base_dir.as_ref(), plugin_resolver).await?;
+      }
+    }
+    let text = get_config_schema_text(environment, plugin_resolver, plugins).await?;
     if environment.read_file(&schema_path).ok().as_deref() != Some(text.as_str()) {
       environment.write_file(&schema_path, &text)?;
       log_stdout_info!(environment, "Updated {}", schema_path.display());
@@ -2256,6 +2332,97 @@ mod test {
     run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
     assert!(!environment.path_exists("./dprint.schema.json"));
     assert!(!environment.take_stdout_messages().iter().any(|message| message.starts_with("Updated ")));
+  }
+
+  /// The plugins whose tables a configuration schema describes.
+  fn config_schema_plugins(schema: &serde_json::Value) -> Vec<String> {
+    let definitions = schema["definitions"].as_object().unwrap();
+    definitions
+      .keys()
+      .filter_map(|key| key.strip_prefix("plugin:"))
+      .map(ToOwned::to_owned)
+      .collect()
+  }
+
+  #[test]
+  fn should_output_the_config_schema_with_the_plugins_a_configuration_inherits() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
+      .write_file("/dprint.json", r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#)
+      .write_file("/inherits/dprint.json", r#"{ "inherit": true, "test-plugin": { "ending": "custom" } }"#)
+      // through a configuration that inherits too
+      .write_file("/inherits/deeper/dprint.json", r#"{ "inherit": true }"#)
+      .write_file("/independent/dprint.json", "{}")
+      .build();
+    let schema_plugins = |config_path: &str| {
+      run_test_cli(vec!["schema", "--config", config_path], &environment).unwrap();
+      environment.take_stderr_messages();
+      config_schema_plugins(&serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap())
+    };
+    assert_eq!(schema_plugins("/inherits/dprint.json"), vec!["test-plugin"]);
+    assert_eq!(schema_plugins("/inherits/deeper/dprint.json"), vec!["test-plugin"]);
+    assert_eq!(schema_plugins("/independent/dprint.json"), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_output_the_config_schema_with_the_plugins_inherited_from_the_global_configuration() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
+      .with_global_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .write_file("/project/dprint.json", r#"{ "inherit": true }"#)
+      .build();
+    run_test_cli(vec!["schema", "--config", "/project/dprint.json"], &environment).unwrap();
+    environment.take_stderr_messages();
+    let schema = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
+    assert_eq!(config_schema_plugins(&schema), vec!["test-plugin"]);
+  }
+
+  #[tokio::test]
+  async fn updates_the_config_schema_file_with_the_plugins_a_configuration_inherits() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
+      .write_file("/dprint.json", r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#)
+      .write_file("/sub/dprint.json", r#"{ "inherit": true }"#)
+      .write_file("/sub/dprint.schema.json", "{}")
+      .build();
+    let config_path = environment.canonicalize("/sub/dprint.json").unwrap();
+    super::update_config_schema_file(&environment, &test_plugin_resolver(&environment), &config_path, &[]).await;
+    let schema_path = AsRef::<Path>::as_ref(&config_path).with_file_name("dprint.schema.json");
+    assert_eq!(environment.take_stdout_messages(), vec![format!("Updated {}", schema_path.display())]);
+    environment.take_stderr_messages();
+    let schema = serde_json::from_str(&environment.read_file("/sub/dprint.schema.json").unwrap()).unwrap();
+    assert_eq!(config_schema_plugins(&schema), vec!["test-plugin"]);
+  }
+
+  #[test]
+  fn config_add_to_package_json_updates_the_config_schema_file_before_the_plugin_is_installed() {
+    let mut builder = TestEnvironmentBuilder::new();
+    let environment = add_aged_test_plugin_tarballs(&mut builder)
+      .add_remote_file_bytes(
+        "https://registry.npmjs.org/@dprint/test-plugin",
+        aged_test_plugin_packument("2000-01-01T00:00:00Z").to_string().into_bytes(),
+      )
+      .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
+      .write_file("/dprint.json", "{}")
+      .write_file("/package.json", "{}")
+      .write_file("/dprint.schema.json", "{}")
+      .build();
+    run_test_cli(vec!["add", "--package-json", "npm:@dprint/test-plugin"], &environment).unwrap();
+    let schema_path = environment
+      .canonicalize("/dprint.json")
+      .unwrap()
+      .into_path_buf()
+      .with_file_name("dprint.schema.json");
+    assert_eq!(environment.take_stdout_messages(), vec![format!("Updated {}", schema_path.display())]);
+    environment.take_stderr_messages();
+    // the configuration refers to what's installed, which nothing is yet
+    assert!(environment.read_file("/dprint.json").unwrap().contains(r#""npm:@dprint/test-plugin""#));
+    assert!(!environment.path_exists("/node_modules"));
+    let schema = serde_json::from_str(&environment.read_file("/dprint.schema.json").unwrap()).unwrap();
+    assert_eq!(config_schema_plugins(&schema), vec!["test-plugin"]);
+    assert!(environment.read_file("/package.json").unwrap().contains(r#""@dprint/test-plugin": "^0.3.0""#));
   }
 
   #[test]
@@ -4197,7 +4364,10 @@ text",
       .unwrap();
 
     assert_eq!(result.url, "npm:foo");
-    assert_eq!(result.package_json_addition, Some(("foo".to_string(), "^1.0.0".to_string())));
+    assert_eq!(
+      result.package_json_addition.map(|addition| addition.entry()),
+      Some(("foo".to_string(), "^1.0.0".to_string()))
+    );
   }
 
   #[tokio::test]
@@ -4722,7 +4892,10 @@ text",
       .await
       .unwrap();
     assert_eq!(result.url, "npm:@dprint/typescript");
-    assert_eq!(result.package_json_addition, Some(("@dprint/typescript".to_string(), "^0.99.0".to_string())),);
+    assert_eq!(
+      result.package_json_addition.map(|addition| addition.entry()),
+      Some(("@dprint/typescript".to_string(), "^0.99.0".to_string()))
+    );
   }
 
   #[tokio::test]
@@ -4742,7 +4915,10 @@ text",
     let config_path = environment.canonicalize("/dprint.json").unwrap();
     let result = call_resolve_npm_plugin_to_add("npm:foo", &config_path, true, true, &environment).await.unwrap();
     assert_eq!(result.url, "npm:foo/plugin.json");
-    assert_eq!(result.package_json_addition, Some(("foo".to_string(), "^1.0.0".to_string())));
+    assert_eq!(
+      result.package_json_addition.map(|addition| addition.entry()),
+      Some(("foo".to_string(), "^1.0.0".to_string()))
+    );
   }
 
   #[tokio::test]

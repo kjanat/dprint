@@ -2,7 +2,6 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "The exec plugin built into dprint, which formats files with external commands.",
   "type": "object",
-  "required": ["commands"],
   "additionalProperties": false,
   "definitions": {
     "stringOrStrings": {
@@ -62,10 +61,11 @@
       "items": {
         "type": "object",
         "required": ["command"],
+        "$comment": "A command needs a non-empty exts, fileNames or associations. Each alternative allows other properties, as tombi's strict mode otherwise treats it as allowing none.",
         "anyOf": [
-          { "required": ["exts"] },
-          { "required": ["fileNames"] },
-          { "required": ["associations"] }
+          { "required": ["exts"], "properties": { "exts": { "minItems": 1 } }, "additionalProperties": true },
+          { "required": ["fileNames"], "properties": { "fileNames": { "minItems": 1 } }, "additionalProperties": true },
+          { "required": ["associations"], "properties": { "associations": { "minItems": 1 } }, "additionalProperties": true }
         ],
         "additionalProperties": false,
         "properties": {

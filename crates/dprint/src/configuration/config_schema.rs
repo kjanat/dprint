@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -68,12 +69,13 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     let location = format!("/definitions/{}", escape_pointer_segment(&definition_name));
     let reference = match embed_plugin_schema(plugin.schema, plugin.url.as_ref(), &location) {
       Ok(mut schema) => {
-        if let Value::Object(schema) = &mut schema
-          && let Some(properties) = schema.entry("properties").or_insert_with(|| Value::Object(Map::new())).as_object_mut()
-        {
-          for (key, value) in &plugin_table_properties {
-            properties.entry(key.clone()).or_insert_with(|| value.clone());
-          }
+        if let Some(reference) = add_table_properties(&mut schema, &location, &plugin_table_properties) {
+          warnings.push(format!(
+            "The configuration schema of the {} plugin{} refers to {} for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
+            plugin.config_key,
+            plugin.url.as_ref().map(|url| format!(" ({})", url)).unwrap_or_default(),
+            reference
+          ));
         }
         object_entry(&mut root, "definitions").insert(definition_name, schema);
         fragment_reference(&location)
@@ -128,6 +130,73 @@ fn object_entry<'a>(object: &'a mut Map<String, Value>, key: &str) -> &'a mut Ma
   value.as_object_mut().unwrap()
 }
 
+/// Adds what every plugin table may have (`properties`) to the schemas in a
+/// plugin's schema, copied in at `location`, that say what properties its
+/// table may have. Returns a reference to another document it couldn't
+/// follow to one of them.
+///
+/// Those are the plugin's schema, or what its `$ref` points to (draft-07
+/// ignores what's next to a `$ref`), and the schemas its `allOf`, `anyOf`,
+/// `oneOf`, `then` and `else` apply to the table that list properties (ex.
+/// with `additionalProperties: false`).
+fn add_table_properties(schema: &mut Value, location: &str, properties: &Map<String, Value>) -> Option<String> {
+  let mut pending = vec![(String::new(), true)];
+  let mut visited = HashSet::new();
+  let mut targets = Vec::new();
+  let mut not_followed = None;
+  while let Some((pointer, is_table_schema)) = pending.pop() {
+    if !visited.insert(pointer.clone()) {
+      continue;
+    }
+    let Some(Value::Object(object)) = schema.pointer(&pointer) else {
+      continue;
+    };
+    if let Some(reference) = object.get("$ref") {
+      match reference.as_str().and_then(|reference| bundled_pointer(reference, location)) {
+        Some(target) => pending.push((target, is_table_schema)),
+        None => {
+          not_followed.get_or_insert_with(|| reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string()));
+        }
+      }
+      continue;
+    }
+    if is_table_schema
+      || ["properties", "patternProperties", "additionalProperties"]
+        .iter()
+        .any(|key| object.contains_key(*key))
+    {
+      targets.push(pointer.clone());
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+      if let Some(Value::Array(schemas)) = object.get(keyword) {
+        pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), false)));
+      }
+    }
+    for keyword in ["then", "else"] {
+      if object.contains_key(keyword) {
+        pending.push((format!("{}/{}", pointer, keyword), false));
+      }
+    }
+  }
+  for pointer in targets {
+    if let Some(Value::Object(object)) = schema.pointer_mut(&pointer) {
+      let table_properties = object_entry(object, "properties");
+      for (key, value) in properties {
+        table_properties.entry(key.clone()).or_insert_with(|| value.clone());
+      }
+    }
+  }
+  not_followed
+}
+
+/// The JSON pointer within a plugin's schema, copied in at `location`, of a
+/// reference to a part of it. `None` for a reference to something else.
+fn bundled_pointer(reference: &str, location: &str) -> Option<String> {
+  let pointer = decode_fragment(reference.strip_prefix('#')?);
+  let pointer = pointer.strip_prefix(location)?;
+  (pointer.is_empty() || pointer.starts_with('/')).then(|| pointer.to_string())
+}
+
 /// A schema in a draft other than draft-06 or draft-07.
 struct NotEmbeddable {
   dialect: String,
@@ -155,7 +224,8 @@ struct SchemaIndex {
 /// rewritten references are relative to, can be removed.
 fn embed_plugin_schema(mut schema: Value, url: Option<&Url>, location: &str) -> Result<Value, NotEmbeddable> {
   // a schema built into dprint has nothing relative references could be to
-  let root_url = url.cloned().unwrap_or_else(|| Url::parse(BUILT_IN_SCHEMA_URL).unwrap());
+  let mut root_url = url.cloned().unwrap_or_else(|| Url::parse(BUILT_IN_SCHEMA_URL).unwrap());
+  root_url.set_fragment(None);
 
   let mut index = SchemaIndex::default();
   index.resources.insert(root_url.clone(), String::new());
@@ -285,17 +355,18 @@ impl SchemaId {
     let Ok(url) = base.join(id) else {
       return Self::default();
     };
+    let anchor = url
+      .fragment()
+      .map(decode_fragment)
+      .filter(|fragment| !fragment.is_empty() && !fragment.starts_with('/'));
+    let mut resource = url;
+    resource.set_fragment(None);
     Self {
-      anchor: url
-        .fragment()
-        .map(decode_fragment)
-        .filter(|fragment| !fragment.is_empty() && !fragment.starts_with('/')),
-      // only a fragment names a schema in the current document
-      resource: (!id.starts_with('#')).then(|| {
-        let mut resource = url;
-        resource.set_fragment(None);
-        resource
-      }),
+      anchor,
+      // an `$id` with the current document's uri (ex. a fragment, or an
+      // absolute uri with a fragment) names a schema in it rather than
+      // starting another
+      resource: (resource != *base).then_some(resource),
     }
   }
 }
@@ -345,6 +416,7 @@ mod test {
   use serde_json::json;
 
   use super::*;
+  use crate::test_helpers::validate_with_schema;
 
   const URL: &str = "https://plugins.dprint.dev/test/schema.json";
 
@@ -484,6 +556,113 @@ mod test {
       ])
     );
     assert!(schema.schema["definitions"]["plugin:test"]["definitions"]["color"].get("$id").is_none());
+  }
+
+  #[test]
+  fn keeps_the_document_of_schemas_named_with_an_absolute_uri() {
+    // an `$id` with the document's own uri names a schema in it
+    let schema = build(
+      json!({
+        "definitions": {
+          "named": {
+            "$id": "https://plugins.dprint.dev/test/schema.json#name",
+            "properties": { "x": { "$ref": "#/definitions/x" } },
+          },
+          "x": { "type": "string" },
+        },
+        "properties": {
+          "named": { "$ref": "#name" },
+          "x": { "$ref": "#/definitions/x" },
+        },
+      }),
+      Some(URL),
+    );
+    assert_eq!(
+      plugin_references(&schema.schema),
+      references(&[
+        ("/definitions/named/properties/x", "#/definitions/plugin:test/definitions/x"),
+        ("/properties/named", "#/definitions/plugin:test/definitions/named"),
+        ("/properties/x", "#/definitions/plugin:test/definitions/x"),
+      ])
+    );
+
+    // also in a nested document
+    let schema = build(
+      json!({
+        "$id": "https://example.com/test.json",
+        "definitions": {
+          "inner": {
+            "$id": "inner.json",
+            "definitions": {
+              "named": { "$id": "https://example.com/inner.json#name", "type": "string" },
+              "y": { "type": "number" },
+            },
+            "properties": { "y": { "$ref": "#/definitions/y" } },
+          },
+        },
+        "properties": { "named": { "$ref": "inner.json#name" } },
+      }),
+      Some(URL),
+    );
+    assert_eq!(
+      plugin_references(&schema.schema),
+      references(&[
+        ("/definitions/inner/properties/y", "#/definitions/plugin:test/definitions/inner/definitions/y"),
+        ("/properties/named", "#/definitions/plugin:test/definitions/inner/definitions/named"),
+      ])
+    );
+  }
+
+  #[test]
+  fn allows_dprints_properties_of_a_table_whose_schema_is_a_reference() {
+    let config = json!({ "test": { "a": "a", "associations": "**/*.a", "locked": true } });
+    // draft-07 ignores what's next to a `$ref`
+    let schema = build(
+      json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$ref": "#/definitions/config",
+        "definitions": {
+          "config": { "$ref": "#/definitions/closed" },
+          "closed": { "type": "object", "additionalProperties": false, "properties": { "a": { "type": "string" } } },
+        },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert_eq!(validate_with_schema(&schema.schema, &config), Ok(()));
+    assert!(validate_with_schema(&schema.schema, &json!({ "test": { "b": "b" } })).is_err());
+
+    // and of one that combines schemas that each say what properties it has
+    let schema = build(
+      json!({
+        "allOf": [{ "$ref": "#/definitions/closed" }, { "properties": { "b": { "type": "string" } } }],
+        "anyOf": [{ "additionalProperties": false, "properties": { "a": { "type": "string" } } }, { "required": ["b"] }],
+        "definitions": {
+          "closed": { "additionalProperties": false, "properties": { "a": { "type": "string" } } },
+        },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert_eq!(validate_with_schema(&schema.schema, &config), Ok(()));
+    // a schema that doesn't say what properties the table has stays as is
+    assert_eq!(schema.schema["definitions"]["plugin:test"]["anyOf"][1], json!({ "required": ["b"] }));
+
+    // a reference to itself is followed once
+    let schema = build(json!({ "$ref": "#" }), Some(URL));
+    assert_eq!(schema.warnings, Vec::<String>::new());
+  }
+
+  #[test]
+  fn warns_when_a_tables_schema_is_in_another_document() {
+    let schema = build(json!({ "$ref": "https://example.com/config.json" }), Some(URL));
+    assert_eq!(
+      schema.warnings,
+      vec![format!(
+        "The configuration schema of the test plugin ({}) refers to https://example.com/config.json for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
+        URL
+      )]
+    );
   }
 
   #[test]

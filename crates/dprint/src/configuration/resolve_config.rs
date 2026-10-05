@@ -32,6 +32,8 @@ use super::config_layer::ConfigReference;
 use super::config_layer::LayerOrigin;
 use super::remote_exec::RemoteExec;
 use super::resolve_main_config_path::ResolvedConfigPathWithText;
+use super::resolve_main_config_path::get_default_config_file_in_ancestor_directories;
+use super::resolve_main_config_path::resolve_global_config_path_and_text;
 use super::resolve_main_config_path::resolve_main_config_path_and_bytes;
 
 /// A configuration with the configuration files it consists of combined: the
@@ -215,7 +217,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, None, environment).await
+  resolve_config_file(config_path_and_text, Ancestor::None, environment).await
 }
 
 /// Resolves a configuration file in a directory within the directory of the
@@ -226,7 +228,30 @@ pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Enviro
   ancestor: &ResolvedConfig,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, Some(ancestor), environment).await
+  resolve_config_file(config_path_and_text, Ancestor::Resolved(ancestor), environment).await
+}
+
+/// Resolves a configuration file the way it's used for the files in its
+/// directory when dprint formats from an ancestor directory: when it
+/// specifies `"inherit": true`, it inherits the configuration of the closest
+/// ancestor directory with a configuration file, or else the global
+/// configuration file, which is resolved the same way.
+pub async fn resolve_config_with_ancestors_from_path_with_bytes<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  environment: &TEnvironment,
+) -> Result<ResolvedConfig, ResolveConfigError> {
+  resolve_config_file(config_path_and_text, Ancestor::FromDirectories, environment).await
+}
+
+/// What a configuration file inherits when it specifies `"inherit": true`.
+#[derive(Clone, Copy)]
+enum Ancestor<'a> {
+  /// Nothing, as it's the configuration in use.
+  None,
+  /// The configuration it's a descendant of.
+  Resolved(&'a ResolvedConfig),
+  /// The configuration of its ancestor directories.
+  FromDirectories,
 }
 
 /// Resolves a configuration file in three steps: its layers are collected,
@@ -234,7 +259,7 @@ pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Enviro
 /// last the ancestor's configuration is inherited when it says to.
 async fn resolve_config_file<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
-  ancestor: Option<&ResolvedConfig>,
+  ancestor: Ancestor<'_>,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
   let root = ConfigDocument {
@@ -267,12 +292,48 @@ async fn resolve_config_file<TEnvironment: Environment>(
   }
   remote_exec.apply(&mut config.plugins, environment)?;
 
-  if let Some(ancestor) = ancestor
-    && collected.inherit
-  {
-    config.inherit(ancestor)?;
+  if collected.inherit {
+    match ancestor {
+      Ancestor::None => {}
+      Ancestor::Resolved(ancestor) => config.inherit(ancestor)?,
+      Ancestor::FromDirectories => {
+        if let Some(ancestor) = resolve_ancestor_directories_config(config_path_and_text, environment).await? {
+          config.inherit(&ancestor)?;
+        }
+      }
+    }
   }
   Ok(config)
+}
+
+/// Resolves the configuration a local configuration file is a descendant of
+/// when dprint formats from an ancestor directory: the closest ancestor
+/// directory's configuration file, or else the global configuration file.
+async fn resolve_ancestor_directories_config<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  environment: &TEnvironment,
+) -> Result<Option<ResolvedConfig>, ResolveConfigError> {
+  if config_path_and_text.is_global_config {
+    return Ok(None);
+  }
+  let Some(config_dir) = config_path_and_text.source.maybe_local_path().and_then(|path| path.parent()) else {
+    return Ok(None);
+  };
+  let ancestor_path = match config_dir.parent() {
+    Some(parent_dir) => get_default_config_file_in_ancestor_directories(environment, parent_dir.as_ref())?,
+    None => None,
+  };
+  let ancestor_path = match ancestor_path {
+    Some(path) => path,
+    None => match resolve_global_config_path_and_text(environment).map_err(anyhow::Error::from)? {
+      Some(path) if path.source != config_path_and_text.source => path,
+      _ => return Ok(None),
+    },
+  };
+  // the ancestor's directories are above it, so this ends
+  Box::pin(resolve_config_file(&ancestor_path, Ancestor::FromDirectories, environment))
+    .await
+    .map(Some)
 }
 
 /// A configuration file whose directives were used.

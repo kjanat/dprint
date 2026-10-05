@@ -91,6 +91,17 @@ pub fn process_plugin_binary_filename() -> &'static str {
   }
 }
 
+/// Validates `instance` against `schema`, which must not refer to other
+/// documents. The error says why it's invalid.
+pub fn validate_with_schema(schema: &serde_json::Value, instance: &serde_json::Value) -> Result<(), String> {
+  const URL: &str = "https://dprint.dev/test/schema.json";
+  let mut schemas = boon::Schemas::new();
+  let mut compiler = boon::Compiler::new();
+  compiler.add_resource(URL, schema.clone()).unwrap();
+  let index = compiler.compile(URL, &mut schemas).map_err(|err| format!("Invalid schema: {:#}", err)).unwrap();
+  schemas.validate(instance, index).map_err(|err| format!("{:#}", err))
+}
+
 /// Builds a gzipped tar with the given (path, contents) entries. Paths must
 /// share a single top-level directory (npm tarballs always wrap under `package/`).
 pub fn create_test_npm_tarball(files: &[(&str, &[u8])]) -> Vec<u8> {

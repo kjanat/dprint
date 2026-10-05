@@ -217,6 +217,46 @@ mod test {
   }
 
   #[test]
+  fn the_schema_accepts_the_commands_the_configuration_does() {
+    use crate::test_helpers::validate_with_schema;
+    use serde_json::json;
+
+    let schema: serde_json::Value = serde_json::from_str(EXEC_CONFIG_SCHEMA).unwrap();
+    for command in [
+      json!({ "command": "fmt", "exts": "txt" }),
+      json!({ "command": "fmt", "exts": ["txt"] }),
+      json!({ "command": "fmt", "fileNames": "README" }),
+      json!({ "command": "fmt", "associations": "**/*.txt" }),
+      json!({ "command": "fmt", "associations": ["**/*.txt"] }),
+      json!({ "command": "fmt", "exts": [], "fileNames": ["README"] }),
+      // what to format with it is empty
+      json!({ "command": "fmt" }),
+      json!({ "command": "fmt", "exts": [] }),
+      json!({ "command": "fmt", "fileNames": [] }),
+      json!({ "command": "fmt", "associations": [] }),
+      json!({ "command": "fmt", "exts": [], "fileNames": [], "associations": [] }),
+      json!({ "command": "fmt", "associations": ["**/*.txt", "**/*.md"] }),
+      json!({ "command": "fmt", "exts": "txt", "unknown": true }),
+    ] {
+      let config = json!({ "commands": [command] });
+      let resolved = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
+      assert_eq!(
+        validate_with_schema(&schema, &config).is_ok(),
+        resolved.diagnostics.is_empty(),
+        "{}: {:?}",
+        command,
+        resolved.diagnostics
+      );
+    }
+
+    // a configuration file may set some of it and get the rest from one it
+    // extends, ex. only allow the extended configuration's commands to run
+    for config in [json!({}), json!({ "playWithFire": true }), json!({ "lineWidth": 80 })] {
+      assert_eq!(validate_with_schema(&schema, &config), Ok(()), "{}", config);
+    }
+  }
+
+  #[test]
   fn serves_only_references_to_the_version_it_was_built_from() {
     let environment = TestEnvironment::new();
     let is_builtin = |text: &str| is_builtin_exec_reference(&environment, &parse_reference(text, &environment));

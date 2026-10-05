@@ -116,6 +116,7 @@ signal-hook = "=0.3.18"
 winreg = "=0.55.0"
 
 [dev-dependencies]
+boon = "0.6.1"
 # stay on this version because it's good enough and makes the output the same on all platforms
 path-clean = "0.1.0"
 pretty_assertions = "1.4.0"
