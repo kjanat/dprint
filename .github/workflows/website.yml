@@ -1,42 +1,35 @@
 name: Website
 on:
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: Deploy to GitHub Pages
-        type: boolean
-        default: false
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    inputs: { deploy: { description: Deploy to GitHub Pages, type: boolean, default: false } }
+  push: &m { branches: [main, master] }
+  pull_request: *m
+permissions: {}
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
+    permissions: { content: &r read }
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
-        with:
-          cache: true
-          deno-version: canary
-      - name: Install dependencies
-        run: (cd website && deno install)
-      - name: Build playground
-        run: (cd website/playground && deno task build)
-      - name: Test playground
-        run: (cd website/playground && deno task test)
-      - name: Build website
-        run: "(cd website && deno task build:ci)"
-      - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@132898c54c57c7cc6b80eb3a89968de8fc283505 # releases/v3
-        if: github.event_name == 'workflow_dispatch' && inputs.deploy
-        with:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          BRANCH: gh-pages
-          FOLDER: website/_site
-          single-commit: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - parallel:
+          - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+          - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+          - uses: kjanat/runner@ad30f34c7352d89884b6d03febd9b16b4807ed56 # v0.27.1
+      - name: Do it all
+        working-directory: website
+        run: runner install -s playground:build playground:test build:ci
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with: { path: "website/_site" }
+  deploy:
+    needs: build
+    runs-on: ubuntu-slim
+    permissions: { contents: *r, pages: &w write, id-token: *w }
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    concurrency: { group: "pages-deploy", cancel-in-progress: false }
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
