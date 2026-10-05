@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -39,6 +40,22 @@ use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
 use super::template::TemplateValues;
 use super::template::render_template;
+
+/// How much of what a command writes to stderr is kept for its error: the
+/// end, where a command that fails usually says why. The rest is read and
+/// dropped, so a command can write any amount without using that much memory.
+const MAX_STDERR_LEN: usize = 64 * 1024;
+/// How much a command may write as the formatted file: this many times the
+/// file, plus [`MAX_OUTPUT_HEADROOM`]. Formatting never makes that much of a
+/// file, so more is a runaway, which fails the file rather than using any
+/// amount of memory.
+const MAX_OUTPUT_FACTOR: usize = 10;
+const MAX_OUTPUT_HEADROOM: usize = 1024 * 1024;
+
+/// The most a command formatting `file_len` bytes may write.
+fn max_output_len(file_len: usize) -> usize {
+  file_len.saturating_mul(MAX_OUTPUT_FACTOR).saturating_add(MAX_OUTPUT_HEADROOM)
+}
 
 #[derive(Default)]
 pub struct ExecHandler {
@@ -163,21 +180,23 @@ pub async fn format_bytes(
     )
     .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
 
-    // capturing stdout
+    // capturing stdout, up to what the formatted file could be
     let (out_tx, out_rx) = oneshot::channel();
-    let mut handles = Vec::with_capacity(2);
-    if let Some(stdout) = child.take_stdout() {
-      handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stdout, out_tx)));
-    } else {
+    let Some(stdout) = child.take_stdout() else {
       let _ = child.kill();
       return Err(FormatError::new("Formatter did not have a handle for stdout"));
-    }
+    };
+    let file_len = file_bytes.len();
+    dprint_core::async_runtime::spawn_blocking(move || {
+      // the other end is gone when nothing needs the output anymore
+      let _ignore = out_tx.send(read_output(stdout, file_len));
+    });
 
-    // capturing stderr
+    // capturing the end of stderr, for the error when the command fails
     let (err_tx, err_rx) = oneshot::channel();
-    if let Some(stderr) = child.take_stderr() {
-      handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
-    }
+    let stderr_read = child
+      .take_stderr()
+      .map(|stderr| dprint_core::async_runtime::spawn_blocking(|| read_stderr_end(stderr, err_tx)));
 
     // write file text into child's stdin. this happens within the timeout
     // because a command that never reads its stdin would block the write
@@ -203,13 +222,12 @@ pub async fn format_bytes(
       if let Some(stdin_write) = stdin_write {
         stdin_write.await??;
       }
-      // the output streams end when the formatter exits
-      let handles_future = dprint_core::async_runtime::future::join_all(handles);
-      let (output_result, handle_results) = tokio::join!(out_rx, handles_future);
-      for handle_result in handle_results {
-        handle_result??; // surface any errors capturing
+      // the output ends when the formatter exits, unless there's too much of
+      // it, which fails the file right away (dropping the child kills it)
+      let output = out_rx.await??;
+      if let Some(stderr_read) = stderr_read {
+        stderr_read.await??; // surface any errors capturing
       }
-      let output = output_result?;
       let exit_status = wait_for_exit(&mut child, "formatter").await?;
       Ok::<_, FormatError>((output, exit_status))
     };
@@ -608,11 +626,11 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
     Err(err) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
   };
 
-  // capture stderr to surface it if the command fails
+  // capture the end of stderr to surface it if the command fails
   let (err_tx, err_rx) = oneshot::channel();
   let mut handles = Vec::with_capacity(1);
   if let Some(stderr) = child.take_stderr() {
-    handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
+    handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stderr_end(stderr, err_tx)));
   }
 
   let result = async {
@@ -655,12 +673,49 @@ async fn wait_for_exit(child: &mut OwnedChild, description: &str) -> Result<Exit
   }
 }
 
-fn read_stream_lines<R>(mut readable: R, sender: Sender<Vec<u8>>) -> Result<(), FormatError>
-where
-  R: std::io::Read + Unpin,
-{
+/// Reads what a command formatting `file_len` bytes writes, which is at most
+/// [`max_output_len`] of it: a command that writes more isn't formatting the
+/// file, and would otherwise have any amount of memory.
+fn read_output(mut readable: impl std::io::Read, file_len: usize) -> Result<Vec<u8>, FormatError> {
+  let max_len = max_output_len(file_len);
   let mut bytes = Vec::new();
-  readable.read_to_end(&mut bytes)?;
+  readable.by_ref().take((max_len as u64).saturating_add(1)).read_to_end(&mut bytes)?;
+  if bytes.len() > max_len {
+    return Err(FormatError::new(format!(
+      "The command wrote more than {} bytes, over {} times the {} bytes of the file plus a megabyte, which can't be the formatted file.",
+      max_len, MAX_OUTPUT_FACTOR, file_len
+    )));
+  }
+  Ok(bytes)
+}
+
+/// Reads a command's stderr until it ends, keeping its last
+/// [`MAX_STDERR_LEN`] bytes for the error, after a mark when there was more.
+fn read_stderr_end(mut readable: impl std::io::Read, sender: Sender<Vec<u8>>) -> Result<(), FormatError> {
+  let mut bytes = Vec::new();
+  let mut truncated = false;
+  let mut buffer = vec![0; 64 * 1024];
+  loop {
+    let read = match readable.read(&mut buffer) {
+      Ok(0) => break,
+      Ok(read) => read,
+      Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+      Err(err) => return Err(err.into()),
+    };
+    bytes.extend_from_slice(&buffer[..read]);
+    // drop the start once there's twice as much, rather than at every read
+    if bytes.len() > 2 * MAX_STDERR_LEN {
+      bytes.drain(..bytes.len() - MAX_STDERR_LEN);
+      truncated = true;
+    }
+  }
+  if bytes.len() > MAX_STDERR_LEN {
+    bytes.drain(..bytes.len() - MAX_STDERR_LEN);
+    truncated = true;
+  }
+  if truncated {
+    bytes.splice(0..0, b"[...] ".iter().copied());
+  }
   let _ignore = sender.send(bytes); // ignore error as that means the other end is closed
   Ok(())
 }
@@ -922,10 +977,59 @@ mod test {
   /// Gets whether the process running `sleep <seconds>` is still alive.
   #[cfg(unix)]
   fn sleep_is_running(seconds: &str) -> bool {
+    command_is_running(&format!("sleep {}", seconds))
+  }
+
+  #[cfg(unix)]
+  /// Gets whether a process running the command line is still alive.
+  fn command_is_running(command: &str) -> bool {
     let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
-    String::from_utf8_lossy(&output.stdout)
-      .lines()
-      .any(|line| line.trim() == format!("sleep {}", seconds))
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| line.trim() == command)
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn fails_a_formatter_that_keeps_writing_without_keeping_what_it_writes() {
+    // `yes` writes forever, which is far more than the file could format to.
+    // What's read of it is at most the limit (see `read_output`), so that's
+    // all the memory it gets, however long it would go on.
+    let config = resolve(serde_json::json!({ "timeout": 10, "commands": [{ "command": "yes 34.7", "exts": ["txt"] }] }));
+    let start = Instant::now();
+    assert_eq!(
+      format(&config, "text", &SetupState::default()).await,
+      Err(format!(
+        "The command wrote more than {} bytes, over 10 times the 4 bytes of the file plus a megabyte, which can't be the formatted file.",
+        10 * 4 + 1024 * 1024
+      ))
+    );
+    // right away, rather than at the timeout
+    assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+    assert!(!command_is_running("yes 34.7"), "the formatter should have been killed");
+
+    // while a file may well format to more than a megabyte
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "cat", "exts": ["txt"] }] }));
+    let text = "a".repeat(2 * 1024 * 1024);
+    assert_eq!(format(&config, &text, &SetupState::default()).await, Ok(None));
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn keeps_only_the_end_of_what_a_command_writes_to_stderr() {
+    // 300 KB of it, of which the error gets the last 64 KiB
+    let command = "sh -c \"yes error | head -c 300000 >&2; exit 1\"";
+    let config = resolve(serde_json::json!({ "commands": [{ "command": command, "exts": ["txt"] }] }));
+    let err = format(&config, "text", &SetupState::default()).await.unwrap_err();
+    let prefix = "Child process exited with code 1: [...] ";
+    assert!(err.starts_with(prefix), "{}", &err[..prefix.len()]);
+    assert!(err.ends_with("error\n"), "{}", &err[err.len() - 20..]);
+    assert_eq!(err.len(), prefix.len() + 64 * 1024);
+
+    // the same for a setup command
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "cat", "setupCommand": command, "exts": ["txt"] }] }));
+    let err = format(&config, "text", &SetupState::default()).await.unwrap_err();
+    let prefix = "Setup command 'sh' exited with code 1: [...] ";
+    assert!(err.starts_with(prefix), "{}", &err[..prefix.len()]);
+    assert_eq!(err.len(), prefix.len() + 64 * 1024);
   }
 
   #[cfg(unix)]
@@ -1337,5 +1441,59 @@ mod test {
       assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
     });
     assert_eq!(setup_starts(dir.path()).len(), attempts + 1);
+  }
+}
+
+// A command's working directory decides what a program it runs by a relative
+// path is, on every platform. That's why remote configuration can't set both
+// under a list of programs (see `configuration::remote_exec`).
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)] // runs a real command from a real directory
+mod relative_program_test {
+  use std::path::PathBuf;
+  use std::sync::Arc;
+
+  use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::plugins::NullCancellationToken;
+
+  use super::SetupState;
+  use super::format_bytes;
+  use crate::plugins::implementations::builtin_exec::configuration::Configuration;
+
+  #[test]
+  fn runs_a_relative_program_from_the_commands_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let chosen = dir.path().join("chosen");
+    std::fs::create_dir(&chosen).unwrap();
+    // the formatter that directory provides, run by a relative path
+    #[cfg(windows)]
+    {
+      std::fs::write(chosen.join("formatter.cmd"), "@echo chosen\r\n").unwrap();
+    }
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      let script = chosen.join("formatter");
+      std::fs::write(&script, "#!/bin/sh\necho chosen\n").unwrap();
+      std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = serde_json::json!({
+      "commands": [{ "command": "./formatter", "cwd": chosen.to_string_lossy(), "exts": ["txt"] }]
+    });
+    let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
+    let result = Configuration::resolve(config, &Default::default());
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let output = runtime
+      .block_on(format_bytes(
+        PathBuf::from("file.txt"),
+        b"text".to_vec(),
+        Arc::new(result.config),
+        Arc::new(NullCancellationToken),
+        &SetupState::default(),
+      ))
+      .unwrap()
+      .unwrap();
+    assert_eq!(String::from_utf8(output).unwrap().trim_end(), "chosen");
   }
 }

@@ -3228,6 +3228,55 @@ mod tests {
       );
       assert_eq!(result.messages, Vec::<String>::new());
     }
+
+    #[test]
+    fn doesnt_let_a_remote_commands_cwd_decide_what_a_relative_program_is() {
+      // the working directory a command sets decides what file a program it
+      // runs by a relative path is, so a list of programs can't vouch for it
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "./formatter", "cwd": "/remote/chosen", "exts": ["txt"] },
+            { "command": "cargo fmt", "cwd": "/remote/crate", "exts": ["rs"] },
+            { "command": "./formatter", "exts": ["md"] },
+            { "command": "cargo fmt", "cwd": "/remote/crate", "exts": ["toml"], "setupCommand": "./setup" }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          remote,
+        )
+        .unwrap()
+      };
+      // only the commands whose programs don't depend on their cwd: a name
+      // (found on the PATH) with a cwd, or a relative path without one
+      let result = resolve_allowing(r#"["./formatter", "cargo", "./setup"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(), "./formatter".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run a program by a relative path ",
+            "in a \"cwd\" they set, which decides what that path is, so only with \"playWithFire\": true: ./formatter, ./setup"
+          )
+          .to_string()
+        ]
+      );
+      // all of them when any program may run
+      let result = resolve_allowing("true");
+      assert_eq!(
+        result.exec.properties.commands,
+        vec![
+          "./formatter".to_string(),
+          "cargo fmt".to_string(),
+          "./formatter".to_string(),
+          "cargo fmt".to_string()
+        ]
+      );
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
   }
 
   #[test]
