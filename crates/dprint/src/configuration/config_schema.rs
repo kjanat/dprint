@@ -314,10 +314,13 @@ fn rewrite_reference(reference: &str, base: &Url, index: &SchemaIndex, location:
 /// JSON pointer within `schema`, the base uri its references are relative to
 /// and what its `$id` says.
 ///
-/// Only schemas are visited: not the values of keywords that are data (ex.
-/// `default`), nor property names (ex. a property named `$ref`). The values
-/// of keywords dprint doesn't know are treated as schemas or lists of them,
-/// as they may be referred to as such.
+/// Only schemas are visited: the values of the draft-06 and draft-07 keywords
+/// that hold schemas (and of `$defs` and `dependentSchemas`, which some
+/// draft-07 schemas use). Not the values of keywords that are data (ex.
+/// `default`), nor property names (ex. a property named `$ref`), nor the
+/// values of keywords dprint doesn't know, which a validator ignores and an
+/// extension may use for anything (ex. an `x-tool` object with a `$ref` of
+/// its own), so they're left as they are.
 fn walk_schemas(schema: &mut Value, pointer: &str, base: &Url, visit: &mut SchemaVisitor) {
   let Value::Object(object) = schema else {
     return;
@@ -333,8 +336,6 @@ fn walk_schemas(schema: &mut Value, pointer: &str, base: &Url, visit: &mut Schem
   for (keyword, value) in object.iter_mut() {
     let keyword_pointer = format!("{}/{}", pointer, escape_pointer_segment(keyword));
     match keyword.as_str() {
-      // data rather than schemas
-      "enum" | "const" | "default" | "examples" | "defaultSnippets" => {}
       // property names (or patterns, or definition names) to schemas
       "properties" | "patternProperties" | "definitions" | "$defs" | "dependencies" | "dependentSchemas" => {
         if let Value::Object(schemas) = value {
@@ -343,15 +344,19 @@ fn walk_schemas(schema: &mut Value, pointer: &str, base: &Url, visit: &mut Schem
           }
         }
       }
-      // a schema or a list of them (ex. `items`, `allOf` and `not`)
-      _ => match value {
-        Value::Array(schemas) => {
-          for (index, schema) in schemas.iter_mut().enumerate() {
-            walk_schemas(schema, &format!("{}/{}", keyword_pointer, index), &base, visit);
+      // a schema or a list of them
+      "items" | "additionalItems" | "contains" | "additionalProperties" | "propertyNames" | "if" | "then" | "else" | "allOf" | "anyOf" | "oneOf" | "not" => {
+        match value {
+          Value::Array(schemas) => {
+            for (index, schema) in schemas.iter_mut().enumerate() {
+              walk_schemas(schema, &format!("{}/{}", keyword_pointer, index), &base, visit);
+            }
           }
+          value => walk_schemas(value, &keyword_pointer, &base, visit),
         }
-        value => walk_schemas(value, &keyword_pointer, &base, visit),
-      },
+      }
+      // data (ex. `default`), or a keyword dprint doesn't know
+      _ => {}
     }
   }
 }
@@ -836,6 +841,60 @@ mod test {
         "examples": [{ "$ref": "#/definitions/a" }],
       })
     );
+  }
+
+  #[test]
+  fn leaves_the_values_of_unknown_keywords_as_they_are() {
+    // an extension's data, which happens to look like a schema
+    let extension = json!({ "$id": "literal", "$ref": "literal-ref", "nested": [{ "$ref": "#/definitions/a", "$schema": "x" }] });
+    let schema = build(
+      json!({
+        "definitions": { "a": { "type": "string" } },
+        "x-tool": extension,
+        "properties": { "a": { "$ref": "#/definitions/a", "x-tool": extension } },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    let plugin = &schema.schema["definitions"]["plugin:test"];
+    assert_eq!(plugin["x-tool"], extension);
+    assert_eq!(plugin["properties"]["a"]["x-tool"], extension);
+    // while the schemas around it are still rewritten
+    assert_eq!(plugin["properties"]["a"]["$ref"], json!("#/definitions/plugin:test/definitions/a"));
+  }
+
+  #[test]
+  fn points_references_in_every_schema_keyword_at_the_copy() {
+    let reference = json!({ "$ref": "#/definitions/a" });
+    let schema = build(
+      json!({
+        "definitions": { "a": { "type": "string" } },
+        "items": [reference, reference],
+        "additionalItems": reference,
+        "contains": reference,
+        "additionalProperties": reference,
+        "propertyNames": reference,
+        "if": reference,
+        "then": reference,
+        "else": reference,
+        "not": reference,
+        "allOf": [reference],
+        "anyOf": [reference],
+        "oneOf": [reference],
+        "dependencies": { "x": reference, "y": ["z"] },
+        "dependentSchemas": { "x": reference },
+        "patternProperties": { "^x": reference },
+        "$defs": { "b": reference },
+        "properties": { "x": { "items": reference } },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    let references = plugin_references(&schema.schema);
+    assert_eq!(references.len(), 18, "{:?}", references);
+    for (pointer, reference) in references {
+      assert_eq!(reference, "#/definitions/plugin:test/definitions/a", "{}", pointer);
+    }
   }
 
   #[test]
