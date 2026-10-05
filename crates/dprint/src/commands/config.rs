@@ -1088,7 +1088,7 @@ async fn preview_plugin_config_updates<TEnvironment: Environment>(
       continue;
     };
     let format = ConfigFileFormat::from_path(config_path);
-    let config_map = match format.deserialize_raw(&file_text) {
+    let config_map = match format.parse(&file_text) {
       Ok(map) => map,
       Err(err) => {
         log_warn!(environment, "Failed deserializing config file '{}': {:#}", config_path.display(), err);
@@ -1202,7 +1202,7 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     }
     let mut file_text = environment.read_file(config_path)?;
     let format = ConfigFileFormat::from_path(config_path);
-    let config_map = match format.deserialize_raw(&file_text) {
+    let config_map = match format.parse(&file_text) {
       Ok(map) => map,
       Err(err) => {
         log_warn!(environment, "Failed deserializing config file '{}': {:#}", config_path.display(), err);

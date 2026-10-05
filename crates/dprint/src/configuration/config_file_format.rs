@@ -18,8 +18,9 @@ use super::ConfigMap;
 use super::PluginUpdateInfo;
 use super::add_plugins_to_config;
 use super::apply_config_changes;
-use super::deserialize_config;
-use super::deserialize_config_raw;
+use super::config_map_from_values;
+use super::parse_integer;
+use super::parse_json_config;
 use super::update_plugin_in_config;
 use crate::plugins::PluginSourceReference;
 use crate::utils::PathSource;
@@ -64,18 +65,17 @@ impl ConfigFileFormat {
     }
   }
 
-  pub fn deserialize(self, text: &str) -> Result<ConfigMap> {
+  /// Reads configuration text into dprint's format-neutral values. This is
+  /// the only place reading a configuration file depends on its format.
+  pub fn parse(self, text: &str) -> Result<ConfigKeyMap> {
     match self {
-      ConfigFileFormat::Json => deserialize_config(text),
-      ConfigFileFormat::Toml => deserialize_config(&toml_to_json_text(text)?),
+      ConfigFileFormat::Json => parse_json_config(text),
+      ConfigFileFormat::Toml => parse_toml_config(text),
     }
   }
 
-  pub fn deserialize_raw(self, text: &str) -> Result<ConfigKeyMap> {
-    match self {
-      ConfigFileFormat::Json => deserialize_config_raw(text),
-      ConfigFileFormat::Toml => deserialize_config_raw(&toml_to_json_text(text)?),
-    }
+  pub fn deserialize(self, text: &str) -> Result<ConfigMap> {
+    config_map_from_values(self.parse(text)?)
   }
 
   /// See [`add_plugins_to_config`].
@@ -120,44 +120,55 @@ fn starts_like_json(text: &str) -> bool {
 
 // ---- reading ----
 
-/// Converts a TOML configuration file to the equivalent JSON so it's read
-/// exactly like a JSON one. TOML has no null and JSON no dates, so dates
-/// become strings.
-fn toml_to_json_text(text: &str) -> Result<String> {
-  let document = text.parse::<DocumentMut>().map_err(|err| anyhow!("{}", err.to_string().trim_end()))?;
-  Ok(serde_json::to_string(&item_to_json(document.as_item())?)?)
+/// Reads TOML configuration text into the same values as the equivalent
+/// JSON: tables are objects and arrays of tables are arrays of objects. TOML
+/// has no null, and dates become strings.
+fn parse_toml_config(text: &str) -> Result<ConfigKeyMap> {
+  let document = parse_document(text)?;
+  table_to_config_values(document.as_table().iter(), "")
 }
 
-fn item_to_json(item: &Item) -> Result<serde_json::Value> {
-  Ok(match item {
-    Item::None => serde_json::Value::Null,
-    Item::Value(value) => value_to_json(value)?,
-    Item::Table(table) => serde_json::Value::Object(
-      table
+fn table_to_config_values<'a>(items: impl Iterator<Item = (&'a str, &'a Item)>, path: &str) -> Result<ConfigKeyMap> {
+  let mut properties = ConfigKeyMap::new();
+  for (key, item) in items {
+    let path = if path.is_empty() { key.to_string() } else { format!("{} -> {}", path, key) };
+    if let Some(value) = item_to_config_value(item, &path)? {
+      properties.insert(key.to_string(), value);
+    }
+  }
+  Ok(properties)
+}
+
+fn item_to_config_value(item: &Item, path: &str) -> Result<Option<ConfigKeyValue>> {
+  Ok(Some(match item {
+    Item::None => return Ok(None),
+    Item::Value(value) => toml_value_to_config_value(value, path)?,
+    Item::Table(table) => ConfigKeyValue::Object(table_to_config_values(table.iter(), path)?),
+    Item::ArrayOfTables(tables) => ConfigKeyValue::Array(
+      tables
         .iter()
-        .map(|(key, item)| Ok((key.to_string(), item_to_json(item)?)))
+        .map(|table| table_to_config_values(table.iter(), path).map(ConfigKeyValue::Object))
         .collect::<Result<_>>()?,
     ),
-    Item::ArrayOfTables(tables) => serde_json::Value::Array(tables.iter().map(|table| item_to_json(&Item::Table(table.clone()))).collect::<Result<_>>()?),
-  })
+  }))
 }
 
-fn value_to_json(value: &Value) -> Result<serde_json::Value> {
+fn toml_value_to_config_value(value: &Value, path: &str) -> Result<ConfigKeyValue> {
   Ok(match value {
-    Value::String(value) => serde_json::Value::String(value.value().clone()),
-    Value::Integer(value) => serde_json::Value::from(*value.value()),
-    Value::Float(value) => serde_json::Number::from_f64(*value.value())
-      .map(serde_json::Value::Number)
-      .ok_or_else(|| anyhow!("Unsupported number: {}", value.value()))?,
-    Value::Boolean(value) => serde_json::Value::Bool(*value.value()),
-    Value::Datetime(value) => serde_json::Value::String(value.value().to_string()),
-    Value::Array(array) => serde_json::Value::Array(array.iter().map(value_to_json).collect::<Result<_>>()?),
-    Value::InlineTable(table) => serde_json::Value::Object(
-      table
-        .iter()
-        .map(|(key, value)| Ok((key.to_string(), value_to_json(value)?)))
-        .collect::<Result<_>>()?,
-    ),
+    Value::String(value) => ConfigKeyValue::String(value.value().clone()),
+    Value::Integer(value) => ConfigKeyValue::Number(parse_integer(&value.value().to_string(), path)?),
+    // formatted with a decimal point so it's rejected like a JSON one (ex. `40.0`)
+    Value::Float(value) => ConfigKeyValue::Number(parse_integer(&format!("{:?}", value.value()), path)?),
+    Value::Boolean(value) => ConfigKeyValue::Bool(*value.value()),
+    Value::Datetime(value) => ConfigKeyValue::String(value.value().to_string()),
+    Value::Array(array) => ConfigKeyValue::Array(array.iter().map(|value| toml_value_to_config_value(value, path)).collect::<Result<_>>()?),
+    Value::InlineTable(table) => {
+      let mut properties = ConfigKeyMap::new();
+      for (key, value) in table.iter() {
+        properties.insert(key.to_string(), toml_value_to_config_value(value, &format!("{} -> {}", path, key))?);
+      }
+      ConfigKeyValue::Object(properties)
+    }
   })
 }
 
@@ -748,9 +759,21 @@ exts = ["rs"]
       ConfigFileFormat::Json.deserialize(json_text).unwrap()
     );
     assert_eq!(
-      ConfigFileFormat::Toml.deserialize_raw(toml_text).unwrap(),
-      ConfigFileFormat::Json.deserialize_raw(json_text).unwrap()
+      ConfigFileFormat::Toml.parse(toml_text).unwrap(),
+      ConfigFileFormat::Json.parse(json_text).unwrap()
     );
+  }
+
+  #[test]
+  fn reads_numbers_the_same_in_both_formats() {
+    fn error(format: ConfigFileFormat, text: &str) -> String {
+      format.parse(text).unwrap_err().to_string()
+    }
+    let expected = "Expected property 'typescript -> lineWidth' with value '40.0' to be convertible to a signed integer. invalid digit found in string";
+    assert_eq!(error(ConfigFileFormat::Toml, "[typescript]\nlineWidth = 40.0\n"), expected);
+    assert_eq!(error(ConfigFileFormat::Json, r#"{ "typescript": { "lineWidth": 40.0 } }"#), expected);
+    assert!(error(ConfigFileFormat::Toml, "lineWidth = 3000000000\n").starts_with("Expected property 'lineWidth' with value '3000000000'"));
+    assert!(error(ConfigFileFormat::Json, r#"{ "lineWidth": 3000000000 }"#).starts_with("Expected property 'lineWidth' with value '3000000000'"));
   }
 
   #[test]

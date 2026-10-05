@@ -1,9 +1,11 @@
+//! The format-neutral reading of a configuration file. A JSON or TOML file is
+//! read into dprint-core's [`ConfigKeyMap`] (see `config_file_format.rs`), and
+//! everything after that works the same for both.
+
 use anyhow::Result;
 use anyhow::bail;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigKeyValue;
-use jsonc_parser::JsonArray;
-use jsonc_parser::JsonObject;
 use jsonc_parser::JsonValue;
 
 use super::ConfigMap;
@@ -11,114 +13,119 @@ use super::ConfigMapValue;
 use super::RawPluginConfig;
 use super::RawPluginConfigOverride;
 
-pub fn deserialize_config(config_file_text: &str) -> Result<ConfigMap> {
+/// Reads JSON (with comments) configuration text. Text without an object at
+/// its root has no properties.
+pub fn parse_json_config(config_file_text: &str) -> Result<ConfigKeyMap> {
   let value = jsonc_parser::parse_to_value(config_file_text, &Default::default())?;
+  match value {
+    Some(JsonValue::Object(obj)) => {
+      let mut properties = ConfigKeyMap::new();
+      for (key, value) in obj.into_iter() {
+        let value = json_value_to_config_value(value, &key)?;
+        properties.insert(key, value);
+      }
+      Ok(properties)
+    }
+    _ => Ok(Default::default()),
+  }
+}
 
-  let root_object_node = match value {
-    Some(JsonValue::Object(obj)) => obj,
-    _ => return Ok(Default::default()),
-  };
+fn json_value_to_config_value(value: JsonValue, path: &str) -> Result<ConfigKeyValue> {
+  Ok(match value {
+    JsonValue::Boolean(value) => ConfigKeyValue::Bool(value),
+    JsonValue::String(value) => ConfigKeyValue::String(value.into_owned()),
+    JsonValue::Number(value) => ConfigKeyValue::Number(parse_integer(value, path)?),
+    JsonValue::Array(values) => ConfigKeyValue::Array(values.into_iter().map(|value| json_value_to_config_value(value, path)).collect::<Result<_>>()?),
+    JsonValue::Object(obj) => {
+      let mut properties = ConfigKeyMap::new();
+      for (key, value) in obj.into_iter() {
+        let value = json_value_to_config_value(value, &format!("{} -> {}", path, key))?;
+        properties.insert(key, value);
+      }
+      ConfigKeyValue::Object(properties)
+    }
+    JsonValue::Null => ConfigKeyValue::Null,
+  })
+}
 
+/// Configuration numbers are 32-bit integers, whatever the format allows.
+/// `path` is the property's path (ex. `typescript -> lineWidth`).
+pub fn parse_integer(text: &str, path: &str) -> Result<i32> {
+  match text.parse::<i32>() {
+    Ok(value) => Ok(value),
+    Err(err) => bail!(
+      "Expected property '{}' with value '{}' to be convertible to a signed integer. {}",
+      path,
+      text,
+      err
+    ),
+  }
+}
+
+/// Reads the root properties of a configuration file: plugin configurations
+/// (objects), arrays of strings and other values.
+pub fn config_map_from_values(values: ConfigKeyMap) -> Result<ConfigMap> {
   let mut properties = ConfigMap::new();
-
-  for (key, value) in root_object_node.into_iter() {
-    let property_name = key;
+  for (property_name, value) in values {
     let property_value = match value {
-      JsonValue::Object(obj) => ConfigMapValue::PluginConfig(json_obj_to_raw_plugin_config(&property_name, obj)?),
-      JsonValue::Array(arr) => ConfigMapValue::Vec(json_array_to_vec(&property_name, arr)?),
-      JsonValue::Boolean(value) => ConfigMapValue::from_bool(value),
-      JsonValue::String(value) => ConfigMapValue::KeyValue(ConfigKeyValue::String(value.into_owned())),
-      JsonValue::Number(value) => ConfigMapValue::from_i32(match value.parse::<i32>() {
-        Ok(value) => value,
-        Err(err) => {
-          bail!(
-            "Expected property '{}' with value '{}' to be convertible to a signed integer. {}",
-            property_name,
-            value,
-            err
-          )
-        }
-      }),
-      JsonValue::Null => bail!("Unexpected null value in root object property '{}'", property_name), // ignore
+      ConfigKeyValue::Object(obj) => ConfigMapValue::PluginConfig(raw_plugin_config(obj)?),
+      ConfigKeyValue::Array(values) => ConfigMapValue::Vec(string_vec(&property_name, values)?),
+      ConfigKeyValue::Null => bail!("Unexpected null value in root object property '{}'", property_name),
+      value => ConfigMapValue::KeyValue(value),
     };
     properties.insert(property_name, property_value);
   }
-
   Ok(properties)
 }
 
-pub fn deserialize_config_raw(config_file_text: &str) -> Result<ConfigKeyMap> {
-  let value = jsonc_parser::parse_to_value(config_file_text, &Default::default())?;
-  let root_object_node = match value {
-    Some(JsonValue::Object(obj)) => obj,
-    _ => return Ok(Default::default()),
-  };
-
-  object_to_config_key_map(root_object_node)
-}
-
-fn json_obj_to_raw_plugin_config(parent_prop_name: &str, obj: JsonObject) -> Result<RawPluginConfig> {
+/// Reads a plugin's configuration, separating the properties dprint handles
+/// (`locked`, `associations` and `overrides`) from the plugin's own.
+pub fn raw_plugin_config(obj: ConfigKeyMap) -> Result<RawPluginConfig> {
   let mut properties = ConfigKeyMap::new();
   let mut locked = false;
   let mut associations = None;
   let mut overrides = Vec::new();
 
-  for (key, value) in obj.into_iter() {
-    let property_name = key;
-    if property_name == "locked" {
-      match value {
-        JsonValue::Boolean(value) => {
-          locked = value;
-          continue;
-        }
+  for (property_name, value) in obj {
+    match property_name.as_str() {
+      "locked" => match value {
+        ConfigKeyValue::Bool(value) => locked = value,
         _ => bail!("The 'locked' property in a plugin configuration must be a boolean."),
-      }
-    }
-
-    if property_name == "associations" {
-      match value {
-        JsonValue::Array(value) => {
-          let mut items = Vec::new();
-          for value in value.into_iter() {
+      },
+      "associations" => match value {
+        ConfigKeyValue::Array(values) => {
+          let mut items = Vec::with_capacity(values.len());
+          for value in values {
             match value {
-              JsonValue::String(value) => items.push(value.into_owned()),
+              ConfigKeyValue::String(value) => items.push(value),
               _ => bail!("The 'associations' array in a plugin configuration must contain only strings."),
             }
           }
           associations = Some(items);
-          continue;
         }
-        JsonValue::String(value) => {
-          associations = Some(vec![value.into_owned()]);
-          continue;
-        }
+        ConfigKeyValue::String(value) => associations = Some(vec![value]),
         _ => bail!("The 'associations' property in a plugin configuration must be a string or an array of strings."),
+      },
+      "overrides" => {
+        overrides = match value {
+          ConfigKeyValue::Object(value) => vec![raw_plugin_config_override(value)?],
+          ConfigKeyValue::Array(values) => {
+            let mut items = Vec::with_capacity(values.len());
+            for value in values {
+              match value {
+                ConfigKeyValue::Object(value) => items.push(raw_plugin_config_override(value)?),
+                _ => bail!("The 'overrides' property in a plugin configuration must be an object or an array of objects."),
+              }
+            }
+            items
+          }
+          _ => bail!("The 'overrides' property in a plugin configuration must be an object or an array of objects."),
+        };
+      }
+      _ => {
+        properties.insert(property_name, value);
       }
     }
-
-    if property_name == "overrides" {
-      overrides = match value {
-        JsonValue::Object(value) => vec![json_obj_to_raw_plugin_config_override(value)?],
-        JsonValue::Array(value) => {
-          let mut items = Vec::new();
-          for value in value.into_iter() {
-            match value {
-              JsonValue::Object(value) => items.push(json_obj_to_raw_plugin_config_override(value)?),
-              _ => bail!("The 'overrides' property in a plugin configuration must be an object or an array of objects."),
-            }
-          }
-          items
-        }
-        _ => bail!("The 'overrides' property in a plugin configuration must be an object or an array of objects."),
-      };
-      continue;
-    }
-
-    let property_value = match value_to_plugin_config_key_value(value) {
-      Ok(result) => result,
-      Err(err) => bail!("{} in object property '{} -> {}'", err, parent_prop_name, property_name),
-    };
-    properties.insert(property_name, property_value);
   }
 
   Ok(RawPluginConfig {
@@ -129,32 +136,28 @@ fn json_obj_to_raw_plugin_config(parent_prop_name: &str, obj: JsonObject) -> Res
   })
 }
 
-fn json_obj_to_raw_plugin_config_override(obj: JsonObject) -> Result<RawPluginConfigOverride> {
+fn raw_plugin_config_override(obj: ConfigKeyMap) -> Result<RawPluginConfigOverride> {
   let mut files = None;
   let mut properties = ConfigKeyMap::new();
 
-  for (key, value) in obj.into_iter() {
+  for (key, value) in obj {
     if key == "files" {
       files = Some(match value {
-        JsonValue::Array(value) => {
-          let mut items = Vec::new();
-          for value in value.into_iter() {
+        ConfigKeyValue::Array(values) => {
+          let mut items = Vec::with_capacity(values.len());
+          for value in values {
             match value {
-              JsonValue::String(value) => items.push(value.into_owned()),
+              ConfigKeyValue::String(value) => items.push(value),
               _ => bail!("The 'files' array in a plugin configuration override must contain only strings."),
             }
           }
           items
         }
-        JsonValue::String(value) => vec![value.into_owned()],
+        ConfigKeyValue::String(value) => vec![value],
         _ => bail!("The 'files' property in a plugin configuration override must be a string or an array of strings."),
       });
     } else {
-      let property_value = match value_to_plugin_config_key_value(value) {
-        Ok(result) => result,
-        Err(err) => bail!("{} in plugin configuration override property '{}'", err, key),
-      };
-      properties.insert(key, property_value);
+      properties.insert(key, value);
     }
   }
 
@@ -172,59 +175,22 @@ fn json_obj_to_raw_plugin_config_override(obj: JsonObject) -> Result<RawPluginCo
   Ok(RawPluginConfigOverride { files, properties })
 }
 
-fn json_array_to_vec(parent_prop_name: &str, array: JsonArray) -> Result<Vec<String>> {
-  let mut elements = Vec::new();
-
-  for element in array.into_iter() {
-    let value = match value_to_string(element) {
-      Ok(result) => result,
-      Err(err) => bail!("{} in array '{}'", err, parent_prop_name),
-    };
-    elements.push(value);
-  }
-
-  Ok(elements)
-}
-
-fn value_to_string(value: JsonValue) -> Result<String> {
-  match value {
-    JsonValue::String(value) => Ok(value.into_owned()),
-    _ => bail!("Expected a string"),
-  }
-}
-
-fn value_to_plugin_config_key_value(value: JsonValue) -> Result<ConfigKeyValue> {
-  Ok(match value {
-    JsonValue::Boolean(value) => ConfigKeyValue::Bool(value),
-    JsonValue::String(value) => ConfigKeyValue::String(value.into_owned()),
-    JsonValue::Number(value) => ConfigKeyValue::Number(value.parse::<i32>()?),
-    JsonValue::Array(value) => {
-      let values = value
-        .into_iter()
-        .map(value_to_plugin_config_key_value)
-        .collect::<Result<Vec<ConfigKeyValue>, _>>()?;
-      ConfigKeyValue::Array(values)
+/// Reads an array that may only contain strings.
+pub fn string_vec(parent_prop_name: &str, values: Vec<ConfigKeyValue>) -> Result<Vec<String>> {
+  let mut elements = Vec::with_capacity(values.len());
+  for value in values {
+    match value {
+      ConfigKeyValue::String(value) => elements.push(value),
+      _ => bail!("Expected a string in array '{}'", parent_prop_name),
     }
-    JsonValue::Object(obj) => ConfigKeyValue::Object(object_to_config_key_map(obj)?),
-    JsonValue::Null => ConfigKeyValue::Null,
-  })
-}
-
-fn object_to_config_key_map(obj: JsonObject) -> Result<ConfigKeyMap> {
-  let mut properties = ConfigKeyMap::new();
-  for (key, value) in obj.into_iter() {
-    let value = match value_to_plugin_config_key_value(value) {
-      Ok(result) => result,
-      Err(err) => bail!("{} in object property '{}'", err, key),
-    };
-    properties.insert(key, value);
   }
-  Ok(properties)
+  Ok(elements)
 }
 
 #[cfg(test)]
 mod tests {
-  use super::deserialize_config;
+  use super::config_map_from_values;
+  use super::parse_json_config;
   use crate::configuration::ConfigMap;
   use crate::configuration::ConfigMapValue;
   use crate::configuration::RawPluginConfig;
@@ -436,6 +402,10 @@ mod tests {
         _ => unreachable!(),
       }
     }
+  }
+
+  fn deserialize_config(text: &str) -> anyhow::Result<ConfigMap> {
+    config_map_from_values(parse_json_config(text)?)
   }
 
   fn assert_deserializes(text: &str, expected_map: ConfigMap) {
