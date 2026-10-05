@@ -4044,6 +4044,69 @@ text2"
   }
 
   #[test]
+  fn should_only_load_wasm_plugins_that_format_files() {
+    let file_path = "/file.txt";
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file(file_path, "text")
+      .initialize()
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
+    environment.clear_logs();
+
+    // breaks the plugin's compiled module, so loading the plugin recompiles it
+    let break_compiled_module = || {
+      let plugins_dir = environment.get_cache_dir().join("plugins");
+      let compiled_modules = environment
+        .dir_info(&plugins_dir)
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry {
+          crate::environment::DirEntry::File { path, .. } if path.extension().is_some_and(|ext| ext == "cwasm") => Some(path),
+          _ => None,
+        })
+        .collect::<Vec<_>>();
+      assert_eq!(compiled_modules.len(), 1);
+      environment.write_file_bytes(&compiled_modules[0], b"broken").unwrap();
+    };
+    let compiling = vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string()];
+
+    // there's nothing to format, so the plugin isn't loaded
+    break_compiled_module();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+
+    // a changed file loads it
+    environment.write_file(file_path, "changed").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "changed_formatted");
+    assert_eq!(environment.take_stderr_messages(), compiling);
+
+    // and so does a configuration it hasn't resolved before
+    break_compiled_module();
+    environment
+      .write_file(
+        "./dprint.json",
+        r#"{ "test-plugin": { "ending": "custom" }, "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .unwrap();
+    environment.write_file(file_path, "text").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_custom");
+    assert_eq!(environment.take_stderr_messages(), compiling);
+    environment.clear_logs();
+
+    // which it then knows without loading it
+    break_compiled_module();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
   fn should_format_incrementally_when_specified_on_cli() {
     let file_path1 = "/subdir/file1.txt";
     let no_change_msg = "No change: /subdir/file1.txt";
@@ -4205,6 +4268,70 @@ text2"
     assert!(!environment.take_stderr_messages().iter().any(|msg| msg.contains(skipped_msg)));
     assert_eq!(read_file_hashes(&read_incremental_file()).len(), 3);
     environment.clear_logs();
+  }
+
+  #[test]
+  fn should_skip_reading_unmodified_files_incrementally() {
+    let not_read_msg = "No change: /file.txt (unmodified, so not read)";
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .initialize()
+      .build();
+    let run = |args: Vec<&str>| {
+      environment.clear_logs();
+      run_test_cli(args, &environment).unwrap();
+      environment.take_stderr_messages().iter().any(|msg| msg.contains(not_read_msg))
+    };
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text_formatted").unwrap();
+
+    // the file was modified just now, so its metadata isn't trusted yet
+    assert!(!run(vec!["check", "--log-level=debug"]));
+    // later, the file's text is known formatted, so its metadata is remembered
+    environment.set_fs_time(1_000_100);
+    assert!(!run(vec!["check", "--log-level=debug"]));
+    // and from then on the unmodified file isn't read
+    assert!(run(vec!["check", "--log-level=debug"]));
+
+    // proof it isn't read: text of the same size with the same modification
+    // time goes unnoticed (this is the trade-off of not reading)
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "TEXT_FORMATTED").unwrap();
+    environment.set_fs_time(1_000_100);
+    assert!(run(vec!["check", "--log-level=debug"]));
+
+    // a change in size is noticed and the file is formatted
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text2").unwrap();
+    environment.set_fs_time(1_000_100);
+    assert!(!run(vec!["fmt", "--log-level=debug"]));
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text2_formatted");
+  }
+
+  #[test]
+  fn should_read_files_modified_right_before_the_run_incrementally() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .initialize()
+      .build();
+    environment.set_fs_time(1_000_000);
+    environment.write_file("/file.txt", "text_formatted").unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+
+    // modified 2 seconds before each run: within the timestamp precision of
+    // some file systems, so a later change could keep the same metadata
+    environment.set_fs_time(1_000_002);
+    for _ in 0..2 {
+      environment.clear_logs();
+      run_test_cli(vec!["check", "--log-level=debug"], &environment).unwrap();
+      let messages = environment.take_stderr_messages();
+      assert!(messages.iter().any(|msg| msg == "[DEBUG] No change: /file.txt"), "{:?}", messages);
+    }
   }
 
   #[test]
