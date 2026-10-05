@@ -12,8 +12,10 @@
 //! - kills it once a step uses far more CPU time than that step needs,
 //!
 //! - kills it once an attempt takes longer than it could need however much
-//!   CPU time it's given, and gives up once all the attempts together do,
-//!   however slowly the CPU time increases,
+//!   CPU time it's given, and gives up once the compile as a whole does
+//!   (waiting for a worker slot included), however slowly the CPU time
+//!   increases. That time grows with the module, up to [`MAX_TOTAL_WALL`]
+//!   unless `DPRINT_WASM_COMPILE_TIMEOUT` gives another,
 //! - kills it once nothing waits for it anymore, or what it's for has to be
 //!   done (see [`CompileControl`]),
 //!
@@ -67,7 +69,29 @@ pub const COMPILE_WORKER_ARG: &str = "__compile-wasm-plugin";
 const UNOPTIMIZED_ARG: &str = "--unoptimized";
 /// Set to `0` to set up wasm plugins in the dprint process itself, unsupervised.
 const WORKER_ENV_VAR: &str = "DPRINT_WASM_COMPILE_WORKER";
+/// Set to a number of seconds to give a compile that long in all (see
+/// [`Limits::total_wall`]) instead of what its size gives it, up to
+/// [`MAX_TOTAL_WALL`].
+const TIMEOUT_ENV_VAR: &str = "DPRINT_WASM_COMPILE_TIMEOUT";
 const MAX_ATTEMPTS: usize = 3;
+
+/// The most time a compile gets in all, however large the module, unless
+/// [`TIMEOUT_ENV_VAR`] says otherwise. The time a module's size gives it
+/// bounds a compile that makes slow progress, but by itself it would allow
+/// 77 minutes for a 37 MiB module and 34 hours for the largest the protocol
+/// accepts, which is as good as hanging.
+///
+/// Measured with a release build on a 4 vCPU x86_64 machine, the largest
+/// plugins at plugins.dprint.dev compile in: ruff (12.4 MiB) 3.6s on 4
+/// threads and 12.7s on 1; biome (9.8 MiB) 3.3s and 11.5s; bibtex-tidy (6.6
+/// MiB) 2.2s and 7.8s; oxc (4.9 MiB) 1.9s and 6.6s; typescript (4.0 MiB) 1.4s
+/// and 5.0s. The other 25 take under 4s on 1 thread. So on 1 thread a
+/// compile takes 1.0 to 1.4s per MiB, and 10 minutes is over 40 times what
+/// the largest plugin takes that way: enough for a machine 10 times slower
+/// to compile it three times over, and for a cold cache of all of them to
+/// queue for one worker. A module that genuinely needs longer is far larger
+/// than any plugin, so it says so with the environment variable.
+const MAX_TOTAL_WALL: Duration = Duration::from_secs(10 * 60);
 
 /// Compiles a wasm plugin in a supervised worker process, retrying when the
 /// worker stalls or crashes.
@@ -90,7 +114,7 @@ pub fn compile_supervised<TEnvironment: Environment>(
     environment,
     plugin_display,
     wasm_bytes.len(),
-    &Limits::for_module(wasm_bytes.len()),
+    &Limits::for_module(wasm_bytes.len(), compile_timeout(environment)),
     control,
     WorkerQueue {
       slots: &WORKER_SLOTS,
@@ -121,6 +145,24 @@ fn compile_mode(environment: &impl Environment) -> CompileMode {
   }
 }
 
+/// The time [`TIMEOUT_ENV_VAR`] gives a compile in all, if it's set to a
+/// number of seconds.
+fn compile_timeout(environment: &impl Environment) -> Option<Duration> {
+  let value = environment.env_var(TIMEOUT_ENV_VAR)?;
+  match value.to_str().and_then(|value| value.trim().parse::<u64>().ok()).filter(|seconds| *seconds > 0) {
+    Some(seconds) => Some(Duration::from_secs(seconds)),
+    None => {
+      log_warn!(
+        environment,
+        "Ignoring {}={}, as it isn't a number of seconds above 0.",
+        TIMEOUT_ENV_VAR,
+        value.to_string_lossy()
+      );
+      None
+    }
+  }
+}
+
 /// The error for a compile that couldn't be supervised, which is never
 /// done in the dprint process instead.
 fn worker_setup_error(plugin_display: &str, what_failed: &str, err: anyhow::Error) -> anyhow::Error {
@@ -136,7 +178,7 @@ fn worker_setup_error(plugin_display: &str, what_failed: &str, err: anyhow::Erro
 }
 
 /// Supervises compiling a plugin in worker processes it spawns: waits for a
-/// worker slot, then runs the attempts.
+/// worker slot, then runs the attempts, all within the compile's time budget.
 #[allow(clippy::too_many_arguments)]
 fn supervise_compile<TEnvironment: Environment>(
   environment: &TEnvironment,
@@ -148,15 +190,48 @@ fn supervise_compile<TEnvironment: Environment>(
   current_exe: impl FnOnce() -> Result<std::path::PathBuf>,
   mut spawn: impl FnMut(&Path, bool) -> Result<Box<dyn Worker>>,
 ) -> Result<CompilationResult> {
+  // the time starts before anything else, so waiting for the compiles ahead
+  // of this one counts
+  let budget = TimeBudget::start(limits, control);
   let executable = current_exe().map_err(|err| worker_setup_error(plugin_display, "Could not find the dprint executable to run it with", err))?;
-  // How long this waits is up to the compiles ahead of it, each of which is
-  // bounded, and to what it's for.
-  let _slot = queue
-    .wait(control)
-    .map_err(|aborted| NoRetrySetupError(format!("Stopped compiling {} while waiting to start: {}", plugin_display, aborted)))?;
-  run_attempts(environment, plugin_display, wasm_len, limits, control, |optimize| {
+  let _slot = queue.wait(control, budget.deadline).map_err(|aborted| {
+    NoRetrySetupError(match aborted {
+      Aborted::OutOfTime => format!(
+        "Stopped compiling {} while waiting to start, as the compiles ahead of it took the {:.1}s it has",
+        plugin_display,
+        budget.total().as_secs_f64()
+      ),
+      aborted => format!("Stopped compiling {} while waiting to start: {}", plugin_display, aborted),
+    })
+  })?;
+  run_attempts(environment, plugin_display, wasm_len, limits, control, budget, |optimize| {
     spawn(&executable, optimize).map_err(|err| worker_setup_error(plugin_display, "Could not start a process to compile it in", err))
   })
+}
+
+/// The wall clock time a compile has for all of it: waiting for a worker
+/// slot, the attempts and the retries, which don't extend it.
+#[derive(Debug, Clone, Copy)]
+struct TimeBudget {
+  start: Instant,
+  deadline: Instant,
+}
+
+impl TimeBudget {
+  /// Starts now, ending at the deadline of what the compile is for when
+  /// that's sooner than the limit.
+  fn start(limits: &Limits, control: &CompileControl) -> Self {
+    let start = Instant::now();
+    let deadline = start + limits.total_wall;
+    Self {
+      start,
+      deadline: control.deadline.map_or(deadline, |caller_deadline| caller_deadline.min(deadline)),
+    }
+  }
+
+  fn total(&self) -> Duration {
+    self.deadline - self.start
+  }
 }
 
 /// Bounds a compile from outside its own limits.
@@ -204,6 +279,8 @@ enum Aborted {
   Cancelled,
   /// What it's for had to be done.
   DeadlinePassed,
+  /// It used all the time it has (see [`TimeBudget`]).
+  OutOfTime,
 }
 
 impl std::fmt::Display for Aborted {
@@ -211,6 +288,7 @@ impl std::fmt::Display for Aborted {
     match self {
       Aborted::Cancelled => f.write_str("nothing waits for it anymore"),
       Aborted::DeadlinePassed => f.write_str("what it's for ran out of time"),
+      Aborted::OutOfTime => f.write_str("it ran out of time"),
     }
   }
 }
@@ -251,12 +329,13 @@ struct WorkerQueue {
 }
 
 impl WorkerQueue {
-  /// Waits for a slot, unless the compile is cancelled or past its deadline
-  /// first.
-  fn wait(&self, control: &CompileControl) -> std::result::Result<WorkerSlot, Aborted> {
+  /// Waits for a slot, unless the compile is cancelled, past the deadline of
+  /// what it's for, or past the deadline of its time budget first.
+  fn wait(&self, control: &CompileControl, deadline: Instant) -> std::result::Result<WorkerSlot, Aborted> {
+    let aborted = |now: Instant| control.aborted(now).or((now >= deadline).then_some(Aborted::OutOfTime));
     let mut running = self.slots.running.lock().unwrap_or_else(|err| err.into_inner());
     while *running >= self.limit {
-      if let Some(aborted) = control.aborted(Instant::now()) {
+      if let Some(aborted) = aborted(Instant::now()) {
         return Err(aborted);
       }
       running = self
@@ -266,7 +345,7 @@ impl WorkerQueue {
         .unwrap_or_else(|err| err.into_inner())
         .0;
     }
-    if let Some(aborted) = control.aborted(Instant::now()) {
+    if let Some(aborted) = aborted(Instant::now()) {
       return Err(aborted);
     }
     *running += 1;
@@ -447,15 +526,23 @@ struct Limits {
   step_cpu: Duration,
   /// How long an attempt may take, however much CPU time it gets.
   attempt_wall: Duration,
-  /// How long all the attempts may take together, retries included.
+  /// How long the compile may take in all: waiting for a worker slot, the
+  /// attempts and the retries.
   total_wall: Duration,
 }
 
 impl Limits {
-  fn for_module(wasm_len: usize) -> Self {
+  /// The limits for a module of the size, with the time it gets in all
+  /// overridden when `total_wall` is given (see [`TIMEOUT_ENV_VAR`]).
+  fn for_module(wasm_len: usize, total_wall: Option<Duration>) -> Self {
     // debug builds of dprint compile with a debug build of Cranelift, which is
     // about 10x slower
     let compile_scale = if cfg!(debug_assertions) { 10 } else { 1 };
+    Self::for_module_scaled(wasm_len, compile_scale, total_wall)
+  }
+
+  /// `compile_scale` multiplies the time compiling may take.
+  fn for_module_scaled(wasm_len: usize, compile_scale: u32, total_wall: Option<Duration>) -> Self {
     let mut limits = Self {
       poll_interval: Duration::from_millis(100),
       no_progress: Duration::from_secs(5),
@@ -473,10 +560,11 @@ impl Limits {
     // gets half a CPU still finishes, and all of them get twice that, so a
     // retry after a slow attempt still can. The CPU time is measured across
     // the worker's threads, so a compile using several of them is well
-    // within this.
+    // within this. All of it is capped though (see `MAX_TOTAL_WALL`), so a
+    // large module can't make the limits meaningless.
     let steps_cpu = limits.startup_cpu + limits.cpu_budget(Some(WasmSetupStep::Compile), wasm_len) + limits.step_cpu * 3;
-    limits.attempt_wall = steps_cpu * 2;
-    limits.total_wall = limits.attempt_wall * 2;
+    limits.total_wall = total_wall.unwrap_or_else(|| (steps_cpu * 4).min(MAX_TOTAL_WALL * compile_scale));
+    limits.attempt_wall = (steps_cpu * 2).min(limits.total_wall);
     limits
   }
 
@@ -746,11 +834,11 @@ fn run_attempts<TEnvironment: Environment>(
   wasm_len: usize,
   limits: &Limits,
   control: &CompileControl,
+  budget: TimeBudget,
   mut spawn: impl FnMut(bool) -> Result<Box<dyn Worker>>,
 ) -> Result<CompilationResult> {
   let start = Instant::now();
-  // which retries don't extend
-  let total_deadline = start + limits.total_wall;
+  let total_deadline = budget.deadline;
   let mut optimize = true;
   let mut compile_failures = 0;
   let mut failures = Vec::new();
@@ -833,7 +921,7 @@ fn run_attempts<TEnvironment: Environment>(
       "Failed compiling {} {}:\n{}",
       plugin_display,
       if attempt < MAX_ATTEMPTS {
-        format!("within {:.1}s", limits.total_wall.as_secs_f64())
+        format!("within {:.1}s", budget.total().as_secs_f64())
       } else {
         format!("after {} attempts", attempt)
       },
@@ -1098,7 +1186,7 @@ mod test {
     let handles = (0..8)
       .map(|_| {
         std::thread::spawn(|| {
-          let _slot = WorkerQueue { slots: &SLOTS, limit: 2 }.wait(&CompileControl::default()).unwrap();
+          let _slot = WorkerQueue { slots: &SLOTS, limit: 2 }.wait(&CompileControl::default(), in_a_minute()).unwrap();
           let running = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
           MAX_RUNNING.fetch_max(running, Ordering::SeqCst);
           std::thread::sleep(Duration::from_millis(20));
@@ -1319,19 +1407,27 @@ mod test {
         killed,
         kill_error,
       } = self;
-      run_attempts(environment, "plugin.wasm", 1024, limits, control, |optimize| {
-        spawned_optimized.push(optimize);
-        let worker_killed = Arc::new(Mutex::new(false));
-        killed.push(worker_killed.clone());
-        let (events, then) = scripts.pop_front().unwrap();
-        Ok(Box::new(FakeWorker {
-          events: events.into(),
-          then,
-          cpu: Duration::ZERO,
-          killed: worker_killed,
-          kill_error: *kill_error,
-        }))
-      })
+      run_attempts(
+        environment,
+        "plugin.wasm",
+        1024,
+        limits,
+        control,
+        TimeBudget::start(limits, control),
+        |optimize| {
+          spawned_optimized.push(optimize);
+          let worker_killed = Arc::new(Mutex::new(false));
+          killed.push(worker_killed.clone());
+          let (events, then) = scripts.pop_front().unwrap();
+          Ok(Box::new(FakeWorker {
+            events: events.into(),
+            then,
+            cpu: Duration::ZERO,
+            killed: worker_killed,
+            kill_error: *kill_error,
+          }))
+        },
+      )
     }
 
     fn killed(&self) -> Vec<bool> {
@@ -1590,7 +1686,7 @@ mod test {
       freed: Condvar::new(),
     };
     let queue = || WorkerQueue { slots: &SLOTS, limit: 1 };
-    let held = queue().wait(&CompileControl::default()).unwrap();
+    let held = queue().wait(&CompileControl::default(), in_a_minute()).unwrap();
     with_outer_deadline(|| {
       let control = CompileControl::default();
       let start = Instant::now();
@@ -1601,18 +1697,136 @@ mod test {
           control.cancel();
         }
       });
-      assert_eq!(queue().wait(&control).err(), Some(Aborted::Cancelled));
+      assert_eq!(queue().wait(&control, in_a_minute()).err(), Some(Aborted::Cancelled));
       assert!(start.elapsed() < Duration::from_secs(5));
 
       let control = CompileControl::new(Some(Instant::now() + Duration::from_millis(50)));
-      assert_eq!(queue().wait(&control).err(), Some(Aborted::DeadlinePassed));
+      assert_eq!(queue().wait(&control, in_a_minute()).err(), Some(Aborted::DeadlinePassed));
+
+      // or once its own time is up
+      let deadline = Instant::now() + Duration::from_millis(50);
+      assert_eq!(queue().wait(&CompileControl::default(), deadline).err(), Some(Aborted::OutOfTime));
     });
     // a compile that's already cancelled doesn't take a free slot either
     drop(held);
     let control = CompileControl::default();
     control.cancel();
-    assert_eq!(queue().wait(&control).err(), Some(Aborted::Cancelled));
+    assert_eq!(queue().wait(&control, in_a_minute()).err(), Some(Aborted::Cancelled));
     assert_eq!(*SLOTS.running.lock().unwrap(), 0);
+  }
+
+  /// A deadline a test never reaches.
+  fn in_a_minute() -> Instant {
+    Instant::now() + Duration::from_secs(60)
+  }
+
+  #[test]
+  fn caps_the_time_a_compile_gets_however_large_the_module() {
+    const MIB: usize = 1024 * 1024;
+    let limits = |wasm_len| Limits::for_module_scaled(wasm_len, 1, None);
+    // what the size gives it, when that's within the cap: twice the CPU time
+    // of its steps (10 + 30 + 30 + 3 * 3 seconds) for an attempt, and twice
+    // that in all
+    assert_eq!(limits(MIB).attempt_wall, Duration::from_secs(158));
+    assert_eq!(limits(MIB).total_wall, Duration::from_secs(316));
+    // the largest plugin there is (ruff) would get 28 minutes
+    assert_eq!(limits(12 * MIB + 410 * 1024).total_wall, MAX_TOTAL_WALL);
+    assert_eq!(limits(12 * MIB + 410 * 1024).attempt_wall, MAX_TOTAL_WALL);
+    // and the largest module the protocol accepts 34 hours
+    assert_eq!(limits(MAX_MODULE_LEN as usize).total_wall, MAX_TOTAL_WALL);
+    assert_eq!(limits(MAX_MODULE_LEN as usize).attempt_wall, MAX_TOTAL_WALL);
+    assert_eq!(limits(usize::MAX).total_wall, MAX_TOTAL_WALL);
+    // the cap scales with the compile time of a debug build
+    assert_eq!(Limits::for_module_scaled(MAX_MODULE_LEN as usize, 10, None).total_wall, MAX_TOTAL_WALL * 10);
+    assert!(Limits::for_module(MAX_MODULE_LEN as usize, None).total_wall <= MAX_TOTAL_WALL * 10);
+  }
+
+  #[test]
+  fn gives_a_compile_the_time_the_environment_says_instead() {
+    const MIB: usize = 1024 * 1024;
+    // more than the cap, for a module that needs it
+    let limits = Limits::for_module_scaled(MAX_MODULE_LEN as usize, 1, Some(Duration::from_secs(3600)));
+    assert_eq!(limits.total_wall, Duration::from_secs(3600));
+    assert_eq!(limits.attempt_wall, Duration::from_secs(3600));
+    // or less than its size gives it, which bounds an attempt too
+    let limits = Limits::for_module_scaled(MIB, 1, Some(Duration::from_secs(60)));
+    assert_eq!(limits.total_wall, Duration::from_secs(60));
+    assert_eq!(limits.attempt_wall, Duration::from_secs(60));
+
+    let environment = TestEnvironment::new();
+    assert_eq!(compile_timeout(&environment), None);
+    environment.set_env_var(TIMEOUT_ENV_VAR, Some("90"));
+    assert_eq!(compile_timeout(&environment), Some(Duration::from_secs(90)));
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    for value in ["0", "-1", "abc", "1.5", ""] {
+      environment.set_env_var(TIMEOUT_ENV_VAR, Some(value));
+      assert_eq!(compile_timeout(&environment), None, "{}", value);
+      assert_eq!(
+        environment.take_stderr_messages(),
+        vec![format!(
+          "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it isn't a number of seconds above 0.",
+          value
+        )]
+      );
+    }
+  }
+
+  #[test]
+  fn a_compiles_time_ends_at_the_deadline_of_what_its_for_when_thats_sooner() {
+    let limits = limits();
+    let budget = TimeBudget::start(&limits, &CompileControl::default());
+    assert_eq!(budget.total(), limits.total_wall);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let budget = TimeBudget::start(&limits, &CompileControl::new(Some(deadline)));
+    assert_eq!(budget.deadline, deadline);
+    // and a later one doesn't extend it
+    let budget = TimeBudget::start(&limits, &CompileControl::new(Some(Instant::now() + Duration::from_secs(3600))));
+    assert_eq!(budget.total(), limits.total_wall);
+  }
+
+  #[test]
+  fn runs_out_of_time_waiting_for_a_worker_slot_without_starting_a_worker() {
+    use std::sync::atomic::AtomicUsize;
+
+    static SLOTS: WorkerSlots = WorkerSlots {
+      running: Mutex::new(0),
+      freed: Condvar::new(),
+    };
+    // the compiles ahead of it hold every slot for longer than it has
+    let _held = WorkerQueue { slots: &SLOTS, limit: 1 }.wait(&CompileControl::default(), in_a_minute()).unwrap();
+    let mut limits = limits();
+    limits.total_wall = Duration::from_millis(100);
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn({
+      let spawned = spawned.clone();
+      move || {
+        let result = supervise_compile(
+          &TestEnvironment::new(),
+          "plugin.wasm",
+          1024,
+          &limits,
+          &CompileControl::default(),
+          WorkerQueue { slots: &SLOTS, limit: 1 },
+          || Ok(std::path::PathBuf::from("/dprint")),
+          |_, _| {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!("no worker should start"))
+          },
+        );
+        done.send(result.unwrap_err().to_string()).unwrap();
+      }
+    });
+    // rather than waiting for a slot for however long the compiles ahead
+    // of it take
+    let err = finished
+      .recv_timeout(Duration::from_secs(5))
+      .expect("the compile should have run out of time while waiting for a slot");
+    assert_eq!(
+      err,
+      "Stopped compiling plugin.wasm while waiting to start, as the compiles ahead of it took the 0.1s it has"
+    );
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
   }
 
   /// Supervises a compile with fakes for finding the executable and

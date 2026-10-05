@@ -111,6 +111,13 @@ fn served_release(reference: &PluginSourceReference) -> Result<&'static ServedRe
   }
 }
 
+/// Whether the reference is to a version of the exec plugin whose commands
+/// dprint knows how to read (ex. which program a command runs), which are
+/// the ones it serves built in, also when it's run as the separate plugin.
+pub fn knows_exec_plugin_commands(reference: &PluginSourceReference) -> bool {
+  served_release(reference).is_ok()
+}
+
 /// Whether the reference is to the exec plugin, in any version.
 pub fn is_exec_plugin_reference(reference: &PluginSourceReference) -> bool {
   exec_plugin_reference(reference).is_some()

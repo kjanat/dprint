@@ -11,6 +11,7 @@ use super::ConfigMap;
 use super::ConfigMapValue;
 use super::remote_exec::RemoteExecProvenance;
 use crate::environment::CanonicalizedPathBuf;
+use crate::environment::Environment;
 use crate::patterns::process_config_pattern;
 use crate::plugins::PluginSourceReference;
 use crate::utils::GlobPattern;
@@ -235,17 +236,21 @@ impl PluginConfiguration {
     self.add_lower_precedence(extended.sources, extended.config)
   }
 
-  pub(super) fn inherit(&mut self, ancestor: &PluginConfiguration) -> Result<()> {
+  pub(super) fn inherit(&mut self, ancestor: &PluginConfiguration, environment: &impl Environment) -> Result<()> {
     // what remote configuration added to the ancestor's exec configuration is
-    // only inherited as far as this configuration's own "playWithFire" allows
+    // only inherited as far as this configuration's own "playWithFire" allows,
+    // so the exec configuration is made again from what each specified, once
+    // the rest is merged
     let mut sources = ancestor.sources.clone();
     let mut config = ancestor.config.clone();
-    let inherited_remote_exec = ancestor.remote_exec.filter_inherited(&self.remote_exec, &mut config, &mut sources);
+    self
+      .remote_exec
+      .inherit(&ancestor.remote_exec, &mut self.config, &mut self.sources, &mut config, &mut sources);
     self.origins.add_lower_precedence(ancestor.origins.clone());
     self.add_lower_precedence(sources, config)?;
-    self.remote_exec.inherit(inherited_remote_exec);
-    self.remote_exec.remove_unused_plugin(&self.config, &mut self.sources);
-    Ok(())
+    self
+      .remote_exec
+      .make_inherited(&mut self.config, &mut self.sources, &mut self.origins, environment)
   }
 
   /// Adds plugins and configuration of lower precedence. A plugin specified
@@ -262,7 +267,7 @@ impl PluginConfiguration {
 /// Merges the lower precedence `source` config map into the higher precedence
 /// `target` config map. Values already present in `target` win, while plugin
 /// configurations have their properties and overrides combined.
-fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -> Result<()> {
+pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -> Result<()> {
   for (key, value) in source {
     match value {
       ConfigMapValue::KeyValue(key_value) => {

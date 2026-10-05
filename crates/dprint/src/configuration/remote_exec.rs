@@ -17,9 +17,17 @@
 //! `"playWithFire": true` (any others might, ex. ones a later version adds),
 //! and a remote command with properties 0.7.3 doesn't have only runs with it.
 //!
+//! Which program a command runs is read the way the exec plugin 0.7.3 reads
+//! it. So a list of programs is only checked when the exec plugin that runs
+//! the commands is that version, and otherwise remote commands only run with
+//! `"playWithFire": true`.
+//!
 //! A nested configuration that inherits its ancestor's configuration and
 //! specifies `"playWithFire"` itself only runs the remote commands it inherits
-//! that its own `"playWithFire"` allows.
+//! that its own `"playWithFire"` allows. Each configuration keeps what remote
+//! configuration specified apart from the rest of its exec configuration (see
+//! [`RemoteExecProvenance`]), so the inherited exec configuration is made again
+//! with it, rather than what was allowed being looked for in what was merged.
 
 use anyhow::Result;
 use anyhow::bail;
@@ -29,13 +37,16 @@ use indexmap::IndexMap;
 use super::ConfigMap;
 use super::ConfigMapValue;
 use super::PluginConfiguration;
+use super::PropertyOrigins;
 use super::RawPluginConfigOverride;
 use super::ValueOrigin;
+use super::config_settings::merge_config_map_into;
 use crate::environment::Environment;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_command_program;
 use crate::plugins::is_builtin_exec_reference;
 use crate::plugins::is_exec_plugin_reference;
+use crate::plugins::knows_exec_plugin_commands;
 use crate::utils::PathSource;
 
 const EXEC_CONFIG_KEY: &str = "exec";
@@ -51,7 +62,7 @@ const COMMAND_KEYS: &[&str] = &["command", "exts", "fileNames", "associations", 
 /// What remote configuration files specified for the exec plugin while
 /// resolving a configuration. It's set aside rather than merged until the
 /// local configuration has said what it allows.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RemoteExec {
   /// The commands of the highest precedence remote configuration that has
   /// some, when no higher precedence configuration has any. Even when they
@@ -69,11 +80,13 @@ pub struct RemoteExec {
   plugins: Vec<PluginSourceReference>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct RemoteValue<T> {
   value: T,
   source: PathSource,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct RemoteOverrides {
   overrides: Vec<RawPluginConfigOverride>,
   /// How many exec overrides the configuration of higher precedence had when
@@ -91,22 +104,29 @@ enum Policy {
   Programs(Vec<String>),
 }
 
-/// What remote configuration added to a resolved exec configuration, and the
-/// `"playWithFire"` that allowed it. A nested configuration that inherits the
-/// resolved one applies its own `"playWithFire"` to what it inherits of it.
+/// What a resolved configuration's exec configuration is made of, so that a
+/// nested configuration that inherits it can make it again with its own
+/// `"playWithFire"`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RemoteExecProvenance {
-  /// What local configuration files specified for `"playWithFire"`, if they did.
-  policy: Option<Policy>,
-  /// The remote commands, as they were added.
-  commands: Option<ConfigKeyValue>,
-  /// The remote properties that may decide what runs (ex. `cwd`), as they
-  /// were added.
-  restricted: IndexMap<String, ConfigKeyValue>,
-  /// The remote overrides, as they were added.
-  overrides: Vec<RawPluginConfigOverride>,
-  /// The remote exec plugin, when it was added.
+  /// The configurations it's made of, from the highest precedence: the
+  /// configuration's own, then each it inherits.
+  scopes: Vec<RemoteExecScope>,
+  /// The remote exec plugin, when it was added to the plugins.
   plugin: Option<PluginSourceReference>,
+}
+
+/// A configuration (with what it extends) that's part of an exec
+/// configuration.
+#[derive(Clone, Debug, PartialEq)]
+struct RemoteExecScope {
+  /// Its exec configuration without what remote configuration specified that
+  /// only `"playWithFire"` allows.
+  base: Option<ConfigMapValue>,
+  /// What remote configuration specified that only `"playWithFire"` allows.
+  remote: RemoteExec,
+  /// What its local configuration files specified for `"playWithFire"`.
+  policy: Option<Policy>,
 }
 
 /// The remote commands a policy ignored, by the configuration they're from.
@@ -235,38 +255,53 @@ impl RemoteExec {
 
   /// Adds the remote exec commands, working directory, overrides and plugin
   /// references the local configuration allows to the resolved configuration,
-  /// and records what was added (see `PluginConfiguration::remote_exec`).
+  /// and records what its exec configuration is made of (see
+  /// `PluginConfiguration::remote_exec`).
   pub fn apply(self, plugin_configuration: &mut PluginConfiguration, environment: &impl Environment) -> Result<()> {
     let PluginConfiguration {
-      sources: plugins,
-      config: config_map,
+      sources,
+      config,
       origins,
       remote_exec,
     } = plugin_configuration;
-    let specified_policy = take_policy(config_map)?;
-    let policy = specified_policy.clone().unwrap_or(Policy::None);
-    let mut provenance = RemoteExecProvenance {
-      policy: specified_policy,
-      ..Default::default()
-    };
+    let policy = take_policy(config)?;
+    let scopes = vec![RemoteExecScope {
+      base: config.get(EXEC_CONFIG_KEY).cloned(),
+      remote: self,
+      policy,
+    }];
+    let plugin = make_exec_config(&scopes, config, sources, origins, environment, Notes::All)?;
+    *remote_exec = RemoteExecProvenance { scopes, plugin };
+    Ok(())
+  }
+
+  /// Adds what the policy allows to the exec configuration in `config_map`,
+  /// recording where it's from in `origins`, and gives the remote exec plugin
+  /// when it allows any. Notes what it ignores when `notes`.
+  fn apply_policy(
+    self,
+    config_map: &mut ConfigMap,
+    policy: &Policy,
+    origins: &mut PropertyOrigins,
+    environment: &impl Environment,
+    notes: bool,
+  ) -> Option<PluginSourceReference> {
     let mut ignored_commands = IgnoredCommands::default();
     let mut ignored_properties = IgnoredProperties::default();
 
     if let Some(remote) = self.commands
-      && let Some(commands) = allowed_commands_value(remote.value, &policy, &remote.source.display(), &mut ignored_commands)
+      && let Some(commands) = allowed_commands_value(remote.value, policy, &remote.source.display(), &mut ignored_commands)
       && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
     {
       // these have precedence over any commands of lower precedence local configuration
-      exec_config.properties.insert(COMMANDS_KEY.to_string(), commands.clone());
+      exec_config.properties.insert(COMMANDS_KEY.to_string(), commands);
       origins.set_plugin_property(EXEC_CONFIG_KEY, COMMANDS_KEY, &remote.source);
-      provenance.commands = Some(commands);
     }
     for (key, remote) in self.restricted {
       if matches!(policy, Policy::AnyProgram) {
         if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
-          exec_config.properties.insert(key.clone(), remote.value.clone());
+          exec_config.properties.insert(key.clone(), remote.value);
           origins.set_plugin_property(EXEC_CONFIG_KEY, &key, &remote.source);
-          provenance.restricted.insert(key, remote.value);
         }
       } else {
         ignored_properties.add(&remote.source.display(), &key);
@@ -281,7 +316,7 @@ impl RemoteExec {
         .filter_map(|override_config| {
           allowed_override(
             override_config,
-            &policy,
+            policy,
             &remote.source.display(),
             &mut ignored_commands,
             &mut ignored_properties,
@@ -297,7 +332,6 @@ impl RemoteExec {
         }
       }
       origins.add_root_property(EXEC_CONFIG_KEY, &remote.source);
-      provenance.overrides.extend(overrides.iter().cloned());
       let exec_config = config_map
         .entry(EXEC_CONFIG_KEY.to_string())
         .or_insert_with(|| ConfigMapValue::PluginConfig(Default::default()));
@@ -307,185 +341,258 @@ impl RemoteExec {
       }
     }
 
-    for ignored in ignored_commands.0 {
-      match &policy {
-        Policy::Programs(_) => {
-          let mut reasons = Vec::new();
-          if !ignored.programs.is_empty() {
-            reasons.push(format!(
-              "run programs not listed in \"{}\": {}",
-              PLAY_WITH_FIRE_KEY,
-              ignored.programs.join(", ")
-            ));
-          }
-          if !ignored.properties.is_empty() {
-            reasons.push(format!(
-              "have properties the exec plugin 0.7.3 doesn't, which only run with \"{}\": true: {}",
-              PLAY_WITH_FIRE_KEY,
-              ignored.properties.join(", ")
-            ));
-          }
-          log_warn!(
-            environment,
-            "Note: Ignored {} exec command(s) in remote configuration ({}) that {}",
-            ignored.count,
-            ignored.source,
-            reasons.join(", or that "),
-          );
-        }
-        _ => log_warn!(
-          environment,
-          concat!(
-            "Note: The exec commands in remote configuration ({}) are ignored for security reasons. ",
-            "To run them, specify \"{}\" in the exec configuration of a local configuration file ",
-            "(`true` or the programs they may run)."
-          ),
-          ignored.source,
-          PLAY_WITH_FIRE_KEY,
-        ),
-      }
+    if notes {
+      note_ignored(policy, ignored_commands, ignored_properties, environment);
     }
-    for (source, key) in ignored_properties.0 {
-      log_warn!(
-        environment,
-        concat!(
-          "Note: The exec \"{}\" in remote configuration ({}) is ignored for security reasons, as {}. ",
-          "To use it, specify \"{}\": true in the exec configuration of a local configuration file."
-        ),
-        key,
-        source,
-        if key == CWD_KEY {
-          "it decides what commands run"
-        } else {
-          "the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does"
-        },
-        PLAY_WITH_FIRE_KEY,
-      );
+    match policy {
+      Policy::None => None,
+      Policy::AnyProgram | Policy::Programs(_) => self.plugins.into_iter().next(),
     }
+  }
+}
 
-    // the exec plugin of remote configuration only matters when the local
-    // configuration doesn't use exec (in any version), and only one of it is
-    // added
-    let uses_exec = plugins.iter().any(is_exec_plugin_reference);
-    if !self.plugins.is_empty() && !uses_exec {
-      if matches!(policy, Policy::None) {
+/// What to note about what's ignored.
+#[derive(Clone, Copy, PartialEq)]
+enum Notes {
+  All,
+  /// Only that a list of programs can't be checked, which a nested
+  /// configuration can find out about what it inherits.
+  UncheckablePrograms,
+}
+
+/// Makes the exec configuration in `config_map` from the scopes, replacing
+/// any that's there, and adds the remote exec plugin to `plugins` when it's
+/// used. Gives that plugin.
+fn make_exec_config(
+  scopes: &[RemoteExecScope],
+  config_map: &mut ConfigMap,
+  plugins: &mut Vec<PluginSourceReference>,
+  origins: &mut PropertyOrigins,
+  environment: &impl Environment,
+  notes: Notes,
+) -> Result<Option<PluginSourceReference>> {
+  let exec_plugins = plugins.iter().filter(|plugin| is_exec_plugin_reference(plugin)).collect::<Vec<_>>();
+  let uses_exec = !exec_plugins.is_empty();
+  // a list of programs is checked the way the exec plugin 0.7.3 reads its
+  // commands, so it's only for that version
+  let uncheckable_exec_plugin = exec_plugins.into_iter().find(|plugin| !knows_exec_plugin_commands(plugin)).cloned();
+  let mut exec_config = ConfigMap::new();
+  let mut remote_plugin = None;
+  let mut any_allowed = false;
+  // a nested configuration's "playWithFire" applies to what it inherits, so
+  // each scope goes by the closest one that specifies it
+  let mut closest_policy: Option<&Policy> = None;
+  let mut noted_uncheckable = false;
+  for (index, scope) in scopes.iter().enumerate() {
+    closest_policy = closest_policy.or(scope.policy.as_ref());
+    let mut policy = closest_policy.cloned().unwrap_or(Policy::None);
+    let mut uncheckable = false;
+    if let (Policy::Programs(_), Some(exec_plugin)) = (&policy, &uncheckable_exec_plugin) {
+      uncheckable = true;
+      if !noted_uncheckable && scope_has_commands(scope) {
+        noted_uncheckable = true;
         log_warn!(
           environment,
           concat!(
-            "Note: The exec plugin in remote configuration is ignored for security reasons. ",
-            "To use it, specify \"{}\" in the exec configuration of a local configuration file ",
-            "(`true` or the programs its commands may run)."
+            "Note: The exec commands in remote configuration are ignored for security reasons, as the programs they run are only ",
+            "checked against \"{}\" for the exec plugin 0.7.3, and this configuration uses {}. ",
+            "To run them, specify \"{}\": true in the exec configuration of a local configuration file."
           ),
           PLAY_WITH_FIRE_KEY,
+          exec_plugin.display(),
+          PLAY_WITH_FIRE_KEY,
         );
-      } else if !has_commands(config_map) {
-        // without any, its configuration would only be an error
+      }
+      policy = Policy::None;
+    }
+    any_allowed |= policy != Policy::None;
+    let mut scope_config = ConfigMap::new();
+    if let Some(base) = &scope.base {
+      scope_config.insert(EXEC_CONFIG_KEY.to_string(), base.clone());
+    }
+    // what's ignored of what's inherited was noted for the configuration it's
+    // from, and the commands that can't be checked were noted above
+    let plugin = scope.remote.clone().apply_policy(
+      &mut scope_config,
+      &policy,
+      origins,
+      environment,
+      notes == Notes::All && index == 0 && !uncheckable,
+    );
+    remote_plugin = remote_plugin.or(plugin);
+    merge_config_map_into(&mut exec_config, scope_config)?;
+  }
+  match exec_config.shift_remove(EXEC_CONFIG_KEY) {
+    Some(value) => config_map.insert(EXEC_CONFIG_KEY.to_string(), value),
+    None => config_map.shift_remove(EXEC_CONFIG_KEY),
+  };
+
+  // the exec plugin of remote configuration only matters when the local
+  // configuration doesn't use exec (in any version), and only one of it is
+  // added
+  let has_remote_plugin = scopes.iter().any(|scope| !scope.remote.plugins.is_empty());
+  if !has_remote_plugin || uses_exec {
+    return Ok(None);
+  }
+  let notes = notes == Notes::All;
+  if !any_allowed {
+    if notes {
+      log_warn!(
+        environment,
+        concat!(
+          "Note: The exec plugin in remote configuration is ignored for security reasons. ",
+          "To use it, specify \"{}\" in the exec configuration of a local configuration file ",
+          "(`true` or the programs its commands may run)."
+        ),
+        PLAY_WITH_FIRE_KEY,
+      );
+    }
+    return Ok(None);
+  }
+  match remote_plugin {
+    Some(plugin) if has_commands(config_map) => {
+      plugins.push(plugin.clone());
+      Ok(Some(plugin))
+    }
+    // without any, its configuration would only be an error
+    _ => {
+      if notes {
         log_warn!(
           environment,
           "Note: The exec plugin in remote configuration is ignored, as none of the exec commands are allowed by \"{}\".",
           PLAY_WITH_FIRE_KEY,
         );
-      } else {
-        provenance.plugin = self.plugins.into_iter().next();
-        plugins.extend(provenance.plugin.clone());
       }
+      Ok(None)
     }
-    *remote_exec = provenance;
-    Ok(())
+  }
+}
+
+/// Whether remote configuration specified commands in the scope.
+fn scope_has_commands(scope: &RemoteExecScope) -> bool {
+  scope.remote.commands.is_some()
+    || scope.remote.overrides.iter().any(|remote| {
+      remote
+        .overrides
+        .iter()
+        .any(|override_config| override_config.properties.contains_key(COMMANDS_KEY))
+    })
+}
+
+/// Notes the remote commands and properties a policy ignored.
+fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_properties: IgnoredProperties, environment: &impl Environment) {
+  for ignored in ignored_commands.0 {
+    match policy {
+      Policy::Programs(_) => {
+        let mut reasons = Vec::new();
+        if !ignored.programs.is_empty() {
+          reasons.push(format!(
+            "run programs not listed in \"{}\": {}",
+            PLAY_WITH_FIRE_KEY,
+            ignored.programs.join(", ")
+          ));
+        }
+        if !ignored.properties.is_empty() {
+          reasons.push(format!(
+            "have properties the exec plugin 0.7.3 doesn't, which only run with \"{}\": true: {}",
+            PLAY_WITH_FIRE_KEY,
+            ignored.properties.join(", ")
+          ));
+        }
+        log_warn!(
+          environment,
+          "Note: Ignored {} exec command(s) in remote configuration ({}) that {}",
+          ignored.count,
+          ignored.source,
+          reasons.join(", or that "),
+        );
+      }
+      _ => log_warn!(
+        environment,
+        concat!(
+          "Note: The exec commands in remote configuration ({}) are ignored for security reasons. ",
+          "To run them, specify \"{}\" in the exec configuration of a local configuration file ",
+          "(`true` or the programs they may run)."
+        ),
+        ignored.source,
+        PLAY_WITH_FIRE_KEY,
+      ),
+    }
+  }
+  for (source, key) in ignored_properties.0 {
+    log_warn!(
+      environment,
+      concat!(
+        "Note: The exec \"{}\" in remote configuration ({}) is ignored for security reasons, as {}. ",
+        "To use it, specify \"{}\": true in the exec configuration of a local configuration file."
+      ),
+      key,
+      source,
+      if key == CWD_KEY {
+        "it decides what commands run"
+      } else {
+        "the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does"
+      },
+      PLAY_WITH_FIRE_KEY,
+    );
   }
 }
 
 impl RemoteExecProvenance {
-  /// Applies a nested configuration's own `"playWithFire"` to what remote
-  /// configuration added to the configuration it inherits (`config_map` and
-  /// `plugins`), and says what of that is left.
-  pub fn filter_inherited(&self, nested: &RemoteExecProvenance, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>) -> RemoteExecProvenance {
-    let Some(policy) = &nested.policy else {
-      // the nested configuration goes by what its ancestor allowed
-      return self.clone();
-    };
-    let mut left = RemoteExecProvenance {
-      policy: self.policy.clone(),
-      ..Default::default()
-    };
-    // what's ignored here was already noted for the ancestor
-    let mut ignored_commands = IgnoredCommands::default();
-    let mut ignored_properties = IgnoredProperties::default();
-    if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
-      // the remote values are found by what they are, which is what local
-      // values of higher precedence would have replaced
-      if let Some(commands) = &self.commands
-        && exec_config.properties.get(COMMANDS_KEY) == Some(commands)
-      {
-        exec_config.properties.shift_remove(COMMANDS_KEY);
-        if let Some(commands) = allowed_commands_value(commands.clone(), policy, "", &mut ignored_commands) {
-          exec_config.properties.insert(COMMANDS_KEY.to_string(), commands.clone());
-          left.commands = Some(commands);
-        }
-      }
-      for (key, value) in &self.restricted {
-        if exec_config.properties.get(key) != Some(value) {
-          continue;
-        }
-        if matches!(policy, Policy::AnyProgram) {
-          left.restricted.insert(key.clone(), value.clone());
-        } else {
-          exec_config.properties.shift_remove(key);
-        }
-      }
-      for override_config in &self.overrides {
-        let Some(index) = exec_config.overrides.iter().position(|existing| existing == override_config) else {
-          continue;
-        };
-        match allowed_override(override_config.clone(), policy, "", &mut ignored_commands, &mut ignored_properties) {
-          Some(override_config) => {
-            exec_config.overrides[index] = override_config.clone();
-            left.overrides.push(override_config);
-          }
-          None => {
-            exec_config.overrides.remove(index);
-          }
-        }
-      }
-    }
-    if let Some(plugin) = &self.plugin
-      && let Some(index) = plugins.iter().position(|existing| existing == plugin)
-    {
-      if matches!(policy, Policy::None) {
-        plugins.remove(index);
-      } else {
-        left.plugin = Some(plugin.clone());
-      }
-    }
-    left
-  }
-
-  /// Adds what a nested configuration inherits (see `filter_inherited`).
-  pub fn inherit(&mut self, inherited: RemoteExecProvenance) {
-    if self.policy.is_none() {
-      self.policy = inherited.policy;
-    }
-    if self.commands.is_none() {
-      self.commands = inherited.commands;
-    }
-    for (key, value) in inherited.restricted {
-      self.restricted.entry(key).or_insert(value);
-    }
-    self.overrides.extend(inherited.overrides);
-    if self.plugin.is_none() {
-      self.plugin = inherited.plugin;
-    }
-  }
-
-  /// Leaves out the remote exec plugin a nested configuration inherited when
-  /// none of the commands are left for it to run.
-  pub fn remove_unused_plugin(&mut self, config_map: &ConfigMap, plugins: &mut Vec<PluginSourceReference>) {
-    if let Some(plugin) = &self.plugin
-      && !has_commands(config_map)
-    {
+  /// What a configuration whose provenance this is has in its plugins and
+  /// exec configuration that was made from what it inherits, before it's
+  /// made again with what a nested configuration specifies. Removes the
+  /// remote exec plugin from `plugins` and the exec configuration from
+  /// `config_map`, and gives the scopes to make it again from.
+  fn take_scopes(&self, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>) -> Vec<RemoteExecScope> {
+    if let Some(plugin) = &self.plugin {
       plugins.retain(|existing| existing != plugin);
-      self.plugin = None;
     }
+    let exec_config = config_map.shift_remove(EXEC_CONFIG_KEY);
+    if self.scopes.is_empty() {
+      // its exec configuration is all its own (ex. it was made some other way)
+      vec![RemoteExecScope {
+        base: exec_config,
+        remote: Default::default(),
+        policy: None,
+      }]
+    } else {
+      self.scopes.clone()
+    }
+  }
+
+  /// Makes a nested configuration's exec configuration from its own and the
+  /// one of the configuration it inherits (`ancestor`), whose remote commands
+  /// go by the nested configuration's own `"playWithFire"` when it specifies
+  /// one. `config_map` and `plugins` are the nested configuration's, and
+  /// `ancestor_config_map` and `ancestor_plugins` are the ancestor's, which
+  /// are merged into them after this.
+  pub(super) fn inherit(
+    &mut self,
+    ancestor: &RemoteExecProvenance,
+    config_map: &mut ConfigMap,
+    plugins: &mut Vec<PluginSourceReference>,
+    ancestor_config_map: &mut ConfigMap,
+    ancestor_plugins: &mut Vec<PluginSourceReference>,
+  ) {
+    let mut scopes = self.take_scopes(config_map, plugins);
+    scopes.extend(ancestor.take_scopes(ancestor_config_map, ancestor_plugins));
+    self.scopes = scopes;
+    self.plugin = None;
+  }
+
+  /// Makes the exec configuration of a nested configuration from what
+  /// [`RemoteExecProvenance::inherit`] took, once its own and inherited
+  /// plugins and configuration are merged.
+  pub(super) fn make_inherited(
+    &mut self,
+    config_map: &mut ConfigMap,
+    plugins: &mut Vec<PluginSourceReference>,
+    origins: &mut PropertyOrigins,
+    environment: &impl Environment,
+  ) -> Result<()> {
+    self.plugin = make_exec_config(&self.scopes, config_map, plugins, origins, environment, Notes::UncheckablePrograms)?;
+    Ok(())
   }
 }
 
