@@ -182,12 +182,21 @@ impl ConfigKeyValue {
 
   /// Gets a hash of the configuration value. This is used for incremental formatting
   /// and the Hash trait is not implemented to discourage using this in other places.
+  ///
+  /// Strings, arrays and objects are hashed with their lengths, so that only
+  /// the same value is the same input (ex. `["ab", "c"]` and `["a", "bc"]`, or
+  /// `[[], true]` and `[[true]]`, aren't).
   #[allow(clippy::should_implement_trait)]
   pub fn hash(&self, hasher: &mut impl std::hash::Hasher) {
+    fn hash_str(value: &str, hasher: &mut impl std::hash::Hasher) {
+      hasher.write_usize(value.len());
+      hasher.write(value.as_bytes());
+    }
+
     match self {
       ConfigKeyValue::String(value) => {
         hasher.write_u8(0);
-        hasher.write(value.as_bytes())
+        hash_str(value, hasher);
       }
       ConfigKeyValue::Number(value) => {
         hasher.write_u8(1);
@@ -199,14 +208,16 @@ impl ConfigKeyValue {
       }
       ConfigKeyValue::Array(values) => {
         hasher.write_u8(3);
+        hasher.write_usize(values.len());
         for value in values {
           value.hash(hasher);
         }
       }
       ConfigKeyValue::Object(key_values) => {
         hasher.write_u8(4);
+        hasher.write_usize(key_values.len());
         for (key, value) in key_values {
-          hasher.write(key.as_bytes());
+          hash_str(key, hasher);
           value.hash(hasher);
         }
       }
@@ -461,6 +472,34 @@ pub fn get_unknown_property_diagnostics(config: ConfigKeyMap) -> Vec<Configurati
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[test]
+  fn hashes_differently_nested_values_differently() {
+    fn hash(value: ConfigKeyValue) -> u64 {
+      let mut hasher = std::collections::hash_map::DefaultHasher::new();
+      value.hash(&mut hasher);
+      std::hash::Hasher::finish(&hasher)
+    }
+    let string = |value: &str| ConfigKeyValue::String(value.to_string());
+    let object =
+      |key_values: &[(&str, ConfigKeyValue)]| ConfigKeyValue::Object(key_values.iter().map(|(key, value)| (key.to_string(), value.clone())).collect());
+    // the same strings and values, split or nested differently
+    assert_ne!(
+      hash(ConfigKeyValue::Array(vec![string("ab"), string("c")])),
+      hash(ConfigKeyValue::Array(vec![string("a"), string("bc")]))
+    );
+    assert_ne!(
+      hash(ConfigKeyValue::Array(vec![ConfigKeyValue::Array(vec![]), ConfigKeyValue::Bool(true)])),
+      hash(ConfigKeyValue::Array(vec![ConfigKeyValue::Array(vec![ConfigKeyValue::Bool(true)])]))
+    );
+    assert_ne!(hash(object(&[("ab", string("c"))])), hash(object(&[("a", string("bc"))])));
+    assert_ne!(
+      hash(object(&[("a", object(&[])), ("b", ConfigKeyValue::Null)])),
+      hash(object(&[("a", object(&[("b", ConfigKeyValue::Null)]))]))
+    );
+    // and the same value the same
+    assert_eq!(hash(object(&[("a", string("b"))])), hash(object(&[("a", string("b"))])));
+  }
 
   #[test]
   fn get_default_config_when_empty() {

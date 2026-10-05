@@ -7,6 +7,7 @@ mod name_resolution;
 mod npm_resolution;
 mod plugin;
 mod repo;
+mod resolution_cache;
 mod resolver;
 mod types;
 
@@ -14,6 +15,8 @@ pub use cache::*;
 pub use helpers::*;
 pub use plugin::*;
 pub use repo::*;
+pub use resolution_cache::PluginResolution;
+pub use resolution_cache::PluginResolutionCache;
 pub use resolver::*;
 pub use types::*;
 
