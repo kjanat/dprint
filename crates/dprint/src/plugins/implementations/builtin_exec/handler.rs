@@ -298,13 +298,22 @@ fn timeout_err(config: &Configuration) -> FormatError {
 /// formatted in parallel (see https://github.com/dprint/dprint/issues/1023).
 #[derive(Default, Clone)]
 pub struct SetupState {
-  cells: Rc<RefCell<HashMap<String, Rc<OnceCell<()>>>>>,
+  cells: Rc<RefCell<HashMap<SetupKey, Rc<OnceCell<()>>>>>,
   /// Setup commands that timed out, so they aren't retried for every file.
-  timed_out: Rc<RefCell<HashMap<String, String>>>,
+  timed_out: Rc<RefCell<HashMap<SetupKey, String>>>,
   /// Executables found through PATHEXT, keyed by the executable and its cwd.
   /// Only found ones are kept, since a setup command may install one later.
   #[cfg_attr(not(windows), allow(dead_code))]
   executables: Rc<RefCell<HashMap<(String, PathBuf), PathBuf>>>,
+}
+
+/// A setup command, by what it runs and where. Its arguments are kept apart
+/// so that ex. `tool "a b" c` and `tool a "b c"` are different commands.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SetupKey {
+  cwd: PathBuf,
+  executable: String,
+  args: Vec<String>,
 }
 
 enum SetupRun {
@@ -338,7 +347,11 @@ impl SetupState {
   async fn run_once(&self, cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<SetupRun, FormatError> {
     // the cwd is part of the key because the same command run in different
     // directories may produce different results
-    let key = format!("{}\0{} {}", cwd.display(), setup_command.executable, setup_command.args.join(" "));
+    let key = SetupKey {
+      cwd: cwd.to_path_buf(),
+      executable: setup_command.executable.clone(),
+      args: setup_command.args.clone(),
+    };
     if let Some(message) = self.timed_out.borrow().get(&key) {
       return Err(FormatError::new(message.clone()));
     }
@@ -693,6 +706,23 @@ mod test {
       assert_eq!(format(&config, "text", &setup_state).await, Ok(None));
     }
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x");
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn runs_setup_commands_whose_arguments_only_split_differently() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker.txt");
+    // the same text when the arguments are joined with spaces
+    let setup_command = |args: &str| format!("sh -c \"echo ran >> {}\" {}", marker.display(), args);
+    let config = resolve(serde_json::json!({
+      "commands": [
+        { "command": "cat", "setupCommand": setup_command("\"a b\" c"), "associations": "**/*.txt" },
+        { "command": "cat", "setupCommand": setup_command("a \"b c\""), "associations": "**/*.txt" }
+      ]
+    }));
+    assert_eq!(format(&config, "text", &SetupState::default()).await, Ok(None));
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ran\nran\n");
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.

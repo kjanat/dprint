@@ -172,7 +172,11 @@ fn raw_plugin_config_override(obj: ConfigKeyMap) -> Result<RawPluginConfigOverri
     bail!("A plugin configuration override must specify at least one configuration property.");
   }
 
-  Ok(RawPluginConfigOverride { files, properties })
+  Ok(RawPluginConfigOverride {
+    files,
+    properties,
+    origin: Default::default(),
+  })
 }
 
 /// Reads an array that may only contain strings.
@@ -309,6 +313,8 @@ mod tests {
             ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
             ("useTabs".to_string(), ConfigKeyValue::from_bool(false)),
           ]),
+
+          origin: Default::default(),
         }],
         properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
       }),
@@ -331,10 +337,14 @@ mod tests {
           RawPluginConfigOverride {
             files: vec!["**/package.json".to_string()],
             properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
+
+            origin: Default::default(),
           },
           RawPluginConfigOverride {
             files: vec!["**/special-package.json".to_string()],
             properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+
+            origin: Default::default(),
           },
         ],
         properties: ConfigKeyMap::new(),

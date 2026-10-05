@@ -81,6 +81,9 @@ pub struct PluginConfigOverride {
   properties: ConfigKeyMap,
   config_id: FormatConfigId,
   matcher: GlobMatcher,
+  /// Like `PluginWithConfig::property_origins`, with this override's
+  /// properties from the file the override is from.
+  property_origins: IndexMap<String, PathSource>,
 }
 
 pub struct PluginWithConfig {
@@ -303,7 +306,7 @@ impl InitializedPluginWithConfig {
           environment,
           "[{}]: {}",
           self.info().name,
-          describe_config_diagnostic(&diagnostic, &self.plugin.property_origins)
+          describe_config_diagnostic(&diagnostic, &override_config.property_origins)
         );
         diagnostic_count += 1;
       }
@@ -1086,8 +1089,14 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     .map(|(plugin_config, plugin)| {
       let global_config = global_config.clone();
       let environment = environment.clone();
-      let overrides = resolve_plugin_config_overrides(plugin_config.overrides, &config_base_path, plugin_resolver)?;
       let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
+      let overrides = resolve_plugin_config_overrides(
+        plugin_config.overrides,
+        &config_base_path,
+        &property_origins,
+        &config.origin.source,
+        plugin_resolver,
+      )?;
       let next_config_id = plugin_resolver.next_config_id();
       Ok(
         async move {
@@ -1160,20 +1169,38 @@ fn filter_duplicate_plugin_names(plugins: Vec<Rc<PluginWrapper>>) -> Vec<Rc<Plug
   plugins.into_iter().filter(|plugin| names.insert(plugin.info().name.clone())).collect()
 }
 
+/// `property_origins` are where the plugin's properties are from, when that's
+/// not `config_source` (see `PluginWithConfig::property_origins`).
 fn resolve_plugin_config_overrides<TEnvironment: Environment>(
   overrides: Vec<RawPluginConfigOverride>,
   config_base_path: &CanonicalizedPathBuf,
+  property_origins: &IndexMap<String, PathSource>,
+  config_source: &PathSource,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<Vec<PluginConfigOverride>> {
   overrides
     .into_iter()
     .map(|override_config| {
       let matcher = get_patterns_as_glob_matcher(&override_config.files, config_base_path)?;
+      // the override's own properties are from the file it's from, whatever
+      // other overrides or the plugin's configuration say for the same name
+      let mut override_origins = property_origins.clone();
+      for property in override_config.properties.keys() {
+        match &override_config.origin.0 {
+          Some(origin) if origin != config_source => {
+            override_origins.insert(property.clone(), origin.clone());
+          }
+          _ => {
+            override_origins.shift_remove(property);
+          }
+        }
+      }
       Ok(PluginConfigOverride {
         files: override_config.files,
         properties: override_config.properties,
         config_id: plugin_resolver.next_config_id(),
         matcher,
+        property_origins: override_origins,
       })
     })
     .collect()
@@ -1299,6 +1326,7 @@ mod test {
       properties: ConfigKeyMap::from([("ending".to_string(), "package".into())]),
       config_id: FormatConfigId::from_raw(2),
       matcher: get_patterns_as_glob_matcher(&["**/package.txt".to_string()], &config_base_path).unwrap(),
+      property_origins: Default::default(),
     }]);
 
     assert_ne!(get_plugin_hash(&plugin_without_override), get_plugin_hash(&plugin_with_override));
@@ -1318,6 +1346,7 @@ mod test {
       properties,
       config_id: FormatConfigId::from_raw(2),
       matcher,
+      property_origins: Default::default(),
     }])
   }
 

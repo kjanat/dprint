@@ -25,8 +25,9 @@ use crate::utils::PathSource;
 use crate::utils::parse_npm_specifier;
 
 /// The format of a configuration file: JSON (with comments) or TOML.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConfigFileFormat {
+  #[default]
   Json,
   Toml,
 }
@@ -50,7 +51,15 @@ impl ConfigFileFormat {
       PathSource::Remote(remote) => remote.url.path().to_string(),
       PathSource::Npm(npm) => npm.specifier.path.clone(),
     };
-    match Path::new(&path).extension().and_then(|ext| ext.to_str()) {
+    Self::from_file(&path, text)
+  }
+
+  /// The format of a configuration file's text, the way configuration is
+  /// read (see [`ConfigFileFormat::from_source`]): by the file's extension,
+  /// or by the text when it has none of a configuration format. Use this to
+  /// edit a file, so ex. an extensionless TOML file is edited as TOML.
+  pub fn from_file(path: impl AsRef<Path>, text: &str) -> Self {
+    match path.as_ref().extension().and_then(|ext| ext.to_str()) {
       Some(ext) if ext.eq_ignore_ascii_case("toml") => ConfigFileFormat::Toml,
       Some(ext) if ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("jsonc") => ConfigFileFormat::Json,
       _ => {
@@ -441,21 +450,41 @@ fn apply_toml_change(plugin_item: &mut Item, path: &[ConfigChangePathItem], chan
       if let Some(array) = current.child_array(key) {
         array.push_like_siblings(value);
         Ok(())
+      } else if let Some(tables) = current.child_array_of_tables(key) {
+        // ex. `[[exec.commands]]`, which is appended to like an array
+        tables.push(value_to_table(value)?);
+        Ok(())
       } else {
         current.insert(key, value)
       }
     }
     (TomlChange::Add(value), ConfigChangePathItem::Number(index)) => {
+      let value = config_value_to_toml(value)?;
+      if let TomlNode::Item(Item::ArrayOfTables(tables)) = current {
+        if *index > tables.len() {
+          bail!("Expected array index '{}' to be less than the length of the array.", index);
+        }
+        tables.insert(*index, value_to_table(value)?);
+        return Ok(());
+      }
       let array = current.into_array().ok_or_else(|| anyhow!("Expected array."))?;
       if *index > array.len() {
         bail!("Expected array index '{}' to be less than the length of the array.", index);
       }
-      array.insert_like_siblings(*index, config_value_to_toml(value)?);
+      array.insert_like_siblings(*index, value);
       Ok(())
     }
     (TomlChange::Set(value), path_item) => current.child(path_item)?.set(config_value_to_toml(value)?),
     (TomlChange::Remove, ConfigChangePathItem::String(key)) => current.remove(key),
     (TomlChange::Remove, ConfigChangePathItem::Number(index)) => current.remove_index(*index),
+  }
+}
+
+/// A table of an array of tables, from an object's value.
+fn value_to_table(value: Value) -> Result<toml_edit::Table> {
+  match value {
+    Value::InlineTable(table) => Ok(table.into_table()),
+    _ => bail!("Expected an object to add to an array of tables."),
   }
 }
 
@@ -492,6 +521,14 @@ impl<'a> TomlNode<'a> {
       TomlNode::Item(Item::Value(Value::InlineTable(table))) | TomlNode::Value(Value::InlineTable(table)) => {
         table.get_mut(key).and_then(|value| value.as_array_mut())
       }
+      _ => None,
+    }
+  }
+
+  fn child_array_of_tables(&mut self, key: &str) -> Option<&mut toml_edit::ArrayOfTables> {
+    match self {
+      TomlNode::Item(Item::Table(table)) => table.get_mut(key).and_then(|item| item.as_array_of_tables_mut()),
+      TomlNode::Table(table) => table.get_mut(key).and_then(|item| item.as_array_of_tables_mut()),
       _ => None,
     }
   }
@@ -895,6 +932,55 @@ new = "added"
       result.diagnostics,
       vec!["Failed setting item at path 'test.missing.deep': Expected property 'missing'.".to_string()]
     );
+  }
+
+  #[test]
+  fn adds_to_arrays_of_tables() {
+    let text = r#"[exec]
+timeout = 5
+
+[[exec.commands]]
+command = "a"
+
+[[exec.commands]]
+command = "b"
+"#;
+    use ConfigChangePathItem::Number as Index;
+    let key = |key: &str| ConfigChangePathItem::String(key.to_string());
+    let command = |name: &str| {
+      ConfigChangeKind::Add(ConfigKeyValue::Object(ConfigKeyMap::from([(
+        "command".to_string(),
+        ConfigKeyValue::from_str(name),
+      )])))
+    };
+    let changes = vec![
+      ConfigChange {
+        path: vec![key("commands")],
+        kind: command("c"),
+      },
+      ConfigChange {
+        path: vec![key("commands"), Index(0)],
+        kind: command("first"),
+      },
+    ];
+    let result = ConfigFileFormat::Toml.apply_changes(text, "exec", &changes);
+    assert_eq!(result.diagnostics, Vec::<String>::new());
+    // appended and inserted rather than replacing the existing ones
+    let config = ConfigFileFormat::Toml.parse(&result.new_text).unwrap();
+    let ConfigKeyValue::Object(exec) = &config["exec"] else {
+      unreachable!();
+    };
+    let ConfigKeyValue::Array(commands) = &exec["commands"] else {
+      panic!("{}", result.new_text);
+    };
+    let names = commands
+      .iter()
+      .map(|command| match command {
+        ConfigKeyValue::Object(command) => command["command"].clone(),
+        other => other.clone(),
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(names, ["first", "a", "b", "c"].map(ConfigKeyValue::from_str).to_vec(), "{}", result.new_text);
   }
 
   #[test]
