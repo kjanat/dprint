@@ -11,9 +11,12 @@ use serde_json::Map;
 use serde_json::Value;
 use url::Url;
 
-/// The schema of dprint's configuration file (also served at
-/// https://dprint.dev/schemas/v0.json).
-const DPRINT_CONFIG_SCHEMA: &str = include_str!("../commands/lsp/config_schema.json");
+/// The schema of dprint's configuration file, without the plugins' tables.
+///
+/// This file is its source of truth: `dprint schema` builds on it, the
+/// language server completes configuration files with it, and the website
+/// serves it at https://dprint.dev/schemas/v0.json (see `website/_config.ts`).
+pub const DPRINT_CONFIG_SCHEMA: &str = include_str!("config_schema.json");
 
 /// The name of the schema file `dprint schema` creates for a configuration
 /// file. When there's one next to a configuration file, the commands that

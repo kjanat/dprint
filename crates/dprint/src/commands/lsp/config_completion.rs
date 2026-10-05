@@ -11,19 +11,12 @@ use tower_lsp::lsp_types as lsp;
 use url::Url;
 
 use crate::configuration::ConfigFileFormat;
+use crate::configuration::DPRINT_CONFIG_SCHEMA;
 use crate::configuration::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::Environment;
 
 use super::config::LspPluginsScopeContainer;
 use super::text::LineIndex;
-
-/// The dprint configuration file JSON schema, embedded at compile time so that
-/// completions for the well-known root keys work without any network access.
-///
-/// This crate is the source of truth for the schema. The website build copies
-/// this file to `website/src/assets/schemas/v0.json` so it's also served at
-/// https://dprint.dev/schemas/v0.json (see `website/_config.ts`).
-const DPRINT_CONFIG_SCHEMA: &str = include_str!("config_schema.json");
 
 /// Provides completions and hover information for dprint configuration files.
 ///
