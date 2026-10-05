@@ -404,10 +404,12 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
 /// Removes what a remote configuration file isn't trusted to specify, since it
 /// could make dprint run or change anything: which files are formatted,
 /// non-wasm plugins, and exec commands a local configuration file doesn't
-/// allow (see `remote_exec.rs`). `resolved_config` is the configuration of
+/// allow (see `remote_exec.rs`). A local file a remote one extends (ex. with
+/// `file://`) is the remote one's choice, so it's trusted no further (see
+/// `LayerOrigin::is_trusted`). `resolved_config` is the configuration of
 /// higher precedence resolved so far.
 fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &ConfigMap, remote_exec: &mut RemoteExec, environment: &impl Environment) {
-  if layer.origin.source.is_local() {
+  if layer.origin.is_trusted() {
     return;
   }
 
@@ -419,7 +421,9 @@ fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &Confi
   // control over what files get formatted.
   // Careful! Don't be fancy and ensure this is removed.
   let removed_includes = layer.settings.files.includes.take(); // NEVER REMOVE THIS STATEMENT
-  if removed_includes.is_some() && layer.origin.is_first_download {
+  // noted once per download, and every time for a local file a remote one
+  // chose, which is never downloaded
+  if removed_includes.is_some() && (layer.origin.is_first_download || layer.origin.source.is_local()) {
     log_warn!(environment, &get_warn_includes_message());
   }
 
@@ -3833,6 +3837,83 @@ lineWidth = 80
         ]
       );
       assert_eq!(result.messages, Vec::<String>::new());
+    }
+
+    #[test]
+    fn restricts_a_local_configuration_file_a_remote_one_extends() {
+      // what only a local configuration file may say, in a local file
+      let base = r#"{
+        "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "./test-process-plugin.json@checksum"],
+        "exec": { "cwd": "/chosen", "commands": [{ "command": "evil", "exts": ["txt"] }] }
+      }"#;
+      let resolve_extending = |extends: &str, remote: &str, base: &str| {
+        resolve_in_every_format(
+          &[
+            ("dprint", &format!(r#"{{ "extends": "{}" }}"#, extends)),
+            ("base", base),
+            ("https://dprint.dev/exec", remote),
+          ],
+          async |environment, paths| {
+            let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string());
+            let messages = environment.take_stderr_messages();
+            result.map(|result| (result.files.includes.clone(), plugin_names(&result), exec_of(&result), messages))
+          },
+        )
+      };
+      // which a local configuration file that extends it directly gets
+      let (includes, plugins, exec, messages) = resolve_extending("./<base>", "{}", base).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(
+        plugins,
+        vec![
+          "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
+          "/test-process-plugin.json@checksum".to_string()
+        ]
+      );
+      assert_eq!(
+        exec,
+        Exec {
+          properties: ExecProperties::new(&["evil"], Some("/chosen")),
+          overrides: Vec::new(),
+        }
+      );
+      assert_eq!(messages, Vec::<String>::new());
+
+      // but not one a remote configuration file chose to extend: that's the
+      // remote configuration's say, however local the file is
+      let (includes, plugins, exec, messages) = resolve_extending("<https://dprint.dev/exec>", r#"{ "extends": "file:///<base>" }"#, base).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(plugins, vec!["https://plugins.dprint.dev/test-plugin.wasm".to_string()]);
+      assert_eq!(exec, Exec::default());
+      assert_eq!(
+        messages,
+        vec![
+          get_warn_non_wasm_plugins_message(),
+          concat!(
+            "Note: The exec commands in remote configuration (/base.json) are ignored for security reasons. ",
+            "To run them, specify \"playWithFire\" in the exec configuration of a local configuration file ",
+            "(`true` or the programs they may run)."
+          )
+          .to_string(),
+          concat!(
+            "Note: The exec \"cwd\" in remote configuration (/base.json) is ignored for security reasons, as it decides what commands run. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          )
+          .to_string(),
+        ]
+      );
+      // and its includes are ignored with a note, like a remote file's, rather
+      // than being an error like an extended local file's
+      let with_includes = r#"{ "includes": ["**/*.rs"] }"#;
+      let err = resolve_extending("./<base>", "{}", with_includes).unwrap_err();
+      assert!(
+        err.contains("The 'includes' property can't be used in an extended configuration file."),
+        "{}",
+        err
+      );
+      let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", r#"{ "extends": "file:///<base>" }"#, with_includes).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(messages, vec![get_warn_includes_message()]);
     }
   }
 

@@ -75,6 +75,13 @@ pub struct ConfigReference {
 }
 
 impl LayerOrigin {
+  /// Whether the file is trusted the way a local file is: it's local, and so
+  /// is every file that extends it. A remote file could otherwise choose a
+  /// local one (ex. with `file://`) to say what it may not say itself.
+  pub fn is_trusted(&self) -> bool {
+    self.source.is_local() && self.extended_by.iter().all(|source| source.is_local())
+  }
+
   /// Adds where an error is: this configuration file, then the files that
   /// extend it, other than the configuration file being resolved.
   pub fn locate(&self, err: anyhow::Error) -> anyhow::Error {

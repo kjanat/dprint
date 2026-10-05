@@ -462,7 +462,7 @@ Referencing multiple configuration files is also supported. These should be orde
 
 An extended configuration file adds its plugins, plugin configuration, `"excludes"`, `"shebangs"` and `"incremental"` where the configuration file that extends it doesn't specify them. Which files to format (`"includes"`) and whether to [inherit](#directory-specific-configuration) are up to the configuration file being used, so specifying them in an extended configuration file is an error. A file may be extended by more than one file (ex. a shared base), but a configuration file that extends itself, directly or through other files, is an error.
 
-Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed.
+Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed. A local file that a remote configuration extends (ex. with a `file://` url) is treated as remote configuration too, since the remote configuration chose it.
 
 ### Caching of Remote Configuration
 
