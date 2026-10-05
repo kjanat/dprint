@@ -227,13 +227,16 @@ impl Templates<'_> {
   }
 
   /// Expands the global configuration and the properties of each plugin's
-  /// configuration.
+  /// configuration and its overrides.
   fn expand_config_map(self, config_map: &mut ConfigMap) -> Result<()> {
     for value in config_map.values_mut() {
       match value {
         ConfigMapValue::KeyValue(value) => self.expand_value(value)?,
         ConfigMapValue::PluginConfig(config) => {
-          for value in config.properties.values_mut() {
+          // an override's properties are expanded here too, as they're merged
+          // with ones from other files and so can't be expanded later
+          let overrides = config.overrides.iter_mut().flat_map(|override_config| override_config.properties.values_mut());
+          for value in config.properties.values_mut().chain(overrides) {
             self.expand_value(value)?;
           }
         }

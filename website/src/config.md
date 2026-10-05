@@ -658,6 +658,8 @@ dprint expands certain variables in the config:
 
 For example, in a JSON value you might do `"rustfmt --config-path ${configDir}/rustfmt.toml"`.
 
+They're expanded in the values of a plugin's configuration and its [overrides](#overrides) relative to the file they're written in, before it's combined with the configuration it extends or inherits.
+
 This is useful to use in some scenarios like with [dprint-plugin-exec](https://github.com/dprint/dprint-plugin-exec) because the CLI will only launch a single plugin for many configs and when resolving configs, the plugins have no concept of where that config was resolved from. Additionally, configs may resolve other configs and perhaps you want to use the directory of a configuration file that was extended.
 
 Note: dprint will error for unknown configuration variables (ex. `"${unknown}"`). You can get around this by escaping the `$` sign (ex. `"\\${unknown}"`).

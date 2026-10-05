@@ -640,6 +640,165 @@ mod tests {
     });
   }
 
+  /// A plugin's configuration with the properties and the overrides, which
+  /// are each the files and the properties.
+  fn plugin_config(properties: &[(&str, ConfigKeyValue)], overrides: &[(&str, &[(&str, ConfigKeyValue)])]) -> ConfigMapValue {
+    let to_map = |properties: &[(&str, ConfigKeyValue)]| properties.iter().map(|(key, value)| (key.to_string(), value.clone())).collect::<ConfigKeyMap>();
+    ConfigMapValue::PluginConfig(RawPluginConfig {
+      locked: false,
+      associations: None,
+      overrides: overrides
+        .iter()
+        .map(|(files, override_properties)| RawPluginConfigOverride {
+          files: vec![files.to_string()],
+          properties: to_map(override_properties),
+          origin: Default::default(),
+        })
+        .collect(),
+      properties: to_map(properties),
+    })
+  }
+
+  #[test]
+  fn expands_templates_in_plugin_overrides_like_in_plugin_properties() {
+    // each file's templates are expanded relative to that file, before its
+    // overrides are combined with the ones of the files it extends
+    let config = resolve_in_every_format(
+      &[
+        (
+          "dir/dprint",
+          r#"{
+            "extends": ["../<other/base>", "<https://dprint.dev/remote>"],
+            "local": {
+              "value": "${configDir}/base",
+              "overrides": [{
+                "files": "**/*.txt",
+                "value": "${configDir}/override && ${originConfigDir}/origin && \\${configDir}/escaped"
+              }]
+            }
+          }"#,
+        ),
+        (
+          "other/base",
+          r#"{
+            "extended": {
+              "value": "${configDir}/base && ${originConfigDir}/origin",
+              "overrides": [{ "files": "**/*.txt", "value": "${configDir}/override && ${originConfigDir}/origin" }]
+            }
+          }"#,
+        ),
+        (
+          "https://dprint.dev/remote",
+          r#"{
+            "remote": {
+              "overrides": [{
+                "files": "**/*.txt",
+                "value": "${originConfigDir}/override && \\${originConfigDir}/escaped",
+                "nested": { "values": ["${originConfigDir}/nested", "{{file_path}}"] }
+              }]
+            }
+          }"#,
+        ),
+      ],
+      async |environment, paths| get_result(paths.get("dir/dprint"), environment).await.map(|config| config.plugins.config),
+    )
+    .unwrap();
+    let txt = "**/*.txt";
+    assert_eq!(
+      config,
+      ConfigMap::from([
+        (
+          "local".to_string(),
+          plugin_config(
+            &[("value", ConfigKeyValue::from_str("/dir/base"))],
+            &[(
+              txt,
+              &[("value", ConfigKeyValue::from_str("/dir/override && /dir/origin && ${configDir}/escaped"))],
+            )],
+          ),
+        ),
+        (
+          "extended".to_string(),
+          plugin_config(
+            &[("value", ConfigKeyValue::from_str("/other/base && /dir/origin"))],
+            &[(txt, &[("value", ConfigKeyValue::from_str("/other/override && /dir/origin"))])],
+          ),
+        ),
+        (
+          "remote".to_string(),
+          plugin_config(
+            &[],
+            &[(
+              txt,
+              &[
+                ("value", ConfigKeyValue::from_str("/dir/override && ${originConfigDir}/escaped")),
+                (
+                  "nested",
+                  ConfigKeyValue::Object(ConfigKeyMap::from([(
+                    "values".to_string(),
+                    // a plugin's own template syntax is left alone
+                    ConfigKeyValue::Array(vec![ConfigKeyValue::from_str("/dir/nested"), ConfigKeyValue::from_str("{{file_path}}")]),
+                  )])),
+                ),
+              ],
+            )],
+          ),
+        ),
+      ])
+    );
+  }
+
+  #[test]
+  fn keeps_templates_in_inherited_plugin_overrides_relative_to_the_ancestor() {
+    let config = resolve_in_every_format(
+      &[
+        (
+          "a/dprint",
+          r#"{ "test": { "overrides": [{ "files": "**/*.md", "fromAncestor": "${configDir}/value" }] } }"#,
+        ),
+        (
+          "a/b/dprint",
+          r#"{ "inherit": true, "test": { "overrides": [{ "files": "**/*.txt", "fromNested": "${configDir}/value" }] } }"#,
+        ),
+      ],
+      async |environment, paths| {
+        let ancestor = resolve_local_config(paths.get("a/dprint"), environment).await;
+        resolve_local_descendant_config(paths.get("a/b/dprint"), &ancestor, environment)
+          .await
+          .map(|config| config.plugins.config)
+      },
+    )
+    .unwrap();
+    assert_eq!(
+      config,
+      ConfigMap::from([(
+        "test".to_string(),
+        plugin_config(
+          &[],
+          &[
+            ("**/*.md", &[("fromAncestor", ConfigKeyValue::from_str("/a/value"))]),
+            ("**/*.txt", &[("fromNested", ConfigKeyValue::from_str("/a/b/value"))]),
+          ],
+        ),
+      )])
+    );
+  }
+
+  #[test]
+  fn reports_an_unknown_template_in_a_plugin_override() {
+    let err = resolve_in_every_format(
+      &[("dprint", r#"{ "test": { "overrides": [{ "files": "**/*.txt", "value": "${unknown}" }] } }"#)],
+      async |environment, paths| get_result(paths.get("dprint"), environment).await.err().unwrap().to_string(),
+    );
+    assert_eq!(
+      err,
+      concat!(
+        "Unknown template literal ${unknown}. Only ${configDir} and ${originConfigDir} are supported. If you meant to pass this to a plugin, escape the dollar sign with two back slashes.\n",
+        "    at /dprint.json"
+      ),
+    );
+  }
+
   #[test]
   fn should_get_local_config_file() {
     let environment = TestEnvironment::new();
@@ -3229,6 +3388,49 @@ lineWidth = 80
             ExecOverride::new("**/*.txt", &["tombi format -", "evil"], Some("/remote-override-cwd")),
             ExecOverride::new("**/*.txt", &["local"], None),
           ],
+        }
+      );
+    }
+
+    #[test]
+    fn expands_a_remote_override_cwd_without_allowing_it() {
+      // the remote override's working directory becomes a local one once
+      // expanded, which "playWithFire" still has to allow
+      let remote_config = remote_config_with_overrides().replace("/remote-override-cwd", "${originConfigDir}");
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": ["tombi"] }} }}"#, REMOTE_URL),
+        &remote_config,
+      )
+      .unwrap();
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::default(),
+          overrides: vec![ExecOverride::new("**/*.txt", &["tombi format -"], None)],
+        }
+      );
+      assert_eq!(
+        result.messages,
+        vec![
+          "Note: \"playWithFire\" is ignored in remote configuration (https://dprint.dev/exec.json). Specify it in a local configuration file.",
+          "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": evil",
+          concat!(
+            "Note: The exec \"cwd\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, as it decides what commands run. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+        ]
+      );
+
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+        &remote_config,
+      )
+      .unwrap();
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&[], Some("/remote-cwd")),
+          overrides: vec![ExecOverride::new("**/*.txt", &["tombi format -", "evil"], Some("/"))],
         }
       );
     }
