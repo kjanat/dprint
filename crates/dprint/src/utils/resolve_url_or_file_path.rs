@@ -156,7 +156,7 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
     }
 
     // download
-    let result = match environment.download_file_no_redirects(&current_url, None).await {
+    let result = match environment.download_file_no_redirects(&current_url, None, None).await {
       Ok(Some(result)) => result,
       Ok(None) => bail!("Error downloading {} - 404 Not Found", url),
       Err(err) => {

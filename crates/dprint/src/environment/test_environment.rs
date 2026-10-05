@@ -587,7 +587,7 @@ impl SystemTimeNow for TestEnvironment {
 
 #[async_trait(?Send)]
 impl UrlDownloader for TestEnvironment {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>) -> Result<Option<DownloadedFile>> {
+  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     self.remote_file_auth.lock().insert(url.to_string(), auth.map(|s| s.to_string()));
     *self.remote_file_downloads.lock().entry(url.to_string()).or_default() += 1;
 
@@ -619,7 +619,16 @@ impl UrlDownloader for TestEnvironment {
     }
     drop(redirects);
 
-    Ok(self.get_remote_file(url.as_str())?.map(|content| DownloadedFile {
+    let Some(content) = self.get_remote_file(url.as_str())? else {
+      return Ok(None);
+    };
+    // the real downloader refuses it by its length, before reading it
+    if let Some(max_len) = max_len
+      && content.len() > max_len
+    {
+      return Err(super::response_too_large_error(url, Some(content.len()), max_len));
+    }
+    Ok(Some(DownloadedFile {
       headers: Default::default(),
       content,
     }))

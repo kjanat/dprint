@@ -1901,10 +1901,18 @@ async fn join_all_bounded<T>(futures: impl IntoIterator<Item = impl std::future:
   .await
 }
 
-/// Downloads JSON, and gives where it ended up being downloaded from.
+/// The most a plugin's configuration schema may be. The largest there are
+/// (biome's and typescript's) are well under a megabyte, so a schema past
+/// this is something else, which the [`MAX_CONCURRENT_SCHEMA_REQUESTS`] of
+/// them could otherwise take any amount of memory within the refresh's
+/// deadline.
+const MAX_PLUGIN_SCHEMA_LEN: usize = 8 * 1024 * 1024;
+
+/// Downloads a plugin's schema's JSON, of at most [`MAX_PLUGIN_SCHEMA_LEN`]
+/// bytes, and gives where it ended up being downloaded from.
 async fn download_json(environment: &impl Environment, url: &str) -> Result<(Url, serde_json::Value)> {
   let url = Url::parse(url)?;
-  let (url, file) = environment.download_file(&url, None).await?;
+  let (url, file) = environment.download_file_with_limit(&url, None, Some(MAX_PLUGIN_SCHEMA_LEN)).await?;
   let Some(file) = file else {
     bail!("Not found.");
   };
@@ -2695,6 +2703,19 @@ mod test {
     // or isn't found
     environment.remove_remote_file(TEST_PLUGIN_SCHEMA_URL);
     let reason = missing_schemas_reason(&["test-plugin (https://plugins.dprint.dev/test/schema.json): Not found."]);
+    assert_keeps_the_config_schema_file(&environment, &reason).await;
+  }
+
+  #[tokio::test]
+  async fn keeps_the_config_schema_file_when_a_plugin_schema_is_too_large() {
+    let environment = schema_refresh_env(&["https://plugins.dprint.dev/test-plugin.wasm"]);
+    let len = super::MAX_PLUGIN_SCHEMA_LEN + 1;
+    environment.add_remote_file_bytes(TEST_PLUGIN_SCHEMA_URL, vec![b' '; len]);
+    let reason = missing_schemas_reason(&[&format!(
+      "test-plugin (https://plugins.dprint.dev/test/schema.json): Error downloading https://plugins.dprint.dev/test/schema.json - The response is {} bytes, over the limit of {} bytes.",
+      len,
+      super::MAX_PLUGIN_SCHEMA_LEN
+    )]);
     assert_keeps_the_config_schema_file(&environment, &reason).await;
   }
 

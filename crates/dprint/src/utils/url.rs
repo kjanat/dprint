@@ -22,6 +22,7 @@ use super::logging::ProgressBarStyle;
 use super::logging::ProgressBars;
 use super::no_proxy::NoProxy;
 use crate::environment::DownloadedFile;
+use crate::environment::response_too_large_error;
 
 const MAX_RETRIES: u8 = 2;
 
@@ -349,16 +350,25 @@ impl RealUrlDownloader {
     self
   }
 
-  /// Downloads the file, giving up at the deadline when there's one.
-  pub fn download_with_auth(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>) -> Result<Option<DownloadedFile>> {
+  /// Downloads the file, giving up at the deadline when there's one, and on a
+  /// response over `max_len` bytes when that's given (see
+  /// `UrlDownloader::download_file_no_redirects`).
+  pub fn download_with_auth(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     let agent = self.get_agent(url)?;
-    self.download_with_retries(url, auth, deadline, &agent)
+    self.download_with_retries(url, auth, deadline, max_len, &agent)
   }
 
-  fn download_with_retries(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
+  fn download_with_retries(
+    &self,
+    url: &Url,
+    auth: Option<&str>,
+    deadline: Option<Instant>,
+    max_len: Option<usize>,
+    agent: &ureq::Agent,
+  ) -> Result<Option<DownloadedFile>> {
     let mut last_error = None;
     for retry_count in 0..(MAX_RETRIES + 1) {
-      match self.inner_download(url, auth, retry_count, deadline, agent) {
+      match self.inner_download(url, auth, retry_count, deadline, max_len, agent) {
         Ok(result) => return Ok(result),
         Err(err) => {
           if retry_count < MAX_RETRIES {
@@ -379,7 +389,7 @@ impl RealUrlDownloader {
   pub fn download_no_retries_for_testing(&self, url: &str) -> Result<Option<Vec<u8>>> {
     let url = Url::parse(url)?;
     let agent = self.get_agent(&url)?;
-    Ok(self.inner_download(&url, None, 0, None, &agent)?.map(|r| r.content))
+    Ok(self.inner_download(&url, None, 0, None, None, &agent)?.map(|r| r.content))
   }
 
   fn get_agent(&self, url: &Url) -> Result<ureq::Agent> {
@@ -392,7 +402,15 @@ impl RealUrlDownloader {
     self.agent_store.get(kind, url)
   }
 
-  fn inner_download(&self, url: &Url, auth: Option<&str>, retry_count: u8, deadline: Option<Instant>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
+  fn inner_download(
+    &self,
+    url: &Url,
+    auth: Option<&str>,
+    retry_count: u8,
+    deadline: Option<Instant>,
+    max_len: Option<usize>,
+    agent: &ureq::Agent,
+  ) -> Result<Option<DownloadedFile>> {
     let mut request = agent.request_url("GET", url);
     if let Some(deadline) = deadline {
       // the whole request, reading the response included, gives up at the
@@ -426,18 +444,50 @@ impl RealUrlDownloader {
       return Ok(Some(DownloadedFile { headers, content: vec![] }));
     }
 
-    let total_size = headers.get("content-length").and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-    let mut reader = resp.into_reader();
-    match read_response(url, retry_count, &mut reader, total_size, self.progress_bars.as_deref()) {
-      Ok(content) => Ok(Some(DownloadedFile { headers, content })),
-      Err(err) => bail!("Error downloading {} - {:#}", url, err),
+    let content_length = headers.get("content-length").and_then(|s| s.parse::<usize>().ok());
+    // refused by what it says its length is, before any of it is reserved or read
+    if let Some(max_len) = max_len
+      && let Some(len) = content_length
+      && len > max_len
+    {
+      return Err(response_too_large_error(url, Some(len), max_len));
     }
+    let mut reader = resp.into_reader();
+    let content = match read_response(
+      url,
+      retry_count,
+      &mut reader,
+      content_length.unwrap_or(0),
+      max_len,
+      self.progress_bars.as_deref(),
+    ) {
+      Ok(content) => content,
+      Err(err) => bail!("Error downloading {} - {:#}", url, err),
+    };
+    // or by how much of it there turns out to be, of which only a byte over
+    // the limit was read
+    if let Some(max_len) = max_len
+      && content.len() > max_len
+    {
+      return Err(response_too_large_error(url, None, max_len));
+    }
+    Ok(Some(DownloadedFile { headers, content }))
   }
 }
 
-fn read_response(url: &Url, retry_count: u8, reader: &mut impl Read, total_size: usize, progress_bars: Option<&ProgressBars>) -> Result<Vec<u8>> {
+/// Reads the response, and at most a byte more than `max_len` when that's
+/// given, so the caller can tell it's over the limit.
+fn read_response(
+  url: &Url,
+  retry_count: u8,
+  reader: &mut impl Read,
+  total_size: usize,
+  max_len: Option<usize>,
+  progress_bars: Option<&ProgressBars>,
+) -> Result<Vec<u8>> {
   let mut final_bytes = Vec::new();
   final_bytes.try_reserve_exact(total_size)?;
+  let mut reader = reader.take(max_len.map_or(u64::MAX, |max_len| (max_len as u64).saturating_add(1)));
   if let Some(progress_bars) = &progress_bars {
     let mut buf: [u8; 512] = [0; 512]; // ensure progress bars update often
     let mut message = format!("Downloading {}", url);
@@ -485,6 +535,7 @@ mod test {
   use super::AgentStore;
   use super::BoundedResolver;
   use super::RealUrlDownloader;
+  use super::read_response;
 
   #[test]
   fn test_agent_store() {
@@ -633,10 +684,77 @@ mod test {
     let url = url::Url::parse(url).unwrap();
     std::thread::spawn(move || {
       let start = Instant::now();
-      let result = downloader.download_with_auth(&url, None, Some(start + deadline));
+      let result = downloader.download_with_auth(&url, None, Some(start + deadline), None);
       sender.send((result.map(|file| file.map(|file| file.content)), start.elapsed())).unwrap();
     });
     receiver.recv_timeout(deadline + Duration::from_secs(10)).expect("the download didn't give up")
+  }
+
+  /// Downloads the url with the length limit, and gives the content or the
+  /// error's text.
+  fn download_at_most(url: &str, max_len: usize) -> Result<Option<Vec<u8>>, String> {
+    let url = url::Url::parse(url).unwrap();
+    create_silent_downloader()
+      .download_with_auth(&url, None, None, Some(max_len))
+      .map(|file| file.map(|file| file.content))
+      .map_err(|err| err.to_string())
+  }
+
+  #[test]
+  fn refuses_a_response_over_the_limit_rather_than_reading_it() {
+    // what it says its length is, before any of it is read (or reserved)
+    let (url, _) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000000\r\n\r\n{}");
+    });
+    assert_eq!(
+      download_at_most(&url, 1000),
+      Err(format!(
+        "Error downloading {} - The response is 100000000 bytes, over the limit of 1000 bytes.",
+        url
+      ))
+    );
+
+    // what there turns out to be of it, when it doesn't say: read up to a
+    // byte over the limit, and no further
+    let (url, _) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+      // until the download stops reading and closes the connection (or, were
+      // it to read on, long after it should have stopped)
+      let chunk = [b'x'; 1024];
+      for _ in 0..64 * 1024 {
+        if stream.write_all(&chunk).is_err() {
+          break;
+        }
+      }
+    });
+    assert_eq!(
+      download_at_most(&url, 100_000),
+      Err(format!("Error downloading {} - The response is over the limit of 100000 bytes.", url))
+    );
+
+    // within it, it's read in full
+    let (url, _) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+    });
+    assert_eq!(download_at_most(&url, 2), Ok(Some(b"{}".to_vec())));
+  }
+
+  #[test]
+  fn reads_no_more_than_a_byte_over_the_limit() {
+    let url = url::Url::parse("http://localhost/schema.json").unwrap();
+    let mut endless = std::io::repeat(b'x').take(1_000_000);
+    let content = read_response(&url, 0, &mut endless, 0, Some(100_000), None).unwrap();
+    assert_eq!(content.len(), 100_001);
+    // and all of it without a limit
+    let mut endless = std::io::repeat(b'x').take(1_000_000);
+    let content = read_response(&url, 0, &mut endless, 0, None, None).unwrap();
+    assert_eq!(content.len(), 1_000_000);
   }
 
   /// A lookup that never finishes in time, counting how often it's asked.
