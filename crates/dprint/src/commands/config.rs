@@ -1659,6 +1659,7 @@ async fn get_config_schema_text<TEnvironment: Environment>(
       schemas.push(PluginSchema {
         config_key: info.config_key.clone(),
         schema: serde_json::from_str(schema)?,
+        url: None,
       });
       continue;
     }
@@ -1666,9 +1667,10 @@ async fn get_config_schema_text<TEnvironment: Environment>(
       continue;
     }
     match download_json(environment, &info.config_schema_url).await {
-      Ok(schema) => schemas.push(PluginSchema {
+      Ok((url, schema)) => schemas.push(PluginSchema {
         config_key: info.config_key.clone(),
         schema,
+        url: Some(url),
       }),
       Err(err) => log_warn!(
         environment,
@@ -1679,15 +1681,21 @@ async fn get_config_schema_text<TEnvironment: Environment>(
       ),
     }
   }
-  Ok(format!("{}\n", serde_json::to_string_pretty(&build_config_schema(schemas)?)?))
+  let config_schema = build_config_schema(schemas)?;
+  for warning in &config_schema.warnings {
+    log_warn!(environment, "{}", warning);
+  }
+  Ok(format!("{}\n", serde_json::to_string_pretty(&config_schema.schema)?))
 }
 
-async fn download_json(environment: &impl Environment, url: &str) -> Result<serde_json::Value> {
+/// Downloads JSON, and gives where it ended up being downloaded from.
+async fn download_json(environment: &impl Environment, url: &str) -> Result<(Url, serde_json::Value)> {
   let url = Url::parse(url)?;
-  let Some(file) = environment.download_file(&url, None).await?.1 else {
+  let (url, file) = environment.download_file(&url, None).await?;
+  let Some(file) = file else {
     bail!("Not found.");
   };
-  Ok(serde_json::from_slice(&file.content)?)
+  Ok((url.into_owned(), serde_json::from_slice(&file.content)?))
 }
 
 /// Regenerates the schema file next to a configuration file whose plugins
@@ -2126,6 +2134,57 @@ mod test {
       serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin/definitions/ending" })
     );
     assert!(plugin["properties"]["associations"].is_object());
+  }
+
+  #[test]
+  fn should_resolve_a_plugin_schemas_references_against_where_it_was_downloaded_from() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file(
+        "https://plugins.dprint.dev/test/0.1.0/schema.json",
+        r#"{ "properties": { "ending": { "$ref": "common.json#/definitions/ending" } } }"#,
+      )
+      .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
+      .build();
+    environment.add_remote_file_redirect(
+      "https://plugins.dprint.dev/test/schema.json",
+      "https://plugins.dprint.dev/test/0.1.0/schema.json",
+    );
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    environment.take_stderr_messages();
+    let schema: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
+    assert_eq!(
+      schema["definitions"]["plugin:test-plugin"]["properties"]["ending"],
+      serde_json::json!({ "$ref": "https://plugins.dprint.dev/test/0.1.0/common.json#/definitions/ending" })
+    );
+  }
+
+  #[test]
+  fn should_warn_when_referring_to_a_plugin_schema_of_another_draft() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file(
+        "https://plugins.dprint.dev/test/schema.json",
+        r#"{ "$schema": "https://json-schema.org/draft/2020-12/schema", "properties": { "ending": { "type": "string" } } }"#,
+      )
+      .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
+      .build();
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![
+        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
+        concat!(
+          "The configuration schema of the test-plugin plugin (https://plugins.dprint.dev/test/schema.json) ",
+          "is for https://json-schema.org/draft/2020-12/schema, which isn't copied into dprint's draft-07 schema, so it's referred to instead. ",
+          "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
+        )
+        .to_string(),
+      ]
+    );
+    let schema: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
+    assert_eq!(
+      schema["properties"]["test-plugin"],
+      serde_json::json!({ "$ref": "https://plugins.dprint.dev/test/schema.json" })
+    );
   }
 
   #[test]

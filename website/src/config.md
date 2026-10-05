@@ -80,6 +80,8 @@ dprint schema > dprint.schema.json
 
 In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add` and `dprint config update` regenerate it.
 
+The plugins' schemas are copied in, with their references pointed at where they're copied to (or, for other files, at their full url). dprint's schema is draft-07, so a plugin schema of another JSON schema draft (ex. 2020-12) is referred to by its url instead, which `dprint schema` warns about: editors may then report dprint's own properties of that plugin's table (ex. `associations`) as unknown.
+
 The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
 
 The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
