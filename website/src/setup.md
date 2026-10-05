@@ -99,11 +99,15 @@ Separately, dprint reads directories on several threads when discovering files i
 
 ## Stalled Plugin Setup
 
-The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
+The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds, which is also what it looks like when it gets no CPU time at all), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
+
+Each attempt also has a time limit however much CPU time it gets, of twice the CPU time all its steps may use, and all the attempts together have twice that, after which dprint gives up on the plugin. The limits grow with the plugin's size. A compile waiting for another to finish first only waits as long as that one may take, and is stopped as soon as nothing waits for it anymore.
+
+When dprint can't start that process (ex. it can't find its own executable, or the operating system refuses to [contain](#child-processes) the process), compiling the plugin fails rather than happening in the dprint process, where nothing could stop it.
 
 Process plugins are watched the same way while they start: one that hasn't reported its plugin info within 20 seconds is killed and started once more.
 
-To compile Wasm plugins inside the dprint process instead, without this supervision, set `DPRINT_WASM_COMPILE_WORKER=0`.
+To compile Wasm plugins inside the dprint process instead, without this supervision, set `DPRINT_WASM_COMPILE_WORKER=0`. A compile that hangs then hangs dprint.
 
 ## Child Processes
 
