@@ -681,16 +681,27 @@ mod test {
     }
   }
 
-  /// `kill_all_owned_children`, after which the tests that come after can
-  /// still spawn owned children.
-  #[cfg(unix)]
-  fn kill_all_owned_children_and_allow_spawning_again() {
-    kill_all_owned_children();
-    allow_spawning_again();
-  }
-
-  fn allow_spawning_again() {
-    lock_spawn_state().owned_children_killed = false;
+  /// Whether this is the process of its own the test runs in, as it calls
+  /// `kill_all_owned_children`, which would kill the owned children of the
+  /// other tests running in this one (ex. in other modules) and keep them from
+  /// spawning more. Otherwise this runs the test in one and checks it passed.
+  fn in_own_process(test_name: &str) -> bool {
+    const TEST_ENV_VAR: &str = "DPRINT_OWNED_CHILD_TEST";
+    if std::env::var(TEST_ENV_VAR).as_deref() == Ok(test_name) {
+      return true;
+    }
+    // the test's name without the crate's
+    let module_path = module_path!().split_once("::").unwrap().1;
+    let output = Command::new(std::env::current_exe().unwrap())
+      .args([&format!("{}::{}", module_path, test_name), "--exact", "--nocapture"])
+      .env(TEST_ENV_VAR, test_name)
+      .output()
+      .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{}\n{}", stdout, stderr);
+    assert!(stdout.contains("1 passed"), "{}\n{}", stdout, stderr);
+    false
   }
 
   /// The tests spawn and kill children that `kill_all_owned_children` and the
@@ -857,19 +868,23 @@ mod test {
   #[cfg(unix)]
   #[test]
   fn kills_all_owned_children() {
-    let _serial = serial();
+    if !in_own_process("kills_all_owned_children") {
+      return;
+    }
     let first = Heartbeat::new();
     let second = Heartbeat::new();
     let _first = OwnedChild::spawn(&mut first.command_starting_it()).unwrap();
     let _second = OwnedChild::spawn(&mut second.command_starting_it()).unwrap();
     assert!(first.is_beating() && second.is_beating());
-    kill_all_owned_children_and_allow_spawning_again();
+    kill_all_owned_children();
     assert!(first.stopped() && second.stopped());
   }
 
   #[test]
   fn kills_a_child_spawned_while_killing_all_owned_children() {
-    let _serial = serial();
+    if !in_own_process("kills_a_child_spawned_while_killing_all_owned_children") {
+      return;
+    }
     let heartbeat = Heartbeat::new();
     let mut command = heartbeat.command_starting_it();
     // untied, as a tied child would die with the thread that spawned it. Its
@@ -896,7 +911,6 @@ mod test {
     let was_spawned = spawning.join().unwrap().is_ok();
     // and none can be spawned after
     let spawned_after = OwnedChild::spawn(&mut heartbeat.command_starting_it()).is_ok();
-    allow_spawning_again();
     assert!(killed_before_its_group);
     assert!(!was_spawned && !spawned_after);
     // without waiting for the spawn to put it in its group
@@ -906,7 +920,9 @@ mod test {
 
   #[test]
   fn kills_all_owned_children_while_this_thread_is_creating_one() {
-    let _serial = serial();
+    if !in_own_process("kills_all_owned_children_while_this_thread_is_creating_one") {
+      return;
+    }
     let heartbeat = Heartbeat::new();
     let mut command = heartbeat.command_starting_it();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -917,7 +933,6 @@ mod test {
       let _ = sender.send(OwnedChild::spawn_untied(&mut command).is_ok());
     });
     let was_spawned = receiver.recv_timeout(Duration::from_secs(10));
-    allow_spawning_again();
     assert_eq!(was_spawned, Ok(false));
     // and the child it went on to create was killed
     assert!(heartbeat.stopped());
@@ -962,7 +977,9 @@ mod test {
   #[cfg(target_os = "linux")]
   #[test]
   fn a_tied_child_dies_with_the_thread_that_spawned_it() {
-    let _serial = serial();
+    if !in_own_process("a_tied_child_dies_with_the_thread_that_spawned_it") {
+      return;
+    }
     let sleep = |seconds: &str| {
       let mut command = Command::new("sleep");
       command.arg(seconds);
@@ -977,7 +994,7 @@ mod test {
       .unwrap();
     assert!(wait_until(|| !sleep_is_running("4356")));
     assert!(sleep_is_running("4357"));
-    kill_all_owned_children_and_allow_spawning_again();
+    kill_all_owned_children();
     assert!(wait_until(|| !sleep_is_running("4357")));
   }
 }
