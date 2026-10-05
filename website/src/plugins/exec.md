@@ -21,6 +21,7 @@ Compared to the downloaded plugin, the built-in one:
 - Kills a command that times out or is cancelled instead of leaving it running.
 - Supports a `"setupTimeout"` option (default: `300` seconds) after which a `setupCommand` is killed.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
+- Passes `{{file_path}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, where the plugin escaped them for HTML (ex. a `&` in a file path became `&amp;`). They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
 
 ### Commands in remote configuration
 
@@ -39,6 +40,8 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 ```
 
 This includes the commands in its `"overrides"`. Its `"cwd"` (the directory commands run in, which decides what a command with a relative path runs, including your local commands) is only used with `"playWithFire": true`. A remote configuration can't allow itself. When none of its commands are allowed, its exec plugin is ignored too.
+
+This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"`, `"cacheKey"`, `"timeout"` and `"setupTimeout"` are used without `"playWithFire": true`. Any other might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have, so such a command only runs with `"playWithFire": true` too.
 
 A nested configuration file with `"inherit": true` inherits the remote commands its ancestor allowed, unless it specifies `"playWithFire"` itself: then it only inherits the ones that allows.
 

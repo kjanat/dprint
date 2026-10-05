@@ -26,9 +26,6 @@ use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::PluginResolveConfigurationResult;
-use handlebars::Handlebars;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
@@ -38,6 +35,8 @@ use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
+use super::template::TemplateValues;
+use super::template::render_template;
 
 struct ChildKillOnDrop(std::process::Child);
 
@@ -489,42 +488,24 @@ where
 }
 
 fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command: &CommandConfiguration) -> Result<Vec<String>, FormatError> {
-  let mut handlebars = Handlebars::new();
-  handlebars.set_strict_mode(true);
-
-  #[derive(Clone, Serialize, Deserialize)]
-  struct TemplateVariables {
-    file_path: String,
-    line_width: u32,
-    use_tabs: bool,
-    indent_width: u8,
-    cwd: String,
-    timeout: u32,
-  }
-
-  let vars = TemplateVariables {
-    file_path: file_path.to_string_lossy().to_string(),
+  let values = TemplateValues {
+    file_path,
     line_width: config.line_width,
     use_tabs: config.use_tabs,
     indent_width: config.indent_width,
-    cwd: command.cwd.to_string_lossy().to_string(),
+    cwd: &command.cwd,
     timeout: config.timeout,
   };
-
-  // an argument can be valid template syntax yet use a variable that doesn't
-  // exist (ex. `{{filePath}}`), which strict mode only finds when rendering
+  // the configuration only has valid templates, but say what's wrong if not
   command
     .args
     .iter()
-    .map(|arg| {
-      handlebars
-        .render_template(arg, &vars)
-        .map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err)))
-    })
+    .map(|arg| render_template(arg, &values).map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err))))
     .collect()
 }
 
-#[cfg(test)]
+// the commands they run are unix ones
+#[cfg(all(test, unix))]
 #[allow(clippy::disallowed_methods)] // tests run real commands against real files
 mod test {
   use std::path::PathBuf;
@@ -559,14 +540,12 @@ mod test {
     .map_err(|err| err.to_string())
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn formats_with_stdin_and_stdout() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }));
     assert_eq!(format(&config, "hello\n", &SetupState::default()).await, Ok(Some("HELLO\n".to_string())));
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn should_error_output_empty_file() {
     // `true` exits without reading its input, which used to fail writing the
@@ -586,14 +565,22 @@ mod test {
   }
 
   #[tokio::test]
-  async fn errors_for_an_unknown_template_variable() {
-    // valid template syntax, but the variable is `file_path`
-    let config = resolve(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] }));
-    let err = format(&config, "text", &SetupState::default()).await.unwrap_err();
-    assert!(err.starts_with("Cannot substitute the variables in argument '{{filePath}}': "), "{}", err);
+  async fn passes_variables_to_the_command_as_they_are() {
+    // not escaped for HTML, like Handlebars did
+    let file_path = r#"/dir/a&b <"c"> 'd'.txt"#;
+    let config = resolve(serde_json::json!({ "commands": [{ "command": "printf %s {{file_path}}", "exts": ["txt"] }] }));
+    let formatted = format_bytes(
+      PathBuf::from(file_path),
+      b"text".to_vec(),
+      config,
+      Arc::new(NullCancellationToken),
+      &SetupState::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(formatted, Some(file_path.as_bytes().to_vec()));
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn errors_for_a_formatter_killed_by_a_signal() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "sh -c \"kill -TERM $$\"", "exts": ["txt"] }] }));
@@ -603,7 +590,6 @@ mod test {
     );
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_command_once_across_formats() {
     let dir = tempfile::tempdir().unwrap();
@@ -622,7 +608,6 @@ mod test {
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x");
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_commands_whose_arguments_only_split_differently() {
     let dir = tempfile::tempdir().unwrap();
@@ -640,7 +625,6 @@ mod test {
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.
-  #[cfg(unix)]
   fn sleep_is_running(seconds: &str) -> bool {
     let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
     String::from_utf8_lossy(&output.stdout)
@@ -648,7 +632,6 @@ mod test {
       .any(|line| line.trim() == format!("sleep {}", seconds))
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_formatter_that_times_out() {
     // a unique duration so this test finds its own process
@@ -662,7 +645,6 @@ mod test {
     assert!(!sleep_is_running("31.7"), "the formatter should have been killed");
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn times_out_a_formatter_that_never_reads_its_stdin() {
     // more than a pipe buffer, so writing it blocks until the formatter reads
@@ -674,7 +656,6 @@ mod test {
     assert!(!sleep_is_running("32.7"), "the formatter should have been killed");
   }
 
-  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_setup_command_that_times_out_and_does_not_rerun_it() {
     let config = resolve(serde_json::json!({

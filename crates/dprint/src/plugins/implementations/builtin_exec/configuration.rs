@@ -9,7 +9,6 @@ use dprint_core::configuration::get_nullable_vec;
 use dprint_core::configuration::get_unknown_property_diagnostics;
 use dprint_core::configuration::get_value;
 use globset::GlobMatcher;
-use handlebars::Handlebars;
 use serde::Serialize;
 use serde::Serializer;
 use sha2::Digest;
@@ -17,6 +16,8 @@ use sha2::Sha256;
 use std::fs::read_to_string;
 use std::path::Path;
 use std::path::PathBuf;
+
+use super::template::validate_template;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,17 +181,12 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
     return (None, diagnostics);
   }
 
-  {
-    let mut handlebars = Handlebars::new();
-    handlebars.set_strict_mode(true);
-    for arg in command.iter().skip(1) {
-      if let Err(e) = handlebars.register_template_string("tmp", arg) {
-        diagnostics.push(ConfigurationDiagnostic {
-          property_name: "command".to_string(),
-          message: format!("Invalid template: {}", e),
-        });
-      }
-      handlebars.unregister_template("tmp");
+  for arg in command.iter().skip(1) {
+    if let Err(err) = validate_template(arg) {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: "command".to_string(),
+        message: format!("Invalid template in argument '{}': {}", arg, err),
+      });
     }
   }
 
@@ -571,6 +567,23 @@ mod tests {
         property_name: "commands[0].associations".to_string(),
         message: "Expected string or array value.".to_string(),
       }],
+    );
+  }
+
+  #[test]
+  fn reports_an_unknown_template_variable_in_the_configuration() {
+    // the variable is `file_path`, which the configuration says before
+    // anything is formatted
+    let config: ConfigKeyMap = serde_json::from_value(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] })).unwrap();
+    let result = Configuration::resolve(config, &Default::default());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].property_name, "commands[0].command");
+    assert!(
+      result.diagnostics[0]
+        .message
+        .starts_with("Invalid template in argument '{{filePath}}': Unknown variable '{{filePath}}'."),
+      "{}",
+      result.diagnostics[0].message
     );
   }
 

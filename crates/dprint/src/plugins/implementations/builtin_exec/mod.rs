@@ -11,6 +11,7 @@
 mod configuration;
 mod executable;
 mod handler;
+mod template;
 
 use crate::environment::Environment;
 use crate::plugins::Plugin;

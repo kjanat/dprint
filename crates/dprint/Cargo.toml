@@ -25,7 +25,6 @@ dunce = "=1.0.4"
 flate2 = "=1.1.9"
 fs3 = "=0.5.0"
 globset = "=0.4.18"
-handlebars = "=5.1.2"
 ignore = "=0.4.23"
 ipnet = "2.11.0"
 jsonc-parser = { version = "=0.32.4", features = ["cst", "preserve_order"] }
