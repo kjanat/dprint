@@ -636,8 +636,8 @@ impl Environment for RealEnvironment {
     self.logger.log_level()
   }
 
-  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8]) -> Result<CompilationResult> {
-    crate::plugins::compile_wasm_supervised(self, plugin_display, wasm_bytes)
+  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+    crate::plugins::compile_wasm_supervised(self, plugin_display, wasm_bytes, control)
   }
 
   fn wasm_cache_key(&self) -> String {

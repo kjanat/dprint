@@ -22,6 +22,7 @@ pub use types::*;
 
 pub use implementations::WASM_COMPILE_WORKER_ARG;
 pub use implementations::WASM_PLUGIN_THREAD_STACK_SIZE;
+pub use implementations::WasmCompileControl;
 #[cfg(test)]
 pub use implementations::compile_wasm;
 pub use implementations::compile_wasm_supervised;
