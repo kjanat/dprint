@@ -372,7 +372,6 @@ mod sys {
     }
 
     /// Whether it exited, without reaping it.
-    #[cfg(test)]
     pub fn has_exited(&self) -> bool {
       // SAFETY: an all zero siginfo_t is valid, and is what's left when there
       // was nothing to report
@@ -398,15 +397,26 @@ mod sys {
     /// process in it that this process may not signal), in which case they
     /// may go on running.
     pub fn kill(&self) -> io::Result<()> {
+      let Err(err) = self.signal_all() else {
+        return Ok(());
+      };
+      match err.raw_os_error() {
+        // no process left in it is as killed as it gets
+        Some(libc::ESRCH) => Ok(()),
+        // which macOS reports as a refusal when there's none left that can be
+        // signaled: the child that exited but isn't reaped yet doesn't count,
+        // and its group is still its own (and Linux signals it fine)
+        Some(libc::EPERM) if CreatedChild(self.0).has_exited() => Ok(()),
+        _ => Err(err),
+      }
+    }
+
+    fn signal_all(&self) -> io::Result<()> {
       #[cfg(test)]
       super::test::fail_killing_group()?;
       // SAFETY: a plain system call
       if unsafe { libc::killpg(self.0, libc::SIGKILL) } == -1 {
-        let err = io::Error::last_os_error();
-        // no process left in it is as killed as it gets
-        if err.raw_os_error() != Some(libc::ESRCH) {
-          return Err(err);
-        }
+        return Err(io::Error::last_os_error());
       }
       Ok(())
     }
@@ -709,6 +719,9 @@ mod test {
 
   pub fn fail_killing_group() -> io::Result<()> {
     if FAIL_KILLING_GROUP.with(|fail| fail.get()) {
+      #[cfg(unix)]
+      return Err(io::Error::from_raw_os_error(libc::EPERM));
+      #[cfg(windows)]
       return Err(io::Error::from(io::ErrorKind::PermissionDenied));
     }
     Ok(())
@@ -720,19 +733,40 @@ mod test {
     let heartbeat = Heartbeat::new();
     let mut child = OwnedChild::spawn(&mut heartbeat.command_starting_it()).unwrap();
     assert!(heartbeat.is_beating());
-    FAIL_KILLING_GROUP.with(|fail| fail.set(true));
-    let start = Instant::now();
-    let err = child.kill().unwrap_err();
-    FAIL_KILLING_GROUP.with(|fail| fail.set(false));
-    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
-    // right away, rather than waiting for a child that wasn't killed
-    assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+    // on a thread of its own, so that waiting for the child that wasn't
+    // killed (which lives for minutes) fails this rather than hangs it
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+      FAIL_KILLING_GROUP.with(|fail| fail.set(true));
+      let result = child.kill();
+      let _ = sender.send((child, result));
+    });
+    let (mut child, result) = receiver
+      .recv_timeout(Duration::from_secs(5))
+      .expect("killing the child waited for it rather than saying it couldn't");
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     assert!(heartbeat.is_beating());
     assert!(child.try_wait().unwrap().is_none());
     // the group is kept, so killing it again can work
     child.kill().unwrap();
     assert!(child.try_wait().unwrap().is_some());
     assert!(heartbeat.stopped());
+  }
+
+  /// On macOS, killing a group with no process left in it that can be
+  /// signaled is refused (EPERM) rather than not found (ESRCH), which is how
+  /// an exited child's group is until the child is reaped.
+  #[cfg(unix)]
+  #[test]
+  fn kills_an_exited_childs_group_although_the_os_refuses_to_signal_it() {
+    let _serial = serial();
+    let mut child = OwnedChild::spawn(Command::new("sh").args(["-c", "exit 3"])).unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(3));
+    FAIL_KILLING_GROUP.with(|fail| fail.set(true));
+    let result = child.kill();
+    FAIL_KILLING_GROUP.with(|fail| fail.set(false));
+    result.unwrap();
+    assert_eq!(child.try_wait().unwrap().and_then(|status| status.code()), Some(3));
   }
 
   /// Whether this is the process of its own the test runs in, as it calls
