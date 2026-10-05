@@ -42,9 +42,9 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 
 This includes the commands in its `"overrides"`. Its `"cwd"` (the directory commands run in, which decides what a command with a relative path runs, including your local commands) is only used with `"playWithFire": true`. A remote configuration can't allow itself. When none of its commands are allowed, its exec plugin is ignored too.
 
-This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"`, `"cacheKey"`, `"timeout"` and `"setupTimeout"` are used without `"playWithFire": true`. Any other might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have, so such a command only runs with `"playWithFire": true` too.
+This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"`, `"cacheKey"`, `"timeout"` and `"setupTimeout"` are used without `"playWithFire": true`. Any other might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have, so such a command only runs with `"playWithFire": true` too. Likewise, the program a command runs is read the way 0.7.3 reads it, so a list of programs only applies when the exec plugin that runs the commands is 0.7.3 (or the remote configuration's): with another version, or one installed in `node_modules` without a version, remote commands only run with `"playWithFire": true`.
 
-A nested configuration file with `"inherit": true` inherits the remote commands its ancestor allowed, unless it specifies `"playWithFire"` itself: then it only inherits the ones that allows.
+A nested configuration file with `"inherit": true` inherits the remote commands its ancestor allowed, unless it specifies `"playWithFire"` itself: then it only inherits the ones that allows, and what its ancestor's local configuration files specified in their place (ex. their own `"commands"` or `"cwd"`).
 
 ## Install, Setup, and Configuration
 

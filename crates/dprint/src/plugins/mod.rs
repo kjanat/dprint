@@ -28,6 +28,7 @@ pub use implementations::compile_wasm_supervised;
 pub use implementations::exec_command_program;
 pub use implementations::is_builtin_exec_reference;
 pub use implementations::is_exec_plugin_reference;
+pub use implementations::knows_exec_plugin_commands;
 pub use implementations::run_wasm_compile_worker;
 pub use implementations::wasm_precompile_compatibility_hash;
 pub use name_resolution::PluginNameResolutionMaps;

@@ -250,14 +250,20 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
 /// merged with the nested config winning on conflicts.
 ///
 /// Note: `includes` are not inherited.
-pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Result<ResolvedConfig> {
-  // what remote configuration added to the ancestor's exec configuration is
-  // only inherited as far as the nested config's own "playWithFire" allows
+pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig, environment: &impl Environment) -> Result<ResolvedConfig> {
   let mut parent_config_map = parent.config_map.clone();
   let mut parent_plugins = parent.plugins.clone();
-  let inherited_remote_exec = parent
-    .remote_exec
-    .filter_inherited(&config.remote_exec, &mut parent_config_map, &mut parent_plugins);
+  // what remote configuration added to the ancestor's exec configuration is
+  // only inherited as far as the nested config's own "playWithFire" allows,
+  // so the exec configuration is made again from what each specified, once
+  // the rest is merged
+  config.remote_exec.inherit(
+    &parent.remote_exec,
+    &mut config.config_map,
+    &mut config.plugins,
+    &mut parent_config_map,
+    &mut parent_plugins,
+  );
 
   // plugins specified in the nested config have precedence over the ancestor's
   config.plugins.extend(parent_plugins);
@@ -277,8 +283,7 @@ pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Re
   }
 
   merge_config_map_into(&mut config.config_map, parent_config_map)?;
-  config.remote_exec.inherit(inherited_remote_exec);
-  config.remote_exec.remove_unused_plugin(&config.config_map, &mut config.plugins);
+  config.remote_exec.make_inherited(&mut config.config_map, &mut config.plugins, environment)?;
 
   Ok(config)
 }
@@ -420,7 +425,7 @@ async fn handle_config_file<TEnvironment: Environment>(
 /// This is used both when resolving `extends` (the extended config is the lower
 /// precedence `source`) and when a nested config `inherit`s its ancestor (the
 /// ancestor config is the lower precedence `source`).
-fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -> Result<()> {
+pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -> Result<()> {
   for (key, value) in source {
     match value {
       ConfigMapValue::KeyValue(key_value) => {
@@ -808,7 +813,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let parent = resolve_local_config("/a/dprint.json", &environment).await;
       let child = resolve_local_config("/a/b/dprint.json", &environment).await;
-      let result = inherit_config(child, &parent).unwrap();
+      let result = inherit_config(child, &parent, &TestEnvironment::new()).unwrap();
       assert_eq!(
         result.config_map,
         ConfigMap::from([(
@@ -2336,7 +2341,7 @@ mod tests {
       remote_exec: Default::default(),
     };
 
-    let result = inherit_config(child, &parent).unwrap();
+    let result = inherit_config(child, &parent, &TestEnvironment::new()).unwrap();
     // child plugins first, then ancestor's, with duplicates removed
     assert_eq!(
       result.plugins,
@@ -2473,7 +2478,7 @@ mod tests {
       remote_exec: Default::default(),
     };
 
-    let err = inherit_config(child, &parent).err().unwrap();
+    let err = inherit_config(child, &parent, &TestEnvironment::new()).err().unwrap();
     assert_eq!(
       err.to_string(),
       concat!(
@@ -2953,7 +2958,7 @@ mod tests {
         environment.clone().run_in_runtime(async move {
           let ancestor = resolve_local_config("/dprint.json", &environment).await;
           let nested = resolve_local_config("/sub/dprint.json", &environment).await;
-          let result = inherit_config(nested, &ancestor).unwrap();
+          let result = inherit_config(nested, &ancestor, &environment).unwrap();
           (exec_of(&result), result.plugins.iter().map(|plugin| plugin.to_string()).collect::<Vec<_>>())
         })
       };
@@ -2972,6 +2977,170 @@ mod tests {
       assert_eq!(exec.properties.commands, vec!["tombi format -".to_string()]);
       assert_eq!(exec.properties.other_keys, Vec::<String>::new());
       assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
+    }
+
+    /// Resolves `/sub/dprint.json` (`nested`), which inherits `/dprint.json`
+    /// (`ancestor`), which may extend `REMOTE_URL` and `./base.json`. Gives
+    /// what the tests look at and the notes about the nested configuration.
+    fn resolve_inheriting(ancestor: &str, base: &str, remote: &str, nested: &str) -> Resolved {
+      let environment = TestEnvironment::new();
+      environment.write_file("/dprint.json", ancestor).unwrap();
+      environment.write_file("/base.json", base).unwrap();
+      environment.mk_dir_all("/sub").unwrap();
+      environment.write_file("/sub/dprint.json", nested).unwrap();
+      environment.add_remote_file_bytes(REMOTE_URL, remote.as_bytes().to_vec());
+      environment.clone().run_in_runtime(async move {
+        let ancestor = resolve_local_config("/dprint.json", &environment).await;
+        environment.take_stderr_messages();
+        let nested = resolve_local_config("/sub/dprint.json", &environment).await;
+        let result = inherit_config(nested, &ancestor, &environment).unwrap();
+        Resolved {
+          plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
+          exec: exec_of(&result),
+          messages: environment.take_stderr_messages(),
+        }
+      })
+    }
+
+    fn override_config(commands: &[&str]) -> String {
+      let commands = commands
+        .iter()
+        .map(|command| format!(r#"{{ "command": "{}", "exts": ["txt"] }}"#, command))
+        .collect::<Vec<_>>();
+      format!(r#"{{ "files": "**/*.txt", "commands": [{}] }}"#, commands.join(", "))
+    }
+
+    #[test]
+    fn inherits_a_local_override_identical_to_a_remote_one_without_it() {
+      // the base has the same override as the remote configuration, followed
+      // by another one for the same files, which the remote one comes after
+      let ancestor = format!(r#"{{ "extends": ["{}", "./base.json"], "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL);
+      let base = format!(
+        r#"{{ "exec": {{ "overrides": [{}, {}] }} }}"#,
+        override_config(&["tombi format -"]),
+        override_config(&["local"])
+      );
+      let remote = format!(r#"{{ "exec": {{ "overrides": [{}] }} }}"#, override_config(&["tombi format -"]));
+      let inherit = |nested_play_with_fire: &str| {
+        resolve_inheriting(
+          &ancestor,
+          &base,
+          &remote,
+          &format!(r#"{{ "inherit": true, "exec": {{ "playWithFire": {} }} }}"#, nested_play_with_fire),
+        )
+      };
+      // the ancestor's own, which the nested configuration also allows
+      assert_eq!(
+        inherit("true").exec.overrides,
+        vec![
+          ExecOverride::new("**/*.txt", &["tombi format -"], None),
+          ExecOverride::new("**/*.txt", &["local"], None),
+          ExecOverride::new("**/*.txt", &["tombi format -"], None),
+        ]
+      );
+      // without the remote one, so the last override for the files is the
+      // local one rather than the remote one
+      assert_eq!(
+        inherit("false").exec.overrides,
+        vec![
+          ExecOverride::new("**/*.txt", &["tombi format -"], None),
+          ExecOverride::new("**/*.txt", &["local"], None),
+        ]
+      );
+    }
+
+    #[test]
+    fn inherits_the_local_values_a_remote_one_the_nested_configuration_doesnt_allow_replaced() {
+      let ancestor = format!(r#"{{ "extends": ["{}", "./base.json"], "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL);
+      let base = r#"{ "exec": { "cwd": "/base-cwd", "commands": [{ "command": "local-base", "exts": ["md"] }] } }"#;
+      let remote =
+        r#"{ "exec": { "cwd": "/remote-cwd", "commands": [{ "command": "tombi format -", "exts": ["toml"] }, { "command": "evil", "exts": ["txt"] }] } }"#;
+      let inherit = |nested_play_with_fire: &str| {
+        resolve_inheriting(
+          &ancestor,
+          base,
+          remote,
+          &format!(r#"{{ "inherit": true, "exec": {{ "playWithFire": {} }} }}"#, nested_play_with_fire),
+        )
+        .exec
+      };
+      assert_eq!(
+        inherit("true"),
+        Exec {
+          properties: ExecProperties::new(&["tombi format -", "evil"], Some("/remote-cwd")),
+          overrides: Vec::new(),
+        }
+      );
+      // the remote commands it allows, with the base's working directory
+      assert_eq!(
+        inherit(r#"["tombi"]"#),
+        Exec {
+          properties: ExecProperties::new(&["tombi format -"], Some("/base-cwd")),
+          overrides: Vec::new(),
+        }
+      );
+      // the base's commands, rather than none
+      assert_eq!(
+        inherit("false"),
+        Exec {
+          properties: ExecProperties::new(&["local-base"], Some("/base-cwd")),
+          overrides: Vec::new(),
+        }
+      );
+    }
+
+    const UNCHECKABLE_NOTE: &str = concat!(
+      "Note: The exec commands in remote configuration are ignored for security reasons, as the programs they run are only ",
+      "checked against \"playWithFire\" for the exec plugin 0.7.3, and this configuration uses npm:@dprint/exec@0.8.0/plugin.json. ",
+      "To run them, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+    );
+
+    #[test]
+    fn only_checks_the_programs_of_remote_commands_for_the_exec_plugin_it_knows() {
+      let resolve_using = |plugin: &str, play_with_fire: &str| {
+        resolve(
+          &format!(
+            r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": {} }} }}"#,
+            REMOTE_URL, plugin, play_with_fire
+          ),
+          &remote_config(""),
+        )
+        .unwrap()
+      };
+      // which reads its commands like the exec plugin 0.7.3
+      let result = resolve_using(EXEC_PLUGIN, r#"["tombi"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
+
+      // another version might read them another way
+      for plugin in ["npm:@dprint/exec@0.8.0/plugin.json", "npm:@dprint/exec"] {
+        let result = resolve_using(plugin, r#"["tombi"]"#);
+        assert_eq!(result.exec.properties.commands, Vec::<String>::new(), "{}", plugin);
+        assert_eq!(result.plugins, vec![plugin.to_string()]);
+      }
+      let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", r#"["tombi"]"#);
+      assert_eq!(result.messages, vec![UNCHECKABLE_NOTE.to_string()]);
+      // which "playWithFire": true doesn't need to
+      let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", "true");
+      assert_eq!(result.exec.properties.commands, ALL_REMOTE_COMMANDS.to_vec());
+    }
+
+    #[test]
+    fn only_checks_the_programs_of_inherited_remote_commands_for_the_exec_plugin_it_knows() {
+      // the ancestor uses another version of the exec plugin, and the nested
+      // configuration only allows some programs
+      let ancestor = format!(
+        r#"{{ "extends": "{}", "plugins": ["npm:@dprint/exec@0.8.0/plugin.json"], "exec": {{ "playWithFire": true }} }}"#,
+        REMOTE_URL
+      );
+      let result = resolve_inheriting(
+        &ancestor,
+        "{}",
+        &remote_config(""),
+        r#"{ "inherit": true, "exec": { "playWithFire": ["tombi"] } }"#,
+      );
+      assert_eq!(result.exec, Exec::default());
+      assert_eq!(result.plugins, vec!["npm:@dprint/exec@0.8.0/plugin.json".to_string()]);
+      assert_eq!(result.messages, vec![UNCHECKABLE_NOTE.to_string()]);
     }
 
     /// A remote configuration with exec properties the exec plugin 0.7.3
