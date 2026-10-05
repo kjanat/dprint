@@ -10,6 +10,10 @@
 //! That includes the commands in its overrides. Its working directory (`cwd`)
 //! decides what a command with a relative path runs, local commands included,
 //! so it's only used with `"playWithFire": true`.
+//!
+//! A nested configuration that inherits its ancestor's configuration and
+//! specifies `"playWithFire"` itself only runs the remote commands it inherits
+//! that its own `"playWithFire"` allows.
 
 use anyhow::Result;
 use anyhow::bail;
@@ -36,8 +40,9 @@ const CWD_KEY: &str = "cwd";
 #[derive(Default)]
 pub struct RemoteExec {
   /// The commands of the highest precedence remote configuration that has
-  /// some, when no higher precedence configuration has any.
-  commands: Option<RemoteValue<Vec<ConfigKeyValue>>>,
+  /// some, when no higher precedence configuration has any. Even when they
+  /// aren't an array, as they still take precedence over lower ones.
+  commands: Option<RemoteValue<ConfigKeyValue>>,
   /// The working directory of the commands, taken like `commands`. It decides
   /// what a command with a relative path runs, including local commands.
   cwd: Option<RemoteValue<ConfigKeyValue>>,
@@ -62,10 +67,29 @@ struct RemoteOverrides {
   source: String,
 }
 
+/// The remote commands `"playWithFire"` allows.
+#[derive(Clone, Debug, PartialEq)]
 enum Policy {
   None,
   AnyProgram,
   Programs(Vec<String>),
+}
+
+/// What remote configuration added to a resolved exec configuration, and the
+/// `"playWithFire"` that allowed it. A nested configuration that inherits the
+/// resolved one applies its own `"playWithFire"` to what it inherits of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RemoteExecProvenance {
+  /// What local configuration files specified for `"playWithFire"`, if they did.
+  policy: Option<Policy>,
+  /// The remote commands, as they were added.
+  commands: Option<ConfigKeyValue>,
+  /// The remote working directory, as it was added.
+  cwd: Option<ConfigKeyValue>,
+  /// The remote overrides, as they were added.
+  overrides: Vec<RawPluginConfigOverride>,
+  /// The remote exec plugin, when it was added.
+  plugin: Option<PluginSourceReference>,
 }
 
 /// The remote commands a policy ignored, by the configuration they're from.
@@ -138,7 +162,6 @@ impl RemoteExec {
       if let Some(commands) = exec_config.properties.shift_remove(COMMANDS_KEY)
         && self.commands.is_none()
         && !has_higher_precedence(COMMANDS_KEY)
-        && let ConfigKeyValue::Array(commands) = commands
       {
         self.commands = Some(RemoteValue {
           value: commands,
@@ -168,25 +191,31 @@ impl RemoteExec {
   }
 
   /// Adds the remote exec commands, working directory, overrides and plugin
-  /// references the local configuration allows to the resolved configuration.
-  pub fn apply(self, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>, environment: &impl Environment) -> Result<()> {
-    let policy = take_policy(config_map)?;
+  /// references the local configuration allows to the resolved configuration,
+  /// and says what was added.
+  pub fn apply(self, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>, environment: &impl Environment) -> Result<RemoteExecProvenance> {
+    let specified_policy = take_policy(config_map)?;
+    let policy = specified_policy.clone().unwrap_or(Policy::None);
+    let mut provenance = RemoteExecProvenance {
+      policy: specified_policy,
+      ..Default::default()
+    };
     let mut ignored_commands = IgnoredCommands::default();
     let mut ignored_cwd_sources = Vec::new();
 
-    if let Some(remote) = self.commands {
-      let commands = allowed_commands(remote.value, &policy, &remote.source, &mut ignored_commands);
-      if !commands.is_empty()
-        && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
-      {
-        // these have precedence over any commands of lower precedence local configuration
-        exec_config.properties.insert(COMMANDS_KEY.to_string(), ConfigKeyValue::Array(commands));
-      }
+    if let Some(remote) = self.commands
+      && let Some(commands) = allowed_commands_value(remote.value, &policy, &remote.source, &mut ignored_commands)
+      && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
+    {
+      // these have precedence over any commands of lower precedence local configuration
+      exec_config.properties.insert(COMMANDS_KEY.to_string(), commands.clone());
+      provenance.commands = Some(commands);
     }
     if let Some(remote) = self.cwd {
       if matches!(policy, Policy::AnyProgram) {
         if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
-          exec_config.properties.insert(CWD_KEY.to_string(), remote.value);
+          exec_config.properties.insert(CWD_KEY.to_string(), remote.value.clone());
+          provenance.cwd = Some(remote.value);
         }
       } else {
         ignored_cwd_sources.push(remote.source);
@@ -198,34 +227,12 @@ impl RemoteExec {
       let overrides = remote
         .overrides
         .into_iter()
-        .filter_map(|mut override_config| {
-          if let Some(commands) = override_config.properties.shift_remove(COMMANDS_KEY) {
-            let commands = match (commands, &policy) {
-              // as is, so the plugin reports what's wrong with it
-              (commands, Policy::AnyProgram) => Some(commands),
-              (ConfigKeyValue::Array(commands), _) => {
-                let commands = allowed_commands(commands, &policy, &remote.source, &mut ignored_commands);
-                (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
-              }
-              _ => None,
-            };
-            if let Some(commands) = commands {
-              override_config.properties.insert(COMMANDS_KEY.to_string(), commands);
-            }
-          }
-          if let Some(cwd) = override_config.properties.shift_remove(CWD_KEY) {
-            if matches!(policy, Policy::AnyProgram) {
-              override_config.properties.insert(CWD_KEY.to_string(), cwd);
-            } else if !ignored_cwd_sources.contains(&remote.source) {
-              ignored_cwd_sources.push(remote.source.clone());
-            }
-          }
-          (!override_config.properties.is_empty()).then_some(override_config)
-        })
+        .filter_map(|override_config| allowed_override(override_config, &policy, &remote.source, &mut ignored_commands, &mut ignored_cwd_sources))
         .collect::<Vec<_>>();
       if overrides.is_empty() {
         continue;
       }
+      provenance.overrides.extend(overrides.iter().cloned());
       let exec_config = config_map
         .entry(EXEC_CONFIG_KEY.to_string())
         .or_insert_with(|| ConfigMapValue::PluginConfig(Default::default()));
@@ -287,11 +294,158 @@ impl RemoteExec {
           ),
           PLAY_WITH_FIRE_KEY,
         );
+      } else if !has_commands(config_map) {
+        // without any, its configuration would only be an error
+        log_warn!(
+          environment,
+          "Note: The exec plugin in remote configuration is ignored, as none of the exec commands are allowed by \"{}\".",
+          PLAY_WITH_FIRE_KEY,
+        );
       } else {
-        plugins.extend(self.plugins.into_iter().next());
+        provenance.plugin = self.plugins.into_iter().next();
+        plugins.extend(provenance.plugin.clone());
       }
     }
-    Ok(())
+    Ok(provenance)
+  }
+}
+
+impl RemoteExecProvenance {
+  /// Applies a nested configuration's own `"playWithFire"` to what remote
+  /// configuration added to the configuration it inherits (`config_map` and
+  /// `plugins`), and says what of that is left.
+  pub fn filter_inherited(&self, nested: &RemoteExecProvenance, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>) -> RemoteExecProvenance {
+    let Some(policy) = &nested.policy else {
+      // the nested configuration goes by what its ancestor allowed
+      return self.clone();
+    };
+    let mut left = RemoteExecProvenance {
+      policy: self.policy.clone(),
+      ..Default::default()
+    };
+    // what's ignored here was already noted for the ancestor
+    let mut ignored_commands = IgnoredCommands::default();
+    let mut ignored_cwd_sources = Vec::new();
+    if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
+      // the remote values are found by what they are, which is what local
+      // values of higher precedence would have replaced
+      if let Some(commands) = &self.commands
+        && exec_config.properties.get(COMMANDS_KEY) == Some(commands)
+      {
+        exec_config.properties.shift_remove(COMMANDS_KEY);
+        if let Some(commands) = allowed_commands_value(commands.clone(), policy, "", &mut ignored_commands) {
+          exec_config.properties.insert(COMMANDS_KEY.to_string(), commands.clone());
+          left.commands = Some(commands);
+        }
+      }
+      if let Some(cwd) = &self.cwd
+        && exec_config.properties.get(CWD_KEY) == Some(cwd)
+      {
+        if matches!(policy, Policy::AnyProgram) {
+          left.cwd = Some(cwd.clone());
+        } else {
+          exec_config.properties.shift_remove(CWD_KEY);
+        }
+      }
+      for override_config in &self.overrides {
+        let Some(index) = exec_config.overrides.iter().position(|existing| existing == override_config) else {
+          continue;
+        };
+        match allowed_override(override_config.clone(), policy, "", &mut ignored_commands, &mut ignored_cwd_sources) {
+          Some(override_config) => {
+            exec_config.overrides[index] = override_config.clone();
+            left.overrides.push(override_config);
+          }
+          None => {
+            exec_config.overrides.remove(index);
+          }
+        }
+      }
+    }
+    if let Some(plugin) = &self.plugin
+      && let Some(index) = plugins.iter().position(|existing| existing == plugin)
+    {
+      if matches!(policy, Policy::None) {
+        plugins.remove(index);
+      } else {
+        left.plugin = Some(plugin.clone());
+      }
+    }
+    left
+  }
+
+  /// Adds what a nested configuration inherits (see `filter_inherited`).
+  pub fn inherit(&mut self, inherited: RemoteExecProvenance) {
+    if self.policy.is_none() {
+      self.policy = inherited.policy;
+    }
+    if self.commands.is_none() {
+      self.commands = inherited.commands;
+    }
+    if self.cwd.is_none() {
+      self.cwd = inherited.cwd;
+    }
+    self.overrides.extend(inherited.overrides);
+    if self.plugin.is_none() {
+      self.plugin = inherited.plugin;
+    }
+  }
+
+  /// Leaves out the remote exec plugin a nested configuration inherited when
+  /// none of the commands are left for it to run.
+  pub fn remove_unused_plugin(&mut self, config_map: &ConfigMap, plugins: &mut Vec<PluginSourceReference>) {
+    if let Some(plugin) = &self.plugin
+      && !has_commands(config_map)
+    {
+      plugins.retain(|existing| existing != plugin);
+      self.plugin = None;
+    }
+  }
+}
+
+/// Whether the exec configuration has commands.
+fn has_commands(config_map: &ConfigMap) -> bool {
+  matches!(config_map.get(EXEC_CONFIG_KEY), Some(ConfigMapValue::PluginConfig(exec_config)) if exec_config.properties.contains_key(COMMANDS_KEY))
+}
+
+/// A remote override with what the policy allows of its commands and working
+/// directory, or `None` when nothing is left of it.
+fn allowed_override(
+  mut override_config: RawPluginConfigOverride,
+  policy: &Policy,
+  source: &str,
+  ignored_commands: &mut IgnoredCommands,
+  ignored_cwd_sources: &mut Vec<String>,
+) -> Option<RawPluginConfigOverride> {
+  if let Some(commands) = override_config.properties.shift_remove(COMMANDS_KEY)
+    && let Some(commands) = allowed_commands_value(commands, policy, source, ignored_commands)
+  {
+    override_config.properties.insert(COMMANDS_KEY.to_string(), commands);
+  }
+  if let Some(cwd) = override_config.properties.shift_remove(CWD_KEY) {
+    if matches!(policy, Policy::AnyProgram) {
+      override_config.properties.insert(CWD_KEY.to_string(), cwd);
+    } else if !ignored_cwd_sources.iter().any(|ignored| ignored == source) {
+      ignored_cwd_sources.push(source.to_string());
+    }
+  }
+  (!override_config.properties.is_empty()).then_some(override_config)
+}
+
+/// The remote `commands` value the policy allows, if any. A value that isn't
+/// an array runs nothing, so unless remote commands are ignored altogether, it
+/// stays for the exec plugin to report what's wrong with it.
+fn allowed_commands_value(commands: ConfigKeyValue, policy: &Policy, source: &str, ignored: &mut IgnoredCommands) -> Option<ConfigKeyValue> {
+  match (commands, policy) {
+    (ConfigKeyValue::Array(commands), _) => {
+      let commands = allowed_commands(commands, policy, source, ignored);
+      (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
+    }
+    (_, Policy::None) => {
+      ignored.add(source, 1, []);
+      None
+    }
+    (commands, _) => Some(commands),
   }
 }
 
@@ -321,13 +475,14 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
 }
 
 /// Takes the policy out of the exec configuration, which by now only has what
-/// local configuration files specified.
-fn take_policy(config_map: &mut ConfigMap) -> Result<Policy> {
+/// local configuration files specified. `None` when they didn't specify one.
+fn take_policy(config_map: &mut ConfigMap) -> Result<Option<Policy>> {
   let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) else {
-    return Ok(Policy::None);
+    return Ok(None);
   };
-  Ok(match exec_config.properties.shift_remove(PLAY_WITH_FIRE_KEY) {
-    None | Some(ConfigKeyValue::Bool(false)) => Policy::None,
+  Ok(Some(match exec_config.properties.shift_remove(PLAY_WITH_FIRE_KEY) {
+    None => return Ok(None),
+    Some(ConfigKeyValue::Bool(false)) => Policy::None,
     Some(ConfigKeyValue::Bool(true)) => Policy::AnyProgram,
     Some(ConfigKeyValue::Array(values)) => Policy::Programs(
       values
@@ -339,7 +494,7 @@ fn take_policy(config_map: &mut ConfigMap) -> Result<Policy> {
         .collect::<Result<_>>()?,
     ),
     Some(_) => bail!("Expected \"exec.{}\" to be true, false, or an array of programs.", PLAY_WITH_FIRE_KEY),
-  })
+  }))
 }
 
 /// The programs a command object runs: its command and its setup command.

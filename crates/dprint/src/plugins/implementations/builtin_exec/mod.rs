@@ -28,6 +28,8 @@ pub const EXEC_PLUGIN_VERSION: &str = "0.7.3";
 /// release it was built from. A version is only added here together with
 /// tests that the built-in exec handles its configuration the same way.
 const SERVED_EXEC_PLUGIN_VERSIONS: &[&str] = &[EXEC_PLUGIN_VERSION];
+/// The file of the exec process plugin in its npm package.
+const EXEC_PLUGIN_NPM_FILE: &str = "plugin.json";
 /// Set to `0` to download and run the exec process plugin instead.
 const BUILTIN_EXEC_ENV_VAR: &str = "DPRINT_BUILTIN_EXEC";
 
@@ -85,8 +87,12 @@ pub fn exec_command_program(command: &str) -> Option<String> {
 fn exec_plugin_reference(reference: &PluginSourceReference) -> Option<Option<&str>> {
   match &reference.path_source {
     // ex. npm:@dprint/exec@0.7.3/plugin.json, or without a version for the one
-    // installed in node_modules
-    PathSource::Npm(npm) => (npm.specifier.name == "@dprint/exec").then_some(npm.specifier.version.as_deref()),
+    // installed in node_modules. Only the exec process plugin's file
+    // (plugin.json) can be served built in: any other file in the package is
+    // resolved as asked, so a wrong path is reported rather than replaced.
+    PathSource::Npm(npm) => {
+      (npm.specifier.name == "@dprint/exec").then(|| npm.specifier.version.as_deref().filter(|_| npm.specifier.path == EXEC_PLUGIN_NPM_FILE))
+    }
     PathSource::Remote(remote) => {
       let path = remote.url.path();
       match remote.url.host_str() {
@@ -177,6 +183,10 @@ mod test {
     assert!(!is_builtin(
       "https://github.com/dprint/dprint-plugin-exec/releases/download/0.5.0/plugin.json@abc"
     ));
+    // and other files of the npm package, which are resolved as asked
+    assert!(!is_builtin("npm:@dprint/exec@0.7.3/alternate.json@abc"));
+    assert!(!is_builtin("npm:@dprint/exec@0.7.3/plugin.wasm@abc"));
+    assert!(!is_builtin("npm:@dprint/exec@0.7.3"));
     // and so are references that don't name a version
     assert!(!is_builtin("npm:@dprint/exec"));
     assert!(!is_builtin("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json"));
