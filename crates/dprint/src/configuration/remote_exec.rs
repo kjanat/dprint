@@ -23,6 +23,7 @@ use super::ConfigMap;
 use super::ConfigMapValue;
 use super::PluginConfiguration;
 use super::RawPluginConfigOverride;
+use super::ValueOrigin;
 use crate::environment::Environment;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_command_program;
@@ -178,8 +179,12 @@ impl RemoteExec {
         });
       }
       if !exec_config.overrides.is_empty() {
+        let mut overrides = std::mem::take(&mut exec_config.overrides);
+        for override_config in &mut overrides {
+          override_config.origin = ValueOrigin(Some(source.clone()));
+        }
         self.overrides.push(RemoteOverrides {
-          overrides: std::mem::take(&mut exec_config.overrides),
+          overrides,
           higher_precedence_count: resolved_exec_config.map(|exec_config| exec_config.overrides.len()).unwrap_or(0),
           source: source.clone(),
         });

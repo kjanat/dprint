@@ -2558,6 +2558,37 @@ text2"
   }
 
   #[test]
+  fn should_say_which_file_an_override_config_diagnostic_is_in() {
+    // overrides in both files with the same property, each from its own file
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#)
+          .add_config_section("test-plugin", r#"{ "overrides": [{ "files": "**/a.txt", "non-existent": 1 }] }"#);
+      })
+      .write_file(
+        "/base.json",
+        r#"{ "test-plugin": { "overrides": [{ "files": "**/b.txt", "non-existent": 2 }] } }"#,
+      )
+      .write_file("/a.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 2 errors formatting.");
+    let mut messages = environment.take_stderr_messages();
+    messages.sort();
+    assert_eq!(
+      messages,
+      vec![
+        "[test-plugin]: Error initializing from configuration file. Had 2 diagnostic(s).",
+        // the one in the configuration file being used doesn't say so
+        "[test-plugin]: Unknown property in configuration (non-existent)",
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /base.json",
+      ]
+    );
+  }
+
+  #[test]
   fn should_say_which_file_an_inherited_plugin_config_diagnostic_is_in() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
       .with_default_config(|c| {

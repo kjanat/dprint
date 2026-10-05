@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -18,6 +19,7 @@ use crate::utils::ShowConfirmStrategy;
 use crate::utils::resolve_path_source_to_file_with_cache;
 
 use super::ConfigMap;
+use super::ConfigMapValue;
 use super::ConfigSettings;
 use super::ExecutionPolicy;
 use super::FileRouting;
@@ -285,6 +287,13 @@ impl CollectedLayer {
   fn record_property_origins(&mut self) {
     let plugins = &mut self.settings.plugins;
     plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin.source);
+    for value in plugins.config.values_mut() {
+      if let ConfigMapValue::PluginConfig(plugin_config) = value {
+        for override_config in &mut plugin_config.overrides {
+          override_config.origin.0.get_or_insert_with(|| self.origin.source.clone());
+        }
+      }
+    }
   }
 }
 
@@ -347,11 +356,15 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
   let mut pending = Vec::new();
   push_references(&mut pending, &origin, directives.extends);
   let mut collected_sources = HashSet::from([origin.source.clone()]);
+  // where each reference that was read went, which differs for a redirect
+  let mut read_targets = HashMap::<PathSource, PathSource>::new();
   let mut layers = vec![CollectedLayer { origin, settings }];
 
   while let Some(PendingReference { reference, referrer }) = pending.pop() {
-    ensure_not_cycle(&reference, &reference.target, &referrer)?;
-    if collected_sources.contains(&reference.target) {
+    // a reference that was read before is to the file it went to then
+    let target = read_targets.get(&reference.target).unwrap_or(&reference.target);
+    ensure_not_cycle(&reference, target, &referrer)?;
+    if collected_sources.contains(target) {
       continue;
     }
     let file = match resolve_path_source_to_file_with_cache(reference.target.clone(), environment)
@@ -363,10 +376,10 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     };
     // the file may be somewhere else than the reference says (ex. a redirect)
     ensure_not_cycle(&reference, &file.source, &referrer)?;
+    read_targets.insert(reference.target, file.source.clone());
     if !collected_sources.insert(file.source.clone()) {
       continue;
     }
-    collected_sources.insert(reference.target);
     let extended_by = std::iter::once(referrer.source.clone())
       .chain(referrer.extended_by.iter().cloned())
       .collect::<Vec<_>>();
@@ -705,6 +718,27 @@ lineWidth = 80
   }
 
   #[test]
+  fn should_error_when_extends_cycle_goes_through_a_redirect() {
+    // x.json redirects to b.json, which extends x.json: so b.json extends itself
+    let environment = TestEnvironment::new();
+    environment.write_file("/dprint.json", r#"{ "extends": "https://dprint.dev/x.json" }"#).unwrap();
+    environment.add_remote_file_redirect("https://dprint.dev/x.json", "https://dprint.dev/b.json");
+    environment.add_remote_file("https://dprint.dev/b.json", r#"{ "extends": "https://dprint.dev/x.json" }"#.as_bytes());
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The configuration file 'https://dprint.dev/x.json' extends itself: ",
+          "/dprint.json -> https://dprint.dev/b.json -> https://dprint.dev/b.json\n",
+          "    at https://dprint.dev/b.json"
+        )
+      );
+    });
+  }
+
+  #[test]
   fn should_error_when_config_extends_itself() {
     let environment = TestEnvironmentBuilder::new()
       .write_file("/a.json", r#"{ "extends": ["./b.json", "./a.json"] }"#)
@@ -776,6 +810,8 @@ lineWidth = 80
         vec![RawPluginConfigOverride {
           files: vec!["*.d".to_string()],
           properties: ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(1))]),
+
+          origin: Default::default(),
         }]
       );
     });
@@ -1767,6 +1803,8 @@ lineWidth = 80
           overrides: vec![RawPluginConfigOverride {
             files: vec!["**/package.json".to_string()],
             properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+
+            origin: Default::default(),
           }],
           properties: ConfigKeyMap::new(),
         }),
@@ -1818,10 +1856,14 @@ lineWidth = 80
             RawPluginConfigOverride {
               files: vec!["**/*.json".to_string()],
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(100))]),
+
+              origin: Default::default(),
             },
             RawPluginConfigOverride {
               files: vec!["**/package.json".to_string()],
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+
+              origin: Default::default(),
             },
           ],
           properties: ConfigKeyMap::new(),
