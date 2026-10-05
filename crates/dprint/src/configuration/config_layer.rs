@@ -68,6 +68,8 @@ pub struct ResolutionDirectives {
 /// A configuration file another one refers to (ex. in `extends`).
 #[derive(Debug, Clone)]
 pub struct ConfigReference {
+  /// As written, ex. `./base.json` or `https://example.com/dprint.json`.
+  pub specifier: String,
   /// The file it refers to, resolved against the referring file.
   pub target: PathSource,
 }
@@ -127,7 +129,7 @@ impl ConfigDocument<'_> {
           };
           for specifier in templates.expand_all(specifiers)? {
             let target = resolve_url_or_file_path_to_path_source(&specifier, &base, environment)?;
-            directives.extends.push(ConfigReference { target });
+            directives.extends.push(ConfigReference { specifier, target });
           }
         }
         "inherit" => directives.inherit = read_bool(&key, value)?,

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
@@ -291,6 +292,11 @@ struct CollectedLayers {
 /// through another one. A file comes before the files it extends, and those
 /// come in the order it lists them, each followed by the files it extends
 /// (depth first). That's their precedence, highest first.
+///
+/// A file that's extended more than once (ex. by two files that are both
+/// extended) is only read where it has the highest precedence, since its
+/// properties are already set everywhere after that. A file that extends
+/// itself, directly or through other files, is an error.
 async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Result<CollectedLayers> {
   struct PendingReference {
     reference: ConfigReference,
@@ -307,20 +313,51 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     }
   }
 
+  /// Errors when the reference goes back to the referrer or a file that
+  /// extends it.
+  fn ensure_not_cycle(reference: &ConfigReference, target: &PathSource, referrer: &LayerOrigin) -> Result<()> {
+    if referrer.source != *target && !referrer.extended_by.contains(target) {
+      return Ok(());
+    }
+    let chain = referrer
+      .extended_by
+      .iter()
+      .rev()
+      .chain([&referrer.source, target])
+      .map(|source| source.display())
+      .collect::<Vec<_>>();
+    Err(referrer.locate(anyhow::anyhow!(
+      "The configuration file '{}' extends itself: {}",
+      reference.specifier,
+      chain.join(" -> ")
+    )))
+  }
+
   let ConfigLayer { origin, directives, settings } = root;
   let inherit = directives.inherit;
   let mut pending = Vec::new();
   push_references(&mut pending, &origin, directives.extends);
+  let mut collected_sources = HashSet::from([origin.source.clone()]);
   let mut layers = vec![CollectedLayer { origin, settings }];
 
   while let Some(PendingReference { reference, referrer }) = pending.pop() {
-    let file = match resolve_path_source_to_file_with_cache(reference.target, environment)
+    ensure_not_cycle(&reference, &reference.target, &referrer)?;
+    if collected_sources.contains(&reference.target) {
+      continue;
+    }
+    let file = match resolve_path_source_to_file_with_cache(reference.target.clone(), environment)
       .await
       .and_then(|file| file.into_text())
     {
       Ok(file) => file,
       Err(err) => return Err(referrer.locate(err)),
     };
+    // the file may be somewhere else than the reference says (ex. a redirect)
+    ensure_not_cycle(&reference, &file.source, &referrer)?;
+    if !collected_sources.insert(file.source.clone()) {
+      continue;
+    }
+    collected_sources.insert(reference.target);
     let extended_by = std::iter::once(referrer.source.clone())
       .chain(referrer.extended_by.iter().cloned())
       .collect::<Vec<_>>();
@@ -577,6 +614,102 @@ lineWidth = 80
       assert_eq!(
         result.plugins.config,
         ConfigMap::from([("lineWidth".to_string(), ConfigMapValue::from_i32(80))])
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_extends_cycle() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/a.json",
+        r#"{ "extends": "./b.json", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .write_file("/b.json", r#"{ "extends": "./a.json" }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        "The configuration file './a.json' extends itself: /a.json -> /b.json -> /a.json\n    at /b.json"
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_config_extends_itself() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/a.json", r#"{ "extends": ["./b.json", "./a.json"] }"#)
+      .write_file("/b.json", r#"{}"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        "The configuration file './a.json' extends itself: /a.json -> /a.json\n    at /a.json"
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_remote_extends_cycle() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://dprint.dev/a.json", r#"{ "extends": "./b.json" }"#.as_bytes());
+    environment.add_remote_file("https://dprint.dev/b.json", r#"{ "extends": "./c.json" }"#.as_bytes());
+    environment.add_remote_file("https://dprint.dev/c.json", r#"{ "extends": "https://dprint.dev/b.json" }"#.as_bytes());
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("https://dprint.dev/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The configuration file 'https://dprint.dev/b.json' extends itself: ",
+          "https://dprint.dev/a.json -> https://dprint.dev/b.json -> https://dprint.dev/c.json -> https://dprint.dev/b.json\n",
+          "    at https://dprint.dev/c.json\n",
+          "    at https://dprint.dev/b.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_use_a_config_extended_more_than_once_where_it_has_the_highest_precedence() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r#"{
+            "extends": ["./b.json", "./c.json"],
+            "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]
+        }"#,
+      )
+      .write_file("/b.json", r#"{ "extends": "./d.json", "excludes": ["b"] }"#)
+      .write_file("/c.json", r#"{ "extends": "./d.json", "excludes": ["c"], "lineWidth": 100 }"#)
+      .write_file(
+        "/d.json",
+        r#"{
+            "excludes": ["d"],
+            "lineWidth": 80,
+            "test": { "overrides": { "files": "*.d", "prop": 1 } }
+        }"#,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      // d comes after b, which extends it first, and only once
+      assert_eq!(result.files.excludes, vec!["b".to_string(), "d".to_string(), "c".to_string()]);
+      assert_eq!(result.plugins.config.get("lineWidth"), Some(&ConfigMapValue::from_i32(80)));
+      let Some(ConfigMapValue::PluginConfig(test)) = result.plugins.config.get("test") else {
+        unreachable!();
+      };
+      assert_eq!(
+        test.overrides,
+        vec![RawPluginConfigOverride {
+          files: vec!["*.d".to_string()],
+          properties: ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(1))]),
+        }]
       );
     });
   }
