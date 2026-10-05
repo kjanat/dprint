@@ -548,7 +548,17 @@ impl<'a> TomlNode<'a> {
         *existing = value;
         *existing.decor_mut() = decor;
       }
-      TomlNode::Table(_) => bail!("Unsupported. Could not replace a table in an array of tables."),
+      TomlNode::Table(table) => {
+        let Value::InlineTable(object) = value else {
+          bail!("Expected an object to replace a table in an array of tables.");
+        };
+        // in the same place, with the comments before its header
+        let decor = table.decor().clone();
+        let position = table.position();
+        *table = object.into_table();
+        *table.decor_mut() = decor;
+        table.set_position(position);
+      }
     }
     Ok(())
   }
@@ -981,6 +991,76 @@ command = "b"
       })
       .collect::<Vec<_>>();
     assert_eq!(names, ["first", "a", "b", "c"].map(ConfigKeyValue::from_str).to_vec(), "{}", result.new_text);
+  }
+
+  #[test]
+  fn replaces_tables_in_arrays_of_tables() {
+    let toml_text = r#"[exec]
+timeout = 5
+
+# formats rust
+[[exec.commands]]
+command = "rustfmt"
+exts = ["rs"]
+
+[[exec.commands]]
+command = "shfmt"
+exts = ["sh"]
+"#;
+    let json_text = r#"{
+  "exec": {
+    "timeout": 5,
+    "commands": [{ "command": "rustfmt", "exts": ["rs"] }, { "command": "shfmt", "exts": ["sh"] }]
+  }
+}"#;
+    let key = |key: &str| ConfigChangePathItem::String(key.to_string());
+    let set_first_command = |value: ConfigKeyValue| {
+      vec![ConfigChange {
+        path: vec![key("commands"), ConfigChangePathItem::Number(0)],
+        kind: ConfigChangeKind::Set(value),
+      }]
+    };
+    let rustfmt_2024 = ConfigKeyValue::Object(ConfigKeyMap::from([
+      ("command".to_string(), ConfigKeyValue::from_str("rustfmt --edition 2024")),
+      ("exts".to_string(), ConfigKeyValue::Array(vec![ConfigKeyValue::from_str("rs")])),
+    ]));
+    let changes = set_first_command(rustfmt_2024);
+
+    // the same change does the same in either format
+    let toml = ConfigFileFormat::Toml.apply_changes(toml_text, "exec", &changes);
+    let json = ConfigFileFormat::Json.apply_changes(json_text, "exec", &changes);
+    assert_eq!(toml.diagnostics, Vec::<String>::new());
+    assert_eq!(json.diagnostics, Vec::<String>::new());
+    assert_eq!(
+      ConfigFileFormat::Toml.parse(&toml.new_text).unwrap(),
+      ConfigFileFormat::Json.parse(&json.new_text).unwrap()
+    );
+    // and the table stays where it was, with its comment
+    assert_eq!(
+      toml.new_text,
+      r#"[exec]
+timeout = 5
+
+# formats rust
+[[exec.commands]]
+command = "rustfmt --edition 2024"
+exts = ["rs"]
+
+[[exec.commands]]
+command = "shfmt"
+exts = ["sh"]
+"#
+    );
+
+    // an array of tables only has tables
+    let toml = ConfigFileFormat::Toml.apply_changes(toml_text, "exec", &set_first_command(ConfigKeyValue::from_str("rustfmt")));
+    assert_eq!(toml.new_text, toml_text);
+    assert_eq!(toml.diagnostics.len(), 1);
+    assert!(
+      toml.diagnostics[0].contains("Expected an object to replace a table in an array of tables."),
+      "{:?}",
+      toml.diagnostics
+    );
   }
 
   #[test]
