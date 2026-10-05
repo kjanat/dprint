@@ -3,7 +3,6 @@ use std::path::Path;
 
 use anyhow::Result;
 use deno_terminal::colors;
-use dprint_core::configuration::ConfigKeyValue;
 use thiserror::Error;
 
 use crate::arg_parser::CliArgs;
@@ -19,7 +18,6 @@ use crate::utils::ShowConfirmStrategy;
 use crate::utils::resolve_path_source_to_file_with_cache;
 
 use super::ConfigMap;
-use super::ConfigMapValue;
 use super::ConfigSettings;
 use super::ExecutionPolicy;
 use super::FileRouting;
@@ -83,7 +81,7 @@ impl ResolvedConfig {
       execution,
       plugins,
     } = extended;
-    self.files.extend(files);
+    self.files.extend(files)?;
     self.routing.extend(routing);
     self.execution.extend(execution);
     self.plugins.extend(plugins)
@@ -258,7 +256,6 @@ async fn resolve_config_file<TEnvironment: Environment>(
   );
   for mut layer in layers {
     apply_remote_restrictions(&mut layer, &config.plugins.config, &mut remote_exec, environment);
-    keep_unsupported_extended_properties(&mut layer.settings);
     if let Err(err) = config.extend(layer.settings) {
       return Err(layer.origin.locate(err).into());
     }
@@ -361,40 +358,22 @@ async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Re
     let extended_by = std::iter::once(referrer.source.clone())
       .chain(referrer.extended_by.iter().cloned())
       .collect::<Vec<_>>();
-    let ConfigLayer {
-      origin,
-      directives,
-      mut settings,
-    } = ConfigDocument {
+    let ConfigLayer { origin, directives, settings } = ConfigDocument {
       file: file.as_ref(),
       is_first_download: file.is_first_download,
       extended_by: &extended_by,
     }
     .parse(environment)?;
     if directives.inherit {
-      keep_unsupported_extended_property(&mut settings, "inherit", ConfigMapValue::KeyValue(ConfigKeyValue::Bool(true)));
+      return Err(origin.locate(anyhow::anyhow!(
+        "The 'inherit' property can't be used in an extended configuration file. Specify it in the configuration file that extends it."
+      )));
     }
     push_references(&mut pending, &origin, directives.extends);
     layers.push(CollectedLayer { origin, settings });
   }
 
   Ok(CollectedLayers { inherit, layers })
-}
-
-/// Before configuration files were read by property, an extended
-/// configuration file's `includes`, `incremental` and `inherit` were left
-/// with the global configuration, where they're unknown properties.
-fn keep_unsupported_extended_properties(settings: &mut ConfigSettings) {
-  if let Some(includes) = settings.files.includes.take() {
-    keep_unsupported_extended_property(settings, "includes", ConfigMapValue::Vec(includes));
-  }
-  if let Some(incremental) = settings.execution.incremental.take() {
-    keep_unsupported_extended_property(settings, "incremental", ConfigMapValue::KeyValue(ConfigKeyValue::Bool(incremental)));
-  }
-}
-
-fn keep_unsupported_extended_property(settings: &mut ConfigSettings, key: &str, value: ConfigMapValue) {
-  settings.plugins.config.insert(key.to_string(), value);
 }
 
 /// Removes what a remote configuration file isn't trusted to specify, since it
@@ -461,6 +440,7 @@ mod tests {
   use std::path::PathBuf;
 
   use crate::arg_parser::parse_args;
+  use crate::configuration::ConfigMapValue;
   use crate::configuration::RawPluginConfig;
   use crate::configuration::RawPluginConfigOverride;
   use crate::environment::Environment;
@@ -469,6 +449,7 @@ mod tests {
   use crate::utils::TestStdInReader;
   use anyhow::Result;
   use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::configuration::ConfigKeyValue;
   use indexmap::IndexMap;
   use pretty_assertions::assert_eq;
 
@@ -711,6 +692,81 @@ lineWidth = 80
           properties: ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(1))]),
         }]
       );
+    });
+  }
+
+  #[test]
+  fn should_error_for_includes_in_extended_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "extends": "./base.json", "includes": ["src/**"] }"#)
+      .write_file("/base.json", r#"{ "includes": ["**/*.ts"] }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The 'includes' property can't be used in an extended configuration file. Specify it in the configuration file that extends it.\n",
+          "    at /base.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_ignore_includes_in_extended_remote_config() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/base.json",
+      r#"{ "includes": ["/etc/**"], "excludes": ["dist"] }"#.as_bytes(),
+    );
+    environment
+      .write_file("/dprint.json", r#"{ "extends": "https://dprint.dev/base.json" }"#)
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dprint.json", &environment).await.unwrap();
+      assert_eq!(environment.take_stderr_messages(), vec![get_warn_includes_message()]);
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, vec!["dist".to_string()]);
+    });
+  }
+
+  #[test]
+  fn should_error_for_inherit_in_extended_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/a/dprint.json", r#"{ "extends": "../base.json" }"#)
+      .write_file("/base.json", r#"{ "inherit": true }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The 'inherit' property can't be used in an extended configuration file. Specify it in the configuration file that extends it.\n",
+          "    at /base.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_use_incremental_of_extended_config_when_not_specified() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "extends": "./base.json" }"#)
+      .write_file("/specified.json", r#"{ "extends": "./base.json", "incremental": true }"#)
+      .write_file("/base.json", r#"{ "incremental": false }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(result.execution.incremental, Some(false));
+      // and not as an unknown global configuration property
+      assert_eq!(result.plugins.config, ConfigMap::new());
+      let result = resolve_local_config("/specified.json", &environment).await;
+      assert_eq!(result.execution.incremental, Some(true));
     });
   }
 

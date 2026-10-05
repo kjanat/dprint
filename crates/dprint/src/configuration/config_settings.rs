@@ -61,8 +61,14 @@ pub struct PluginConfiguration {
 
 impl FileSelection {
   /// Adds the excludes of an extended configuration file after this one's.
-  pub(super) fn extend(&mut self, extended: FileSelection) {
+  /// An extended configuration file can't say which files to include, which
+  /// is up to the configuration file that extends it.
+  pub(super) fn extend(&mut self, extended: FileSelection) -> Result<()> {
+    if extended.includes.is_some() {
+      bail!("The 'includes' property can't be used in an extended configuration file. Specify it in the configuration file that extends it.");
+    }
     self.excludes.extend(extended.excludes);
+    Ok(())
   }
 
   /// Adds the ancestor's excludes before this one's, so this one's can opt
