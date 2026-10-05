@@ -39,6 +39,7 @@
 //! On unix, what a child started can outlive an owner that's killed with
 //! SIGKILL, since nothing runs when that happens.
 
+use std::cell::Cell;
 use std::io;
 use std::process::Child;
 use std::process::ChildStderr;
@@ -49,7 +50,6 @@ use std::process::ExitStatus;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::time::Duration;
 
 /// A child process that's killed, together with every process it started,
 /// when this is dropped (see the module docs).
@@ -84,26 +84,37 @@ impl OwnedChild {
   }
 
   fn spawn_with(command: &mut Command, tied_to_owner: bool) -> io::Result<Self> {
-    let spawning = Spawning::start()?;
+    let mut spawning = Spawning::start()?;
     sys::prepare(command, tied_to_owner);
+    #[cfg(test)]
+    test::while_creating();
     #[allow(clippy::disallowed_methods)] // every owned child is spawned here
     let mut child = command.spawn()?;
+    spawning.created(&child);
     #[cfg(test)]
     test::delay_before_group();
-    let group = match sys::Group::new(&child) {
+    let group = sys::Group::new(&child);
+    // in its group now, or failed to be, so it's no longer one for
+    // `kill_all_owned_children` to kill on its own. That's before it's reaped
+    // below, after which its id may be another process's
+    let owned_children_were_killed = spawning.finish();
+    let group = match group {
       Ok(group) => group,
       Err(err) => {
         // it hasn't run yet (see `sys::prepare`), so this is all of it
         let _ = child.kill();
         let _ = child.wait();
+        if owned_children_were_killed {
+          return Err(owned_children_killed_error());
+        }
         return Err(io::Error::new(err.kind(), format!("Could not put the process in a group of its own. {}", err)));
       }
     };
     let mut owned = Self { child, group: Some(group) };
-    if spawning.owned_children_were_killed() {
-      // which this child wasn't one of yet, and the process is about to exit
+    if owned_children_were_killed {
+      // as the process is about to exit
       let _ = owned.kill();
-      return Err(io::Error::other("Did not start the process, as the owned processes were killed."));
+      return Err(owned_children_killed_error());
     }
     Ok(owned)
   }
@@ -172,59 +183,128 @@ impl Drop for OwnedChild {
 
 /// Kills every owned child that's still alive, together with what it started,
 /// and keeps any more from being spawned. For a process that's about to exit
-/// because it was interrupted or failed.
+/// because it was interrupted or failed: once this returns, every owned child
+/// is dead or dies with the process (Windows), including ones being spawned.
 pub fn kill_all_owned_children() {
-  lock_spawn_state().owned_children_killed = true;
+  let mut state = lock_spawn_state();
+  state.owned_children_killed = true;
+  // created, but not in their group yet (ex. on Windows, suspended and not in
+  // the job that would kill them when this process exits)
+  for child in &state.not_in_group {
+    child.kill();
+  }
+  drop(state);
   sys::kill_all();
-  // a child that's being spawned isn't one to kill above yet, so it's killed
-  // once it is (see `OwnedChild::spawn_with`). Wait for that, as the process
-  // exits next.
+  // a child the OS is still creating is killed once it's created (see
+  // `Spawning::created`), which this waits for, however long that takes. Not
+  // for one this thread is creating, as that can't go on meanwhile (ex. when
+  // a panic while spawning has this called)
+  let creating_here = CREATING_HERE.with(Cell::get);
   let state = lock_spawn_state();
-  let _ = SPAWNED.wait_timeout_while(state, Duration::from_secs(1), |state| state.spawning > 0);
+  drop(SPAWNED.wait_while(state, |state| state.creating > creating_here));
+}
+
+fn owned_children_killed_error() -> io::Error {
+  io::Error::other("Did not start the process, as the owned processes were killed.")
 }
 
 /// What [`kill_all_owned_children`] knows about spawning.
 struct SpawnState {
-  /// How many owned children are being spawned.
-  spawning: usize,
+  /// How many owned children the OS is creating.
+  creating: usize,
+  /// The owned children that were created but aren't in their group yet.
+  not_in_group: Vec<sys::CreatedChild>,
   /// Whether [`kill_all_owned_children`] was called.
   owned_children_killed: bool,
 }
 
 static SPAWN_STATE: Mutex<SpawnState> = Mutex::new(SpawnState {
-  spawning: 0,
+  creating: 0,
+  not_in_group: Vec::new(),
   owned_children_killed: false,
 });
-/// Notified when an owned child is done being spawned.
+/// Notified when an owned child is done being created.
 static SPAWNED: Condvar = Condvar::new();
+
+thread_local! {
+  /// How many of the owned children the OS is creating this thread creates.
+  static CREATING_HERE: Cell<usize> = const { Cell::new(0) };
+}
 
 fn lock_spawn_state() -> MutexGuard<'static, SpawnState> {
   SPAWN_STATE.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// An owned child being spawned, which [`kill_all_owned_children`] waits for.
-struct Spawning;
+/// An owned child being spawned, which [`kill_all_owned_children`] kills
+/// before it's in its group.
+struct Spawning {
+  stage: SpawningStage,
+}
+
+enum SpawningStage {
+  /// The OS is creating it.
+  Creating,
+  /// It was created, but isn't in its group yet.
+  NotInGroup(sys::CreatedChild),
+  /// It's in its group, or failed to be.
+  Finished,
+}
 
 impl Spawning {
   fn start() -> io::Result<Self> {
     let mut state = lock_spawn_state();
     if state.owned_children_killed {
-      return Err(io::Error::other("Did not start the process, as the owned processes were killed."));
+      return Err(owned_children_killed_error());
     }
-    state.spawning += 1;
-    Ok(Spawning)
+    state.creating += 1;
+    CREATING_HERE.with(|count| count.set(count.get() + 1));
+    Ok(Self {
+      stage: SpawningStage::Creating,
+    })
   }
 
-  /// Whether the owned children were killed since this started.
-  fn owned_children_were_killed(&self) -> bool {
-    lock_spawn_state().owned_children_killed
+  /// The child was created, so it's killed if the owned children are or were.
+  fn created(&mut self, child: &Child) {
+    let child = sys::CreatedChild::of(child);
+    let mut state = lock_spawn_state();
+    if state.owned_children_killed {
+      child.kill();
+    } else {
+      state.not_in_group.push(child);
+    }
+    self.done_creating(&mut state);
+    self.stage = SpawningStage::NotInGroup(child);
+  }
+
+  /// The child is in its group, or failed to be. Says whether the owned
+  /// children were killed since this started.
+  fn finish(&mut self) -> bool {
+    let mut state = lock_spawn_state();
+    if let SpawningStage::NotInGroup(child) = std::mem::replace(&mut self.stage, SpawningStage::Finished)
+      && let Some(index) = state.not_in_group.iter().position(|created| *created == child)
+    {
+      state.not_in_group.swap_remove(index);
+    }
+    state.owned_children_killed
+  }
+
+  fn done_creating(&self, state: &mut SpawnState) {
+    state.creating -= 1;
+    CREATING_HERE.with(|count| count.set(count.get() - 1));
+    SPAWNED.notify_all();
   }
 }
 
 impl Drop for Spawning {
   fn drop(&mut self) {
-    lock_spawn_state().spawning -= 1;
-    SPAWNED.notify_all();
+    match self.stage {
+      // the OS failed to create it
+      SpawningStage::Creating => self.done_creating(&mut lock_spawn_state()),
+      SpawningStage::NotInGroup(_) => {
+        self.finish();
+      }
+      SpawningStage::Finished => {}
+    }
   }
 }
 
@@ -265,6 +345,37 @@ mod sys {
           Ok(())
         });
       }
+    }
+  }
+
+  /// A child that was created and isn't reaped yet, by its id, which is its
+  /// process group's (see `prepare`).
+  #[derive(Clone, Copy, PartialEq)]
+  pub struct CreatedChild(libc::pid_t);
+
+  impl CreatedChild {
+    pub fn of(child: &Child) -> Self {
+      Self(child.id() as libc::pid_t)
+    }
+
+    /// Kills it and what it started.
+    pub fn kill(&self) {
+      // SAFETY: a plain system call
+      unsafe {
+        libc::killpg(self.0, libc::SIGKILL);
+      }
+    }
+
+    /// Whether it exited, without reaping it.
+    #[cfg(test)]
+    pub fn has_exited(&self) -> bool {
+      // SAFETY: an all zero siginfo_t is valid, and is what's left when there
+      // was nothing to report
+      let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+      // SAFETY: a plain system call with a pointer to the struct it fills in
+      let result = unsafe { libc::waitid(libc::P_PID, self.0 as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) };
+      // SAFETY: waitid filled in the child's exit, or nothing
+      result == 0 && unsafe { info.si_pid() } != 0
     }
   }
 
@@ -366,6 +477,7 @@ mod sys {
   use winapi::um::processthreadsapi::GetCurrentProcess;
   use winapi::um::processthreadsapi::OpenThread;
   use winapi::um::processthreadsapi::ResumeThread;
+  use winapi::um::processthreadsapi::TerminateProcess;
   use winapi::um::tlhelp32::CreateToolhelp32Snapshot;
   use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
   use winapi::um::tlhelp32::THREADENTRY32;
@@ -383,6 +495,33 @@ mod sys {
     // its job (see `Group::new`), and the job kills its processes when the
     // owner exits for any reason
     command.creation_flags(CREATE_SUSPENDED);
+  }
+
+  /// A child that was created, by its process handle, which `Child` keeps
+  /// open until it's dropped, which happens after this is (see `Spawning`).
+  #[derive(Clone, Copy, PartialEq)]
+  pub struct CreatedChild(usize);
+
+  impl CreatedChild {
+    pub fn of(child: &Child) -> Self {
+      Self(child.as_raw_handle() as usize)
+    }
+
+    /// Kills it. It's suspended until it's in its job (see `prepare`), so it
+    /// didn't start anything.
+    pub fn kill(&self) {
+      // SAFETY: the process handle is open (see the type's docs)
+      unsafe {
+        TerminateProcess(self.0 as HANDLE, 1);
+      }
+    }
+
+    /// Whether it exited.
+    #[cfg(test)]
+    pub fn has_exited(&self) -> bool {
+      // SAFETY: the process handle is open (see the type's docs)
+      unsafe { winapi::um::synchapi::WaitForSingleObject(self.0 as HANDLE, 0) == winapi::um::winbase::WAIT_OBJECT_0 }
+    }
   }
 
   /// The job the child and every process it starts are in.
@@ -528,6 +667,18 @@ mod test {
 
   pub fn delay_before_group() {
     std::thread::sleep(Duration::from_millis(DELAY_BEFORE_GROUP_MS.load(Ordering::Relaxed)));
+  }
+
+  thread_local! {
+    /// Whether spawning on this thread kills all owned children while the OS
+    /// is creating the child, like a panic hook would.
+    static KILL_ALL_WHILE_CREATING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  }
+
+  pub fn while_creating() {
+    if KILL_ALL_WHILE_CREATING.with(|kill| kill.get()) {
+      kill_all_owned_children();
+    }
   }
 
   /// `kill_all_owned_children`, after which the tests that come after can
@@ -721,24 +872,54 @@ mod test {
     let _serial = serial();
     let heartbeat = Heartbeat::new();
     let mut command = heartbeat.command_starting_it();
-    // untied, as a tied child would die with the thread that spawned it
-    DELAY_BEFORE_GROUP_MS.store(1000, Ordering::Relaxed);
+    // untied, as a tied child would die with the thread that spawned it. Its
+    // group takes longer than anything here, so what kills the child is
+    // `kill_all_owned_children`, not the spawn
+    DELAY_BEFORE_GROUP_MS.store(5000, Ordering::Relaxed);
     let spawning = std::thread::spawn(move || OwnedChild::spawn_untied(&mut command));
-    // while it's started, but not in its group yet
-    std::thread::sleep(Duration::from_millis(300));
+    // while it's created, but not in its group yet (on Windows, suspended
+    // and not in the job that kills it when this process exits)
+    assert!(wait_until(|| !lock_spawn_state().not_in_group.is_empty()));
     let start = Instant::now();
     kill_all_owned_children();
-    let waited = start.elapsed();
+    let returned_after = start.elapsed();
+    // it's dead, before the spawn could do anything about it, so it's not left
+    // running (or suspended) once the process exits next
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let has_exited = || lock_spawn_state().not_in_group.iter().all(|child| child.has_exited());
+    while !has_exited() && Instant::now() < deadline {
+      std::thread::sleep(Duration::from_millis(20));
+    }
+    let killed_before_its_group = has_exited() && !lock_spawn_state().not_in_group.is_empty();
     DELAY_BEFORE_GROUP_MS.store(0, Ordering::Relaxed);
-    // the spawn failed, after killing the child, rather than giving a child
-    // that's left running once the process exits
+    // the spawn failed rather than giving a child that was killed
     let was_spawned = spawning.join().unwrap().is_ok();
     // and none can be spawned after
     let spawned_after = OwnedChild::spawn(&mut heartbeat.command_starting_it()).is_ok();
     allow_spawning_again();
+    assert!(killed_before_its_group);
     assert!(!was_spawned && !spawned_after);
-    // it waited for the child being spawned to be killed
-    assert!(waited > Duration::from_millis(500), "{:?}", waited);
+    // without waiting for the spawn to put it in its group
+    assert!(returned_after < Duration::from_secs(2), "{:?}", returned_after);
+    assert!(heartbeat.stopped());
+  }
+
+  #[test]
+  fn kills_all_owned_children_while_this_thread_is_creating_one() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let mut command = heartbeat.command_starting_it();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+      // ex. a panic while spawning, whose hook kills all owned children, which
+      // can't wait for the child this thread is creating
+      KILL_ALL_WHILE_CREATING.with(|kill| kill.set(true));
+      let _ = sender.send(OwnedChild::spawn_untied(&mut command).is_ok());
+    });
+    let was_spawned = receiver.recv_timeout(Duration::from_secs(10));
+    allow_spawning_again();
+    assert_eq!(was_spawned, Ok(false));
+    // and the child it went on to create was killed
     assert!(heartbeat.stopped());
   }
 
