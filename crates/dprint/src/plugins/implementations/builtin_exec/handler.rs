@@ -339,7 +339,8 @@ fn timeout_err(config: &Configuration) -> FormatError {
 ///   delay doubles with each failure in a row (see [`SetupState::retry_delay`]),
 ///   so however many files are formatted, a failing setup command is run at
 ///   most once per delay, while a long running process (ex. an editor's
-///   language server) recovers from a failure that was transient.
+///   language server) recovers from a failure that was transient. After
+///   [`MAX_SETUP_ATTEMPTS`] failures in a row, its failure is final.
 /// - When every request was cancelled, that isn't the setup command's
 ///   failure, so the next request runs it again.
 #[derive(Clone)]
@@ -355,8 +356,10 @@ pub struct SetupState {
 
 /// How long after a setup command failed once it's run again.
 const FIRST_SETUP_RETRY_DELAY: Duration = Duration::from_secs(10);
-/// The longest delay before running a setup command that keeps failing again.
-const MAX_SETUP_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
+/// How many times in a row a setup command may fail before its failure is
+/// final, which with the delays between them is after about two and a half
+/// minutes.
+const MAX_SETUP_ATTEMPTS: u32 = 5;
 
 impl Default for SetupState {
   fn default() -> Self {
@@ -408,6 +411,27 @@ struct SetupFailure {
   failures: u32,
 }
 
+impl SetupFailure {
+  fn new(mut message: String, failures: u32) -> Self {
+    if failures >= MAX_SETUP_ATTEMPTS {
+      message.push_str(&format!(
+        "\n\nIt failed {} times in a row, so it isn't run again until the plugin restarts (ex. dprint, or an editor's language server).",
+        failures
+      ));
+    }
+    Self {
+      message,
+      at: Instant::now(),
+      failures,
+    }
+  }
+
+  /// Whether it's final, or else when it's run again.
+  fn is_final(&self) -> bool {
+    self.failures >= MAX_SETUP_ATTEMPTS
+  }
+}
+
 #[derive(Clone)]
 enum SetupOutcome {
   Succeeded,
@@ -441,11 +465,10 @@ impl SetupState {
   }
 
   /// How long after failing `failures` times in a row a setup command is run
-  /// again: the first delay, doubled for each failure after the first, up to
-  /// [`MAX_SETUP_RETRY_DELAY`].
+  /// again: the first delay, doubled for each failure after the first.
   fn retry_delay(&self, failures: u32) -> Duration {
     let factor = 2u32.checked_pow(failures.saturating_sub(1)).unwrap_or(u32::MAX);
-    self.first_retry_delay.saturating_mul(factor).min(MAX_SETUP_RETRY_DELAY)
+    self.first_retry_delay.saturating_mul(factor)
   }
 
   fn resolve_executable(&self, executable: &str, cwd: &Path) -> PathBuf {
@@ -484,7 +507,8 @@ impl SetupState {
       let (running, failures) = match setups.get(&key) {
         Some(SetupEntry::Succeeded) => return Ok(SetupRun::Completed),
         Some(SetupEntry::Failed(failure)) => {
-          if now < failure.at + self.retry_delay(failure.failures) {
+          let retry_at = failure.at.checked_add(self.retry_delay(failure.failures));
+          if failure.is_final() || retry_at.is_none_or(|retry_at| now < retry_at) {
             return Err(FormatError::new(failure.message.clone()));
           }
           (None, failure.failures)
@@ -538,27 +562,25 @@ impl SetupState {
         );
         // no request waits for it any longer, so this is how it ended
         if attempt.strong_count() == Some(1) {
-          self.record_failure(&key, message.clone());
+          return Err(FormatError::new(self.record_failure(&key, message)));
         }
         Err(FormatError::new(message))
       }
     }
   }
 
-  fn record_failure(&self, key: &SetupKey, message: String) {
+  /// Records that the setup command failed, and gives what each request gets
+  /// for it.
+  fn record_failure(&self, key: &SetupKey, message: String) -> String {
     let mut setups = self.setups.borrow_mut();
     let failures = match setups.get(key) {
       Some(SetupEntry::Running(running)) => running.failures,
       _ => 0,
     };
-    setups.insert(
-      key.clone(),
-      SetupEntry::Failed(SetupFailure {
-        message,
-        at: Instant::now(),
-        failures: failures + 1,
-      }),
-    );
+    let failure = SetupFailure::new(message, failures + 1);
+    let message = failure.message.clone();
+    setups.insert(key.clone(), SetupEntry::Failed(failure));
+    message
   }
 }
 
@@ -576,14 +598,13 @@ struct SetupAttempt {
 /// Runs a setup command, and records its outcome before any request sees it
 /// (see [`SetupState`]).
 async fn run_setup_command(run: SetupAttempt) -> SetupOutcome {
-  let outcome = run_setup_command_process(&run).await;
-  let entry = match &outcome {
-    SetupOutcome::Succeeded => SetupEntry::Succeeded,
-    SetupOutcome::Failed(message) => SetupEntry::Failed(SetupFailure {
-      message: message.clone(),
-      at: Instant::now(),
-      failures: run.failures + 1,
-    }),
+  let (entry, outcome) = match run_setup_command_process(&run).await {
+    SetupOutcome::Succeeded => (SetupEntry::Succeeded, SetupOutcome::Succeeded),
+    SetupOutcome::Failed(message) => {
+      let failure = SetupFailure::new(message, run.failures + 1);
+      let message = failure.message.clone();
+      (SetupEntry::Failed(failure), SetupOutcome::Failed(message))
+    }
   };
   run.setups.borrow_mut().insert(run.key.clone(), entry);
   outcome
@@ -1141,9 +1162,66 @@ mod test {
 
   #[test]
   fn waits_longer_to_run_a_setup_command_again_the_more_it_failed() {
-    let setup_state = SetupState::with_first_retry_delay(Duration::from_secs(10));
-    let delays = (1..=8).map(|failures| setup_state.retry_delay(failures).as_secs()).collect::<Vec<_>>();
-    assert_eq!(delays, vec![10, 20, 40, 80, 160, 320, 600, 600]);
-    assert_eq!(setup_state.retry_delay(u32::MAX), Duration::from_secs(600));
+    let setup_state = SetupState::default();
+    let delays = (1..super::MAX_SETUP_ATTEMPTS)
+      .map(|failures| setup_state.retry_delay(failures).as_secs())
+      .collect::<Vec<_>>();
+    assert_eq!(delays, vec![10, 20, 40, 80]);
+  }
+
+  #[test]
+  fn stops_running_a_setup_command_that_keeps_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = resolve(serde_json::json!({
+      "commands": [{
+        "command": "tr a-z A-Z",
+        "setupCommand": format!("sh -c \"echo $$ >> {}; exit 1\"", dir.path().join("starts").display()),
+        "exts": ["txt"]
+      }]
+    }));
+    let failed = "Setup command 'sh' exited with code 1: ";
+    let last = format!(
+      "{}\n\nIt failed 5 times in a row, so it isn't run again until the plugin restarts (ex. dprint, or an editor's language server).",
+      failed
+    );
+    run_leaving_nothing_running(async {
+      let first_retry_delay = Duration::from_millis(50);
+      let setup_state = SetupState::with_first_retry_delay(first_retry_delay);
+      for attempt in 1..=super::MAX_SETUP_ATTEMPTS {
+        let expected = if attempt == super::MAX_SETUP_ATTEMPTS { &last } else { failed };
+        assert_eq!(format(&config, "text", &setup_state).await, Err(expected.to_string()), "{}", attempt);
+        assert_eq!(setup_starts(dir.path()).len(), attempt as usize);
+        tokio::time::sleep(setup_state.retry_delay(attempt).min(Duration::from_secs(1)) + first_retry_delay).await;
+      }
+      // after which it fails for good
+      tokio::time::sleep(Duration::from_secs(1)).await;
+      assert_eq!(format(&config, "text", &setup_state).await, Err(last.clone()));
+    });
+    assert_eq!(setup_starts(dir.path()).len(), super::MAX_SETUP_ATTEMPTS as usize);
+  }
+
+  #[test]
+  fn doesnt_count_a_setup_command_no_request_waited_for_as_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = resolve(serde_json::json!({
+      "commands": [{ "command": "tr a-z A-Z", "setupCommand": counting_setup_command(dir.path(), 1), "exts": ["txt"] }]
+    }));
+    let attempts = super::MAX_SETUP_ATTEMPTS as usize + 1;
+    run_leaving_nothing_running(async {
+      let setup_state = SetupState::default();
+      // more times than it may fail
+      for _ in 0..attempts {
+        let token = tokio_util::sync::CancellationToken::new();
+        let cancel = async {
+          tokio::time::sleep(Duration::from_millis(100)).await;
+          token.cancel();
+        };
+        let (result, ()) = tokio::join!(format_with_token(&config, "text", &setup_state, Arc::new(token.clone())), cancel);
+        assert_eq!(result, Ok(None));
+      }
+      // it still runs, and right away rather than after a delay
+      assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
+    });
+    assert_eq!(setup_starts(dir.path()).len(), attempts + 1);
   }
 }
