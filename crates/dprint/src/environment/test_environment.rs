@@ -152,6 +152,8 @@ pub struct TestEnvironment {
   remote_file_downloads: Arc<Mutex<HashMap<String, usize>>>,
   /// Paths that can't be renamed to, which an atomic write does.
   failing_rename_targets: Arc<Mutex<Vec<PathBuf>>>,
+  /// The deadline of each wasm plugin compile.
+  wasm_compile_deadlines: Arc<Mutex<Vec<Option<std::time::Instant>>>>,
   selection_result: Arc<Mutex<usize>>,
   multi_selection_result: Arc<Mutex<Option<Vec<usize>>>>,
   /// The items of the last multi-selection prompt, rendered for assertions.
@@ -205,6 +207,7 @@ impl TestEnvironment {
       remote_file_delays: Default::default(),
       remote_file_downloads: Default::default(),
       failing_rename_targets: Default::default(),
+      wasm_compile_deadlines: Default::default(),
       selection_result: Arc::new(Mutex::new(0)),
       multi_selection_result: Arc::new(Mutex::new(None)),
       multi_selection_items: Default::default(),
@@ -300,6 +303,11 @@ impl TestEnvironment {
   /// How many times the url was downloaded.
   pub fn remote_file_download_count(&self, url: &str) -> usize {
     self.remote_file_downloads.lock().get(url).copied().unwrap_or(0)
+  }
+
+  /// The deadline of each wasm plugin compile since this was last called.
+  pub fn take_wasm_compile_deadlines(&self) -> Vec<Option<std::time::Instant>> {
+    self.wasm_compile_deadlines.lock().drain(..).collect()
   }
 
   /// Makes renaming a file to the path fail, which is the last step of an
@@ -943,7 +951,8 @@ impl Environment for TestEnvironment {
     *self.log_level.lock()
   }
 
-  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], _control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+    self.wasm_compile_deadlines.lock().push(control.deadline());
     use std::collections::hash_map::Entry;
 
     static COMPILE_RESULTS: Lazy<Mutex<HashMap<u64, CompilationResult>>> = Lazy::new(Default::default);

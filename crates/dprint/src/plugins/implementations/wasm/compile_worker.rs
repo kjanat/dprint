@@ -175,6 +175,11 @@ impl CompileControl {
     }
   }
 
+  #[cfg(test)]
+  pub fn deadline(&self) -> Option<Instant> {
+    self.deadline
+  }
+
   /// Stops the compile, as nothing waits for it anymore.
   pub fn cancel(&self) {
     self.cancelled.store(true, Ordering::SeqCst);

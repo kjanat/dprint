@@ -35,8 +35,9 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
   if guard.is_none() {
     log_stderr_info!(environment, "Compiling {}", url_or_file_path.display());
   }
-  // what it's set up for has no deadline of its own
-  let control = CompileControl::new(None);
+  // what it's set up for may have to be done by a deadline (ex. regenerating
+  // the schema file), which then stops the compile too
+  let control = CompileControl::new(crate::utils::current_deadline());
   // the compile is stopped once nothing waits for it, rather than left
   // running in its blocking task
   let _cancel_on_drop = CancelOnDrop(&control);
@@ -56,4 +57,32 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
     file_path: dest_file_path.to_path_buf(),
     executable_sub_path: None,
   })
+}
+
+#[cfg(test)]
+mod test {
+  use std::path::Path;
+  use std::time::Duration;
+  use std::time::Instant;
+
+  use super::*;
+  use crate::environment::CanonicalizedPathBuf;
+  use crate::environment::TestEnvironment;
+
+  #[tokio::test]
+  async fn compiles_by_the_deadline_of_what_its_for() {
+    let environment = TestEnvironment::new();
+    let source = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/plugin.wasm"));
+    let bytes = crate::test_helpers::WASM_PLUGIN_BYTES.to_vec();
+    setup_wasm_plugin(&source, bytes.clone(), Path::new("/cache/plugin.compiled"), &environment)
+      .await
+      .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    crate::utils::run_before_deadline(deadline, setup_wasm_plugin(&source, bytes, Path::new("/cache/plugin.compiled"), &environment))
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(environment.take_wasm_compile_deadlines(), vec![None, Some(deadline)]);
+    environment.take_stderr_messages();
+  }
 }
