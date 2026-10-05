@@ -162,12 +162,17 @@ impl OwnedChild {
   /// Kills the child and every process it started, then waits for the child
   /// to exit and reaps it. Unlike [`Child::kill`], this also reaps a child
   /// that already exited on its own.
+  ///
+  /// When the group can't be killed (the OS refuses), that's the error, and
+  /// the child isn't waited for, as it may well go on running. The group is
+  /// kept, so that killing it again (ex. when this is dropped, or by
+  /// [`kill_all_owned_children`]) tries once more.
   pub fn kill(&mut self) -> io::Result<()> {
-    if let Some(group) = self.group.take() {
-      group.kill();
+    if let Some(group) = &self.group {
+      group.kill()?;
       // retired before the child is reaped below, after which its id may be
       // another process's (see `group`)
-      drop(group);
+      self.group = None;
     }
     self.child.wait().map(|_| ())
   }
@@ -389,11 +394,21 @@ mod sys {
       Ok(Self(id))
     }
 
-    pub fn kill(&self) {
+    /// Kills every process in the group. Errors when the OS refuses (ex. a
+    /// process in it that this process may not signal), in which case they
+    /// may go on running.
+    pub fn kill(&self) -> io::Result<()> {
+      #[cfg(test)]
+      super::test::fail_killing_group()?;
       // SAFETY: a plain system call
-      unsafe {
-        libc::killpg(self.0, libc::SIGKILL);
+      if unsafe { libc::killpg(self.0, libc::SIGKILL) } == -1 {
+        let err = io::Error::last_os_error();
+        // no process left in it is as killed as it gets
+        if err.raw_os_error() != Some(libc::ESRCH) {
+          return Err(err);
+        }
       }
+      Ok(())
     }
   }
 
@@ -567,11 +582,16 @@ mod sys {
       }
     }
 
-    pub fn kill(&self) {
+    /// Kills every process in the job. Errors when the OS refuses, in which
+    /// case they may go on running.
+    pub fn kill(&self) -> io::Result<()> {
+      #[cfg(test)]
+      super::test::fail_killing_group()?;
       // SAFETY: the job handle is open until this is dropped
-      unsafe {
-        TerminateJobObject(self.0.0, 1);
+      if unsafe { TerminateJobObject(self.0.0, 1) } == 0 {
+        return Err(io::Error::last_os_error());
       }
+      Ok(())
     }
   }
 
@@ -679,6 +699,40 @@ mod test {
     if KILL_ALL_WHILE_CREATING.with(|kill| kill.get()) {
       kill_all_owned_children();
     }
+  }
+
+  thread_local! {
+    /// Whether killing a group on this thread fails, the way the OS refusing
+    /// to would (the syscall is the only thing left out).
+    static FAIL_KILLING_GROUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  }
+
+  pub fn fail_killing_group() -> io::Result<()> {
+    if FAIL_KILLING_GROUP.with(|fail| fail.get()) {
+      return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn says_when_the_group_cant_be_killed_rather_than_waiting() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let mut child = OwnedChild::spawn(&mut heartbeat.command_starting_it()).unwrap();
+    assert!(heartbeat.is_beating());
+    FAIL_KILLING_GROUP.with(|fail| fail.set(true));
+    let start = Instant::now();
+    let err = child.kill().unwrap_err();
+    FAIL_KILLING_GROUP.with(|fail| fail.set(false));
+    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    // right away, rather than waiting for a child that wasn't killed
+    assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+    assert!(heartbeat.is_beating());
+    assert!(child.try_wait().unwrap().is_none());
+    // the group is kept, so killing it again can work
+    child.kill().unwrap();
+    assert!(child.try_wait().unwrap().is_some());
+    assert!(heartbeat.stopped());
   }
 
   /// Whether this is the process of its own the test runs in, as it calls
