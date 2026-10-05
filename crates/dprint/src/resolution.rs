@@ -1210,6 +1210,7 @@ mod test {
         shebangs,
         inherit: None,
         plugins: Vec::new(),
+        remote_exec: Default::default(),
       });
       let scope = PluginsScope::new(environment, vec![Rc::new(create_plugin_with_overrides(Vec::new()))], config, Vec::new()).unwrap();
       scope.plugins_hash()

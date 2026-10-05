@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::remote_exec::RemoteExec;
+use super::remote_exec::RemoteExecProvenance;
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -55,6 +56,10 @@ pub struct ResolvedConfig {
   /// the plugins and configuration of its ancestor configuration file.
   pub inherit: Option<bool>,
   pub config_map: ConfigMap,
+  /// What remote configuration added to the exec configuration, which a
+  /// nested configuration that inherits this one filters by its own
+  /// `"playWithFire"`.
+  pub remote_exec: RemoteExecProvenance,
 }
 
 #[derive(Debug, Error)]
@@ -139,6 +144,7 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
           shebangs: None,
           inherit: None,
           plugins: Vec::new(),
+          remote_exec: Default::default(),
         }
       } else if args.config_discovery(environment).traverse_ancestors() {
         return Err(ResolveConfigError::NotFound {
@@ -225,12 +231,13 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
     incremental,
     shebangs,
     inherit,
+    remote_exec: Default::default(),
   };
 
   // resolve extends
   let mut resolved_config = resolve_extends(resolved_config, extends, base_source, environment.clone(), remote_exec.clone()).await?;
   let remote_exec = std::mem::take(&mut *remote_exec.borrow_mut());
-  remote_exec.apply(&mut resolved_config.config_map, &mut resolved_config.plugins, environment)?;
+  resolved_config.remote_exec = remote_exec.apply(&mut resolved_config.config_map, &mut resolved_config.plugins, environment)?;
   Ok(resolved_config)
 }
 
@@ -244,8 +251,16 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
 ///
 /// Note: `includes` are not inherited.
 pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Result<ResolvedConfig> {
+  // what remote configuration added to the ancestor's exec configuration is
+  // only inherited as far as the nested config's own "playWithFire" allows
+  let mut parent_config_map = parent.config_map.clone();
+  let mut parent_plugins = parent.plugins.clone();
+  let inherited_remote_exec = parent
+    .remote_exec
+    .filter_inherited(&config.remote_exec, &mut parent_config_map, &mut parent_plugins);
+
   // plugins specified in the nested config have precedence over the ancestor's
-  config.plugins.extend(parent.plugins.iter().cloned());
+  config.plugins.extend(parent_plugins);
   config.plugins = filter_duplicate_plugin_sources(std::mem::take(&mut config.plugins));
 
   // combine excludes, rebasing the ancestor's patterns onto this config's directory
@@ -261,7 +276,9 @@ pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig) -> Re
     config.shebangs = parent.shebangs.clone();
   }
 
-  merge_config_map_into(&mut config.config_map, parent.config_map.clone())?;
+  merge_config_map_into(&mut config.config_map, parent_config_map)?;
+  config.remote_exec.inherit(inherited_remote_exec);
+  config.remote_exec.remove_unused_plugin(&config.config_map, &mut config.plugins);
 
   Ok(config)
 }
@@ -2294,6 +2311,7 @@ mod tests {
           }),
         ),
       ]),
+      remote_exec: Default::default(),
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2315,6 +2333,7 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      remote_exec: Default::default(),
     };
 
     let result = inherit_config(child, &parent).unwrap();
@@ -2430,6 +2449,7 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
         }),
       )]),
+      remote_exec: Default::default(),
     };
     let child = ResolvedConfig {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
@@ -2450,6 +2470,7 @@ mod tests {
           properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
         }),
       )]),
+      remote_exec: Default::default(),
     };
 
     let err = inherit_config(child, &parent).err().unwrap();
@@ -2567,32 +2588,41 @@ mod tests {
     }
 
     fn resolve_with_base(local_config: &str, remote_config: &str, base_config: &str) -> Result<Resolved, String> {
+      resolve_with_remote_files(local_config, &[(REMOTE_URL, remote_config)], base_config)
+    }
+
+    fn resolve_with_remote_files(local_config: &str, remote_files: &[(&str, &str)], base_config: &str) -> Result<Resolved, String> {
       let environment = TestEnvironment::new();
       environment.write_file("/dprint.json", local_config).unwrap();
       environment.write_file("/base.json", base_config).unwrap();
-      environment.add_remote_file(REMOTE_URL, remote_config.to_string().leak().as_bytes());
+      for (url, text) in remote_files {
+        environment.add_remote_file_bytes(url, text.as_bytes().to_vec());
+      }
       environment.clone().run_in_runtime(async move {
         let result = get_result("/dprint.json", &environment).await.map_err(|err| err.to_string())?;
-        let exec = match result.config_map.get("exec") {
-          Some(ConfigMapValue::PluginConfig(exec)) => Exec {
-            properties: ExecProperties::from_config(&exec.properties),
-            overrides: exec
-              .overrides
-              .iter()
-              .map(|override_config| ExecOverride {
-                files: override_config.files.clone(),
-                properties: ExecProperties::from_config(&override_config.properties),
-              })
-              .collect(),
-          },
-          _ => Exec::default(),
-        };
         Ok(Resolved {
           plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
-          exec,
+          exec: exec_of(&result),
           messages: environment.take_stderr_messages(),
         })
       })
+    }
+
+    fn exec_of(config: &ResolvedConfig) -> Exec {
+      match config.config_map.get("exec") {
+        Some(ConfigMapValue::PluginConfig(exec)) => Exec {
+          properties: ExecProperties::from_config(&exec.properties),
+          overrides: exec
+            .overrides
+            .iter()
+            .map(|override_config| ExecOverride {
+              files: override_config.files.clone(),
+              properties: ExecProperties::from_config(&override_config.properties),
+            })
+            .collect(),
+        },
+        _ => Exec::default(),
+      }
     }
 
     /// A remote configuration that runs its commands through the working
@@ -2856,6 +2886,89 @@ mod tests {
         err,
         Some("Expected \"exec.playWithFire\" to be true, false, or an array of programs.".to_string())
       );
+    }
+
+    #[test]
+    fn ignores_the_remote_exec_plugin_when_none_of_its_commands_are_allowed() {
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": ["prettier"] }} }}"#, REMOTE_URL),
+        &remote_config(""),
+      )
+      .unwrap();
+      // without commands its configuration would only be an error
+      assert_eq!(result.plugins, Vec::<String>::new());
+      assert_eq!(result.exec, Exec::default());
+      assert_eq!(
+        result.messages.last().unwrap(),
+        "Note: The exec plugin in remote configuration is ignored, as none of the exec commands are allowed by \"playWithFire\"."
+      );
+    }
+
+    #[test]
+    fn keeps_invalid_remote_commands_over_lower_precedence_ones() {
+      // the extended remote configuration's commands aren't an array, which
+      // still takes precedence over the commands of the one it extends
+      let remote_files = [
+        (REMOTE_URL, r#"{ "extends": "./lower.json", "exec": { "commands": "evil" } }"#),
+        (
+          "https://dprint.dev/lower.json",
+          r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@abc"] }"#,
+        ),
+      ];
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve_with_remote_files(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          &remote_files,
+          "{}",
+        )
+        .unwrap()
+      };
+      for play_with_fire in ["true", r#"["evil"]"#] {
+        let result = resolve_allowing(play_with_fire);
+        // which runs nothing, and the exec plugin reports
+        assert_eq!(result.exec.properties.commands, vec![r#"String("evil")"#.to_string()], "{}", play_with_fire);
+        assert_eq!(result.plugins, vec![EXEC_PLUGIN.to_string()]);
+      }
+      let result = resolve_allowing("false");
+      assert_eq!(result.exec, Exec::default());
+      assert_eq!(result.plugins, Vec::<String>::new());
+    }
+
+    #[test]
+    fn applies_a_nested_configurations_play_with_fire_to_the_remote_commands_it_inherits() {
+      let inherit = |nested_exec: &str| {
+        let environment = TestEnvironment::new();
+        environment
+          .write_file(
+            "/dprint.json",
+            &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+          )
+          .unwrap();
+        environment.mk_dir_all("/sub").unwrap();
+        environment
+          .write_file("/sub/dprint.json", &format!(r#"{{ "inherit": true{} }}"#, nested_exec))
+          .unwrap();
+        environment.add_remote_file_bytes(REMOTE_URL, remote_config("").into_bytes());
+        environment.clone().run_in_runtime(async move {
+          let ancestor = resolve_local_config("/dprint.json", &environment).await;
+          let nested = resolve_local_config("/sub/dprint.json", &environment).await;
+          let result = inherit_config(nested, &ancestor).unwrap();
+          (exec_of(&result), result.plugins.iter().map(|plugin| plugin.to_string()).collect::<Vec<_>>())
+        })
+      };
+
+      // what the ancestor allowed, when it doesn't say
+      let (exec, plugins) = inherit("");
+      assert_eq!(exec.properties.commands, ALL_REMOTE_COMMANDS.to_vec());
+      assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
+      // nothing remote, when it doesn't allow any
+      let (exec, plugins) = inherit(r#", "exec": { "playWithFire": false }"#);
+      assert_eq!(exec, Exec::default());
+      assert_eq!(plugins, Vec::<String>::new());
+      // the remote commands of the programs it allows
+      let (exec, plugins) = inherit(r#", "exec": { "playWithFire": ["tombi"] }"#);
+      assert_eq!(exec.properties.commands, vec!["tombi format -".to_string()]);
+      assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
     }
   }
 
