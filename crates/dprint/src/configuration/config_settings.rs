@@ -9,6 +9,7 @@ use indexmap::IndexMap;
 
 use super::ConfigMap;
 use super::ConfigMapValue;
+use super::remote_exec::RemoteExecProvenance;
 use crate::environment::CanonicalizedPathBuf;
 use crate::patterns::process_config_pattern;
 use crate::plugins::PluginSourceReference;
@@ -59,6 +60,10 @@ pub struct PluginConfiguration {
   pub config: ConfigMap,
   /// The configuration file each property of `config` is from.
   pub origins: PropertyOrigins,
+  /// What remote configuration added to the exec configuration, which a
+  /// nested configuration that inherits this one filters by its own
+  /// `"playWithFire"` (see `remote_exec.rs`).
+  pub remote_exec: RemoteExecProvenance,
 }
 
 /// The configuration file each property of a configuration is from, so a
@@ -231,8 +236,16 @@ impl PluginConfiguration {
   }
 
   pub(super) fn inherit(&mut self, ancestor: &PluginConfiguration) -> Result<()> {
+    // what remote configuration added to the ancestor's exec configuration is
+    // only inherited as far as this configuration's own "playWithFire" allows
+    let mut sources = ancestor.sources.clone();
+    let mut config = ancestor.config.clone();
+    let inherited_remote_exec = ancestor.remote_exec.filter_inherited(&self.remote_exec, &mut config, &mut sources);
     self.origins.add_lower_precedence(ancestor.origins.clone());
-    self.add_lower_precedence(ancestor.sources.iter().cloned(), ancestor.config.clone())
+    self.add_lower_precedence(sources, config)?;
+    self.remote_exec.inherit(inherited_remote_exec);
+    self.remote_exec.remove_unused_plugin(&self.config, &mut self.sources);
+    Ok(())
   }
 
   /// Adds plugins and configuration of lower precedence. A plugin specified
