@@ -40,8 +40,9 @@ pub struct ConfigSchema {
   pub warnings: Vec<String>,
 }
 
-/// Builds one self-contained schema for a configuration file: dprint's schema,
-/// with each plugin's schema for its table.
+/// Builds one schema for a configuration file: dprint's schema, with each
+/// plugin's schema for its table. It isn't necessarily self-contained, as
+/// what a plugin's schema refers to in other files stays a url.
 ///
 /// The plugin schemas are copied in rather than referred to with `allOf`,
 /// because some tools check each part of an `allOf` separately when they

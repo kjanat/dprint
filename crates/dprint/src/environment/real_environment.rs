@@ -258,7 +258,10 @@ impl UrlDownloader for RealEnvironment {
     let downloader = self.url_downloader.clone();
     let url = url.clone();
     let auth = auth.map(|s| s.to_string());
-    dprint_core::async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref())).await?
+    // the download gives up at the deadline itself, so it doesn't keep going
+    // once what it's for has given up
+    let deadline = crate::utils::current_deadline();
+    dprint_core::async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref(), deadline)).await?
   }
 }
 

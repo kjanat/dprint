@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -264,21 +265,26 @@ impl RealUrlDownloader {
     })
   }
 
-  pub fn download_with_auth(&self, url: &Url, auth: Option<&str>) -> Result<Option<DownloadedFile>> {
+  /// Downloads the file, giving up at the deadline when there's one.
+  pub fn download_with_auth(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>) -> Result<Option<DownloadedFile>> {
     let agent = self.get_agent(url)?;
-    self.download_with_retries(url, auth, &agent)
+    self.download_with_retries(url, auth, deadline, &agent)
   }
 
-  fn download_with_retries(&self, url: &Url, auth: Option<&str>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
+  fn download_with_retries(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
     let mut last_error = None;
     for retry_count in 0..(MAX_RETRIES + 1) {
-      match self.inner_download(url, auth, retry_count, agent) {
+      match self.inner_download(url, auth, retry_count, deadline, agent) {
         Ok(result) => return Ok(result),
         Err(err) => {
           if retry_count < MAX_RETRIES {
             log_debug!(self.logger, "Error downloading {} ({}/{}): {:#}", url, retry_count, MAX_RETRIES, err);
           }
           last_error = Some(err);
+          // retrying doesn't extend the deadline
+          if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+          }
         }
       }
     }
@@ -289,7 +295,7 @@ impl RealUrlDownloader {
   pub fn download_no_retries_for_testing(&self, url: &str) -> Result<Option<Vec<u8>>> {
     let url = Url::parse(url)?;
     let agent = self.get_agent(&url)?;
-    Ok(self.inner_download(&url, None, 0, &agent)?.map(|r| r.content))
+    Ok(self.inner_download(&url, None, 0, None, &agent)?.map(|r| r.content))
   }
 
   fn get_agent(&self, url: &Url) -> Result<ureq::Agent> {
@@ -302,8 +308,16 @@ impl RealUrlDownloader {
     self.agent_store.get(kind, url)
   }
 
-  fn inner_download(&self, url: &Url, auth: Option<&str>, retry_count: u8, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
+  fn inner_download(&self, url: &Url, auth: Option<&str>, retry_count: u8, deadline: Option<Instant>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
     let mut request = agent.request_url("GET", url);
+    if let Some(deadline) = deadline {
+      // the whole request, reading the response included, gives up at the
+      // deadline (except for a DNS lookup, which can't be interrupted)
+      match deadline.checked_duration_since(Instant::now()) {
+        Some(remaining) if !remaining.is_zero() => request = request.timeout(remaining),
+        _ => bail!("Error downloading {} - Timed out.", url),
+      }
+    }
     if let Some(auth) = auth {
       request = request.set("Authorization", auth);
     }
@@ -366,10 +380,17 @@ fn read_response(url: &Url, retry_count: u8, reader: &mut impl Read, total_size:
 mod test {
   use dprint_core::owned_child::OwnedChild;
   use std::io::ErrorKind;
+  use std::io::Read;
+  use std::io::Write;
+  use std::net::TcpListener;
+  use std::net::TcpStream;
   use std::process::Command;
   use std::process::Stdio;
   use std::sync::Arc;
+  use std::sync::atomic::AtomicUsize;
+  use std::sync::atomic::Ordering;
   use std::time::Duration;
+  use std::time::Instant;
 
   use crate::utils::LogLevel;
   use crate::utils::Logger;
@@ -481,6 +502,97 @@ mod test {
       let result = downloader.download_no_retries_for_testing("https://localhost:8063");
       assert!(result.is_err());
     }
+  }
+
+  fn create_silent_downloader() -> RealUrlDownloader {
+    RealUrlDownloader::new(
+      None,
+      Arc::new(Logger::new(&LoggerOptions {
+        initial_context_name: "dprint".to_string(),
+        is_stdout_machine_readable: true,
+        log_level: LogLevel::Silent,
+      })),
+      NoProxy::from_string(""),
+      None,
+    )
+    .unwrap()
+  }
+
+  /// Starts a local server that does `respond` with each connection, and
+  /// counts the connections.
+  fn start_local_server(respond: fn(TcpStream)) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/schema.json", listener.local_addr().unwrap());
+    let connections = Arc::new(AtomicUsize::new(0));
+    std::thread::spawn({
+      let connections = connections.clone();
+      move || {
+        for stream in listener.incoming() {
+          connections.fetch_add(1, Ordering::SeqCst);
+          std::thread::spawn(move || respond(stream.unwrap()));
+        }
+      }
+    });
+    (url, connections)
+  }
+
+  /// Downloads the url with the deadline, failing the test when it doesn't
+  /// give up soon after it rather than hanging.
+  fn download_before(url: &str, deadline: Duration) -> (anyhow::Result<Option<Vec<u8>>>, Duration) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let url = url::Url::parse(url).unwrap();
+    std::thread::spawn(move || {
+      let start = Instant::now();
+      let result = create_silent_downloader().download_with_auth(&url, None, Some(start + deadline));
+      sender.send((result.map(|file| file.map(|file| file.content)), start.elapsed())).unwrap();
+    });
+    receiver.recv_timeout(deadline + Duration::from_secs(10)).expect("the download didn't give up")
+  }
+
+  #[test]
+  fn gives_up_on_a_server_that_stops_responding_at_the_deadline() {
+    // it accepts the connection and reads the request, then never responds
+    let (url, connections) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      std::thread::sleep(Duration::from_secs(60));
+    });
+    let (result, elapsed) = download_before(&url, Duration::from_millis(500));
+    let err = result.unwrap_err().to_string();
+    assert!(err.starts_with(&format!("Error downloading {}", url)), "{}", err);
+    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
+    // without retrying once the deadline passed
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn gives_up_on_a_response_that_keeps_trickling_in_at_the_deadline() {
+    // the response arrives a byte at a time, which mustn't keep the download
+    // going past the deadline
+    let (url, _) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n");
+      while stream.write_all(b" ").is_ok() {
+        std::thread::sleep(Duration::from_millis(20));
+      }
+    });
+    let (result, elapsed) = download_before(&url, Duration::from_millis(500));
+    assert!(result.is_err());
+    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
+  }
+
+  #[test]
+  fn downloads_before_the_deadline() {
+    let (url, _) = start_local_server(|mut stream| {
+      let mut request = [0; 1024];
+      let _ = stream.read(&mut request);
+      let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+    });
+    let (result, _) = download_before(&url, Duration::from_secs(10));
+    assert_eq!(result.unwrap(), Some(b"{}".to_vec()));
   }
 
   fn start_deno_server() -> Option<OwnedChild> {
