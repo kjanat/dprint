@@ -184,7 +184,7 @@ impl ProcessPluginCommunicator {
     })?;
 
     // read and output stderr prefixed
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child.take_stderr().unwrap();
     crate::async_runtime::spawn_blocking({
       let shutdown_flag = shutdown_flag.clone();
       let on_std_err = on_std_err.clone();
@@ -194,8 +194,8 @@ impl ProcessPluginCommunicator {
     });
 
     // verify the schema version
-    let mut stdout_reader = MessageReader::new(child.stdout.take().unwrap());
-    let mut stdin_writer = MessageWriter::new(child.stdin.take().unwrap());
+    let mut stdout_reader = MessageReader::new(child.take_stdout().unwrap());
+    let mut stdin_writer = MessageWriter::new(child.take_stdin().unwrap());
 
     let (mut stdout_reader, stdin_writer, schema_version) = crate::async_runtime::spawn_blocking(move || {
       let schema_version = get_plugin_schema_version(&mut stdout_reader, &mut stdin_writer).map_err(CommunicatorError::SchemaVerification)?;

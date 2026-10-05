@@ -621,7 +621,7 @@ impl ProcessWorker {
     let mut child = OwnedChild::spawn(command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()))?;
 
     // these threads end once the worker exits and its pipes close
-    let mut stdin = child.stdin.take().unwrap();
+    let mut stdin = child.take_stdin().unwrap();
     let (close_stdin, stdin_closed) = mpsc::channel::<()>();
     std::thread::spawn(move || {
       if write_module(&mut stdin, &wasm_bytes).is_ok() {
@@ -630,7 +630,7 @@ impl ProcessWorker {
         let _ = stdin_closed.recv();
       }
     });
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut stdout = BufReader::new(child.take_stdout().unwrap());
     let (sender, messages) = mpsc::channel();
     std::thread::spawn(move || {
       loop {
@@ -648,7 +648,7 @@ impl ProcessWorker {
         }
       }
     });
-    let mut stderr = child.stderr.take().unwrap();
+    let mut stderr = child.take_stderr().unwrap();
     let stderr = std::thread::spawn(move || {
       let mut bytes = Vec::new();
       let _ = stderr.read_to_end(&mut bytes);

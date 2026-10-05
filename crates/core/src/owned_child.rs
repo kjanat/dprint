@@ -8,6 +8,10 @@
 //! on Windows), kills the whole group when it's killed or dropped, and reaps
 //! the child.
 //!
+//! The group is part of spawning: the child is in it before it runs, and
+//! spawning fails (without leaving the child running) when it can't be put in
+//! one, rather than giving a child that's only killed itself.
+//!
 //! The group also ends with its owner:
 //!
 //! - Windows: the job kills its processes once it's closed, which the OS does
@@ -25,13 +29,18 @@
 //! SIGKILL, since nothing runs when that happens.
 
 use std::io;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::process::Child;
+use std::process::ChildStderr;
+use std::process::ChildStdin;
+use std::process::ChildStdout;
 use std::process::Command;
+use std::process::ExitStatus;
 
 /// A child process that's killed, together with every process it started,
 /// when this is dropped (see the module docs).
+///
+/// It only gives access to the child through its own methods, so nothing can
+/// end the child's life outside of what it keeps track of.
 pub struct OwnedChild {
   child: Child,
   group: sys::Group,
@@ -39,6 +48,8 @@ pub struct OwnedChild {
 
 impl OwnedChild {
   /// Spawns the command as an owned child.
+  ///
+  /// On Windows this sets the command's creation flags, replacing any it had.
   pub fn spawn(command: &mut Command) -> io::Result<Self> {
     Self::spawn_with(command, true)
   }
@@ -57,9 +68,50 @@ impl OwnedChild {
   fn spawn_with(command: &mut Command, tied_to_owner: bool) -> io::Result<Self> {
     sys::prepare(command, tied_to_owner);
     #[allow(clippy::disallowed_methods)] // every owned child is spawned here
-    let child = command.spawn()?;
-    let group = sys::Group::new(&child);
-    Ok(Self { child, group })
+    let mut child = command.spawn()?;
+    #[cfg(test)]
+    test::delay_before_group();
+    match sys::Group::new(&child) {
+      Ok(group) => Ok(Self { child, group }),
+      Err(err) => {
+        // it hasn't run yet (see `sys::prepare`), so this is all of it
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(io::Error::new(err.kind(), format!("Could not put the process in a group of its own. {}", err)))
+      }
+    }
+  }
+
+  /// The child's process id.
+  pub fn id(&self) -> u32 {
+    self.child.id()
+  }
+
+  /// Takes the child's stdin, when it was piped and wasn't taken before.
+  pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+    self.child.stdin.take()
+  }
+
+  /// Takes the child's stdout, when it was piped and wasn't taken before.
+  pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+    self.child.stdout.take()
+  }
+
+  /// Takes the child's stderr, when it was piped and wasn't taken before.
+  pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+    self.child.stderr.take()
+  }
+
+  /// Waits for the child to exit. What it started keeps running until this is
+  /// killed or dropped.
+  pub fn wait(&mut self) -> io::Result<ExitStatus> {
+    self.child.wait()
+  }
+
+  /// The child's exit status, when it exited. What it started keeps running
+  /// until this is killed or dropped.
+  pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+    self.child.try_wait()
   }
 
   /// Kills the child and every process it started, then waits for the child
@@ -67,23 +119,7 @@ impl OwnedChild {
   /// exited on its own.
   pub fn kill(&mut self) -> io::Result<()> {
     self.group.kill();
-    // for a child that isn't in a group (see `sys::Group`)
-    let _ = self.child.kill();
     self.child.wait().map(|_| ())
-  }
-}
-
-impl Deref for OwnedChild {
-  type Target = Child;
-
-  fn deref(&self) -> &Child {
-    &self.child
-  }
-}
-
-impl DerefMut for OwnedChild {
-  fn deref_mut(&mut self) -> &mut Child {
-    &mut self.child
   }
 }
 
@@ -103,6 +139,7 @@ pub fn kill_all_owned_children() {
 
 #[cfg(unix)]
 mod sys {
+  use std::io;
   use std::process::Child;
   use std::process::Command;
   use std::sync::Mutex;
@@ -113,7 +150,8 @@ mod sys {
   pub fn prepare(command: &mut Command, tied_to_owner: bool) {
     use std::os::unix::process::CommandExt;
 
-    // a process group of its own, which is how the child and everything it
+    // a process group of its own, which the child is in before it runs (it's
+    // set between fork and exec), and is how the child and everything it
     // starts get killed together
     command.process_group(0);
 
@@ -141,11 +179,11 @@ mod sys {
   pub struct Group(libc::pid_t);
 
   impl Group {
-    pub fn new(child: &Child) -> Self {
+    pub fn new(child: &Child) -> io::Result<Self> {
       // the child leads its group, so the group's id is the child's
       let id = child.id() as libc::pid_t;
       lock_groups().push(id);
-      Self(id)
+      Ok(Self(id))
     }
 
     pub fn kill(&self) {
@@ -181,82 +219,134 @@ mod sys {
 
 #[cfg(windows)]
 mod sys {
+  use std::io;
   use std::os::windows::io::AsRawHandle;
+  use std::os::windows::process::CommandExt;
   use std::process::Child;
   use std::process::Command;
 
   use winapi::shared::minwindef::DWORD;
+  use winapi::shared::minwindef::FALSE;
   use winapi::shared::minwindef::LPVOID;
   use winapi::um::handleapi::CloseHandle;
+  use winapi::um::handleapi::INVALID_HANDLE_VALUE;
   use winapi::um::jobapi2::AssignProcessToJobObject;
   use winapi::um::jobapi2::CreateJobObjectW;
   use winapi::um::jobapi2::SetInformationJobObject;
   use winapi::um::jobapi2::TerminateJobObject;
+  use winapi::um::processthreadsapi::OpenThread;
+  use winapi::um::processthreadsapi::ResumeThread;
+  use winapi::um::tlhelp32::CreateToolhelp32Snapshot;
+  use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
+  use winapi::um::tlhelp32::THREADENTRY32;
+  use winapi::um::tlhelp32::Thread32First;
+  use winapi::um::tlhelp32::Thread32Next;
+  use winapi::um::winbase::CREATE_SUSPENDED;
   use winapi::um::winnt::HANDLE;
   use winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   use winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
   use winapi::um::winnt::JobObjectExtendedLimitInformation;
+  use winapi::um::winnt::THREAD_SUSPEND_RESUME;
 
-  pub fn prepare(_command: &mut Command, _tied_to_owner: bool) {
-    // the job kills its processes when the owner exits for any reason
+  pub fn prepare(command: &mut Command, _tied_to_owner: bool) {
+    // created suspended, so it can't run (and start processes) before it's in
+    // its job (see `Group::new`), and the job kills its processes when the
+    // owner exits for any reason
+    command.creation_flags(CREATE_SUSPENDED);
   }
 
-  /// The job the child is in. A child that couldn't be put in one (ex. the
-  /// system doesn't allow it) is only killed itself.
-  ///
-  /// The child is put in the job right after it's created, so a process it
-  /// started in the meantime isn't in it. A process starts in milliseconds,
-  /// so in practice that's nothing.
-  pub struct Group(Option<HANDLE>);
-
-  // SAFETY: a job handle can be used from any thread
-  unsafe impl Send for Group {}
-  unsafe impl Sync for Group {}
+  /// The job the child and every process it starts are in.
+  pub struct Group(Handle);
 
   impl Group {
-    pub fn new(child: &Child) -> Self {
-      // SAFETY: the handles are valid, and the info has the size passed
+    /// Puts the child, which was created suspended, in a job of its own, then
+    /// lets it run.
+    pub fn new(child: &Child) -> io::Result<Self> {
+      // SAFETY: the handles are open, and the info has the size passed
       unsafe {
-        let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-        if job.is_null() {
-          return Self(None);
-        }
+        let job = Handle::new(CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()))?;
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         // closing the job, which also happens when this process exits for any
         // reason, kills every process in it
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let is_in_job = SetInformationJobObject(
-          job,
+        if SetInformationJobObject(
+          job.0,
           JobObjectExtendedLimitInformation,
           &mut info as *mut _ as LPVOID,
           std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as DWORD,
-        ) != 0
-          && AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) != 0;
-        if !is_in_job {
-          CloseHandle(job);
-          return Self(None);
+        ) == 0
+        {
+          return Err(io::Error::last_os_error());
         }
-        Self(Some(job))
+        if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+          return Err(io::Error::last_os_error());
+        }
+        resume_process(child.id())?;
+        Ok(Self(job))
       }
     }
 
     pub fn kill(&self) {
-      if let Some(job) = self.0 {
-        // SAFETY: the job handle is open until this is dropped
-        unsafe {
-          TerminateJobObject(job, 1);
-        }
+      // SAFETY: the job handle is open until this is dropped
+      unsafe {
+        TerminateJobObject(self.0.0, 1);
       }
     }
   }
 
-  impl Drop for Group {
-    fn drop(&mut self) {
-      if let Some(job) = self.0.take() {
-        // SAFETY: the job handle is open, and closed only here
-        unsafe {
-          CloseHandle(job);
+  /// Resumes the threads of a process that was created suspended, which is
+  /// its primary thread. (Rust's `Child` keeps that thread's handle, but only
+  /// gives it out on nightly.)
+  fn resume_process(process_id: DWORD) -> io::Result<()> {
+    // SAFETY: the snapshot and thread handles are open where they're used, and
+    // the entry has the size it says
+    unsafe {
+      let snapshot = Handle::new(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0))?;
+      let mut entry: THREADENTRY32 = std::mem::zeroed();
+      entry.dwSize = std::mem::size_of::<THREADENTRY32>() as DWORD;
+      let mut resumed = 0;
+      let mut has_entry = Thread32First(snapshot.0, &mut entry) != 0;
+      while has_entry {
+        if entry.th32OwnerProcessID == process_id {
+          let thread = Handle::new(OpenThread(THREAD_SUSPEND_RESUME, FALSE, entry.th32ThreadID))?;
+          if ResumeThread(thread.0) == DWORD::MAX {
+            return Err(io::Error::last_os_error());
+          }
+          resumed += 1;
         }
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as DWORD;
+        has_entry = Thread32Next(snapshot.0, &mut entry) != 0;
+      }
+      if resumed == 0 {
+        return Err(io::Error::other("Could not find the process's thread to start it."));
+      }
+      Ok(())
+    }
+  }
+
+  /// A handle that's closed when this is dropped.
+  struct Handle(HANDLE);
+
+  // SAFETY: a job handle can be used from any thread
+  unsafe impl Send for Handle {}
+  unsafe impl Sync for Handle {}
+
+  impl Handle {
+    /// Takes a handle a function returned, or the error it failed with.
+    fn new(handle: HANDLE) -> io::Result<Self> {
+      if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+      } else {
+        Ok(Self(handle))
+      }
+    }
+  }
+
+  impl Drop for Handle {
+    fn drop(&mut self) {
+      // SAFETY: the handle is open, and closed only here
+      unsafe {
+        CloseHandle(self.0);
       }
     }
   }
@@ -266,15 +356,202 @@ mod sys {
   }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod test {
+  use std::path::Path;
+  use std::path::PathBuf;
   use std::process::Stdio;
+  use std::sync::atomic::AtomicU64;
+  use std::sync::atomic::Ordering;
   use std::time::Duration;
   use std::time::Instant;
 
   use super::*;
 
+  /// How long spawning waits between creating the child and putting it in its
+  /// group, to show the child doesn't run (and start processes) before then.
+  static DELAY_BEFORE_GROUP_MS: AtomicU64 = AtomicU64::new(0);
+
+  pub fn delay_before_group() {
+    std::thread::sleep(Duration::from_millis(DELAY_BEFORE_GROUP_MS.load(Ordering::Relaxed)));
+  }
+
+  /// The tests spawn and kill children that `kill_all_owned_children` and the
+  /// delay affect, so they run one at a time.
+  fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|err| err.into_inner())
+  }
+
+  fn wait_until(condition: impl Fn() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+      if condition() {
+        return true;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+  }
+
+  /// A file that a process started by a child appends to about every 100ms
+  /// (unix) or second (Windows) as long as it runs.
+  struct Heartbeat {
+    dir: PathBuf,
+  }
+
+  impl Drop for Heartbeat {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.dir);
+    }
+  }
+
+  impl Heartbeat {
+    fn new() -> Self {
+      static COUNT: AtomicU64 = AtomicU64::new(0);
+      let dir = std::env::temp_dir().join(format!("dprint-owned-child-{}-{}", std::process::id(), COUNT.fetch_add(1, Ordering::Relaxed)));
+      std::fs::create_dir_all(&dir).unwrap();
+      Self { dir }
+    }
+
+    fn path(&self) -> PathBuf {
+      self.dir.join("heartbeat.txt")
+    }
+
+    fn len(&self) -> u64 {
+      std::fs::metadata(self.path()).map(|metadata| metadata.len()).unwrap_or(0)
+    }
+
+    fn is_beating(&self) -> bool {
+      let len = self.len();
+      wait_until(|| self.len() > len)
+    }
+
+    /// Whether it stopped, once a beat that was underway had time to finish.
+    fn stopped(&self) -> bool {
+      std::thread::sleep(Duration::from_millis(500));
+      let len = self.len();
+      std::thread::sleep(Duration::from_millis(2500));
+      self.len() == len
+    }
+
+    /// A command that right away starts a process that beats, then waits
+    /// (longer than any test).
+    fn command_starting_it(&self) -> Command {
+      command_starting_heartbeat(&self.dir, &self.path(), true)
+    }
+
+    /// A command that right away starts a process that beats, then exits.
+    fn command_starting_it_and_exiting(&self) -> Command {
+      command_starting_heartbeat(&self.dir, &self.path(), false)
+    }
+  }
+
+  #[cfg(unix)]
+  fn command_starting_heartbeat(_dir: &Path, path: &Path, then_wait: bool) -> Command {
+    let mut command = Command::new("sh");
+    command
+      .arg("-c")
+      .arg(format!(
+        "(while :; do echo x >> '{}'; sleep 0.1; done) & {}",
+        path.display(),
+        if then_wait { "sleep 600" } else { "exit 0" }
+      ))
+      .stdin(Stdio::null())
+      .stdout(Stdio::null());
+    command
+  }
+
+  #[cfg(windows)]
+  fn command_starting_heartbeat(dir: &Path, path: &Path, then_wait: bool) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let script = dir.join("heartbeat.cmd");
+    std::fs::write(
+      &script,
+      format!(
+        "@echo off\r\n:beat\r\necho x>>\"{}\"\r\nping -n 2 127.0.0.1 >nul\r\ngoto beat\r\n",
+        path.display()
+      ),
+    )
+    .unwrap();
+    let mut command = Command::new("cmd");
+    command
+      .arg("/c")
+      .raw_arg(format!(
+        "start \"\" /b \"{}\"{}",
+        script.display(),
+        if then_wait { " & ping -n 600 127.0.0.1 >nul" } else { "" }
+      ))
+      .stdin(Stdio::null())
+      .stdout(Stdio::null());
+    command
+  }
+
+  #[test]
+  fn kills_what_the_child_started_when_dropped() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let child = OwnedChild::spawn(&mut heartbeat.command_starting_it()).unwrap();
+    assert!(heartbeat.is_beating());
+    drop(child);
+    assert!(heartbeat.stopped());
+  }
+
+  #[test]
+  fn kill_kills_what_the_child_started_and_reaps_it() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let mut child = OwnedChild::spawn_untied(&mut heartbeat.command_starting_it()).unwrap();
+    assert!(heartbeat.is_beating());
+    child.kill().unwrap();
+    // reaped, so it's no longer a zombie waiting on its owner
+    assert!(child.try_wait().unwrap().is_some());
+    assert!(heartbeat.stopped());
+  }
+
+  #[test]
+  fn owns_what_the_child_starts_before_its_group_is_set_up() {
+    let _serial = serial();
+    // a child that ran before it was in its group would have started the
+    // heartbeat outside of it by then
+    DELAY_BEFORE_GROUP_MS.store(1500, Ordering::Relaxed);
+    let heartbeat = Heartbeat::new();
+    let child = OwnedChild::spawn(&mut heartbeat.command_starting_it());
+    DELAY_BEFORE_GROUP_MS.store(0, Ordering::Relaxed);
+    let child = child.unwrap();
+    assert!(heartbeat.is_beating());
+    drop(child);
+    assert!(heartbeat.stopped());
+  }
+
+  #[test]
+  fn kills_what_an_exited_child_left_running() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let mut child = OwnedChild::spawn(&mut heartbeat.command_starting_it_and_exiting()).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(heartbeat.is_beating());
+    drop(child);
+    assert!(heartbeat.stopped());
+  }
+
+  // Windows: the jobs kill their processes when this process exits
+  #[cfg(unix)]
+  #[test]
+  fn kills_all_owned_children() {
+    let _serial = serial();
+    let first = Heartbeat::new();
+    let second = Heartbeat::new();
+    let _first = OwnedChild::spawn(&mut first.command_starting_it()).unwrap();
+    let _second = OwnedChild::spawn(&mut second.command_starting_it()).unwrap();
+    assert!(first.is_beating() && second.is_beating());
+    kill_all_owned_children();
+    assert!(first.stopped() && second.stopped());
+  }
+
   /// Whether a `sleep <seconds>` process is running.
+  #[cfg(target_os = "linux")]
   fn sleep_is_running(seconds: &str) -> bool {
     let output = Command::new("ps").args(["-eo", "args"]).output().unwrap();
     String::from_utf8_lossy(&output.stdout)
@@ -282,85 +559,25 @@ mod test {
       .any(|line| line.trim() == format!("sleep {}", seconds))
   }
 
-  fn wait_until(condition: impl Fn() -> bool) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-      if condition() {
-        return true;
-      }
-      std::thread::sleep(Duration::from_millis(20));
-    }
-    false
-  }
-
-  /// `kill_all_owned_children` kills the children of every test, so the tests
-  /// run one at a time.
-  fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(|err| err.into_inner())
-  }
-
-  fn sh(script: &str) -> Command {
-    let mut command = Command::new("sh");
-    command.args(["-c", script]).stdin(Stdio::null()).stdout(Stdio::null());
-    command
-  }
-
-  #[test]
-  fn kills_what_the_child_started_when_dropped() {
-    let _serial = serial();
-    // the shell starts `sleep` as a process of its own
-    let child = OwnedChild::spawn(&mut sh("sleep 4351; true")).unwrap();
-    assert!(wait_until(|| sleep_is_running("4351")));
-    drop(child);
-    assert!(wait_until(|| !sleep_is_running("4351")));
-  }
-
-  #[test]
-  fn kills_what_an_exited_child_left_running() {
-    let _serial = serial();
-    let mut child = OwnedChild::spawn(&mut sh("sleep 4352 &")).unwrap();
-    assert!(child.wait().unwrap().success());
-    assert!(wait_until(|| sleep_is_running("4352")));
-    drop(child);
-    assert!(wait_until(|| !sleep_is_running("4352")));
-  }
-
-  #[test]
-  fn kill_kills_what_the_child_started_and_reaps_it() {
-    let _serial = serial();
-    let mut child = OwnedChild::spawn(&mut sh("sleep 4353; true")).unwrap();
-    assert!(wait_until(|| sleep_is_running("4353")));
-    child.kill().unwrap();
-    // reaped, so it's no longer a zombie waiting on its owner
-    assert!(child.try_wait().unwrap().is_some());
-    assert!(wait_until(|| !sleep_is_running("4353")));
-  }
-
   #[cfg(target_os = "linux")]
   #[test]
   fn a_tied_child_dies_with_the_thread_that_spawned_it() {
     let _serial = serial();
+    let sleep = |seconds: &str| {
+      let mut command = Command::new("sleep");
+      command.arg(seconds);
+      command
+    };
     // the owners never drop the children, as if they were killed
-    std::thread::spawn(|| std::mem::forget(OwnedChild::spawn(&mut sh("exec sleep 4356")).unwrap()))
+    std::thread::spawn(move || std::mem::forget(OwnedChild::spawn(&mut sleep("4356")).unwrap()))
       .join()
       .unwrap();
-    std::thread::spawn(|| std::mem::forget(OwnedChild::spawn_untied(&mut sh("exec sleep 4357")).unwrap()))
+    std::thread::spawn(move || std::mem::forget(OwnedChild::spawn_untied(&mut sleep("4357")).unwrap()))
       .join()
       .unwrap();
     assert!(wait_until(|| !sleep_is_running("4356")));
     assert!(sleep_is_running("4357"));
     kill_all_owned_children();
     assert!(wait_until(|| !sleep_is_running("4357")));
-  }
-
-  #[test]
-  fn kills_all_owned_children() {
-    let _serial = serial();
-    let _first = OwnedChild::spawn(&mut sh("sleep 4354; true")).unwrap();
-    let _second = OwnedChild::spawn(&mut sh("sleep 4355; true")).unwrap();
-    assert!(wait_until(|| sleep_is_running("4354") && sleep_is_running("4355")));
-    kill_all_owned_children();
-    assert!(wait_until(|| !sleep_is_running("4354") && !sleep_is_running("4355")));
   }
 }
