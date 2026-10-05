@@ -20,6 +20,7 @@ Compared to the downloaded plugin, the built-in one:
 
 - Kills a command that times out or is cancelled instead of leaving it running.
 - Supports a `"setupTimeout"` option (default: `300` seconds) after which a `setupCommand` is killed.
+- Runs a `setupCommand` once for the files that need it, also when formatting them in parallel. Its outcome, including a failure or a timeout, applies to every file rather than being retried for each one, and it may run for the longest `"setupTimeout"` of the configurations that use it. A file whose formatting is cancelled stops waiting for it, and it's killed once no file waits for it.
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
 - Passes `{{file_path}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, where the plugin escaped them for HTML (ex. a `&` in a file path became `&amp;`). They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
 - Has its configuration schema built in, so [`dprint schema`](/config#schema) and the language server describe all of the options above without downloading it.

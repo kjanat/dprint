@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
@@ -10,9 +11,12 @@ use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
+use dprint_core::async_runtime::FutureExt;
 use dprint_core::async_runtime::LocalBoxFuture;
 use dprint_core::async_runtime::async_trait;
+use dprint_core::async_runtime::future::WeakShared;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::GlobalConfiguration;
 use dprint_core::plugins::AsyncPluginHandler;
@@ -24,7 +28,6 @@ use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::PluginResolveConfigurationResult;
-use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::oneshot::Sender;
@@ -138,6 +141,10 @@ pub async fn format_bytes(
         SetupRun::Completed => {}
         SetupRun::Cancelled => return Ok(None),
       }
+    }
+    // the request may have been cancelled while it waited
+    if token.is_cancelled() {
+      return Ok(None);
     }
 
     // format here
@@ -292,14 +299,21 @@ fn timeout_err(config: &Configuration) -> FormatError {
   FormatError::new(format!("Child process has not returned a result within {} seconds.", config.timeout,))
 }
 
-/// Remembers which setup commands have already been run so that a command's
-/// `setupCommand` only runs a single time, even when many files are being
-/// formatted in parallel (see https://github.com/dprint/dprint/issues/1023).
+/// Runs each command's `setupCommand` once before formatting with the command,
+/// even when many files are formatted in parallel (see
+/// https://github.com/dprint/dprint/issues/1023).
+///
+/// The requests that need a setup command share one attempt at running it.
+/// Each waits for its outcome until the request is cancelled, which only stops
+/// that request from waiting. The attempt runs as long as a request waits for
+/// it, and is killed once none does, after which the next request that needs
+/// it starts another. Its outcome, success or failure (including a timeout),
+/// is final for the process, so every request waiting for it and every later
+/// one gets it, rather than each file retrying it. It may run for the longest
+/// `setupTimeout` of the requests that waited for it.
 #[derive(Default, Clone)]
 pub struct SetupState {
-  cells: Rc<RefCell<HashMap<SetupKey, Rc<OnceCell<()>>>>>,
-  /// Setup commands that timed out, so they aren't retried for every file.
-  timed_out: Rc<RefCell<HashMap<SetupKey, String>>>,
+  setups: Rc<RefCell<HashMap<SetupKey, SetupEntry>>>,
   /// Executables found through PATHEXT, keyed by the executable and its cwd.
   /// Only found ones are kept, since a setup command may install one later.
   #[cfg_attr(not(windows), allow(dead_code))]
@@ -320,10 +334,38 @@ enum SetupRun {
   Cancelled,
 }
 
-enum SetupInitError {
-  Cancelled,
-  Failed(FormatError),
-  TimedOut(String),
+/// Where a setup command is at.
+enum SetupEntry {
+  /// Being run, for as long as a request waits for it.
+  Running(RunningSetup),
+  /// Run, which is final.
+  Finished(SetupOutcome),
+}
+
+struct RunningSetup {
+  /// The attempt, which the requests waiting for it own, so that it's dropped
+  /// (killing its process) once none does.
+  outcome: WeakShared<LocalBoxFuture<'static, SetupOutcome>>,
+  started: Instant,
+  /// When it's killed, which a request that waits for it with a longer
+  /// `setupTimeout` moves later.
+  deadline: Rc<Cell<Instant>>,
+}
+
+#[derive(Clone)]
+enum SetupOutcome {
+  Succeeded,
+  /// Failed or timed out, with why.
+  Failed(String),
+}
+
+impl SetupOutcome {
+  fn into_result(self) -> Result<SetupRun, FormatError> {
+    match self {
+      SetupOutcome::Succeeded => Ok(SetupRun::Completed),
+      SetupOutcome::Failed(message) => Err(FormatError::new(message)),
+    }
+  }
 }
 
 impl SetupState {
@@ -343,7 +385,12 @@ impl SetupState {
     path
   }
 
+  /// Runs the setup command, or waits for the attempt at it that's running,
+  /// until it's run or the request is cancelled (see [`SetupState`]).
   async fn run_once(&self, cwd: &Path, setup_command: &SetupCommand, timeout: Duration, token: &Arc<dyn CancellationToken>) -> Result<SetupRun, FormatError> {
+    if token.is_cancelled() {
+      return Ok(SetupRun::Cancelled);
+    }
     // the cwd is part of the key because the same command run in different
     // directories may produce different results
     let key = SetupKey {
@@ -351,40 +398,83 @@ impl SetupState {
       executable: setup_command.executable.clone(),
       args: setup_command.args.clone(),
     };
-    if let Some(message) = self.timed_out.borrow().get(&key) {
-      return Err(FormatError::new(message.clone()));
-    }
-    let cell = {
-      let mut cells = self.cells.borrow_mut();
-      cells.entry(key.clone()).or_default().clone()
-    };
-    // get_or_try_init ensures only one caller runs the setup at a time and that
-    // the others wait for it to finish; a failure is not cached so it can be
-    // retried by the next file rather than poisoning all formatting
-    let executable = self.resolve_executable(&setup_command.executable, cwd);
-    match cell
-      .get_or_try_init(|| run_setup_command(cwd, &executable, setup_command, timeout, token))
-      .await
-    {
-      Ok(()) => Ok(SetupRun::Completed),
-      Err(SetupInitError::Cancelled) => Ok(SetupRun::Cancelled),
-      Err(SetupInitError::Failed(err)) => Err(err),
-      Err(SetupInitError::TimedOut(message)) => {
-        self.timed_out.borrow_mut().insert(key, message.clone());
-        Err(FormatError::new(message))
+    let attempt = {
+      let mut setups = self.setups.borrow_mut();
+      let running = match setups.get(&key) {
+        Some(SetupEntry::Finished(outcome)) => return outcome.clone().into_result(),
+        Some(SetupEntry::Running(running)) => running.outcome.upgrade().inspect(|_| {
+          // it may run as long as this request allows too
+          running.deadline.set(running.deadline.get().max(running.started + timeout));
+        }),
+        None => None,
+      };
+      match running {
+        Some(attempt) => attempt,
+        // not run yet, or every request that waited for it stopped waiting
+        None => {
+          let started = Instant::now();
+          let deadline = Rc::new(Cell::new(started + timeout));
+          let attempt = run_setup_command(SetupAttempt {
+            setups: self.setups.clone(),
+            key: key.clone(),
+            cwd: cwd.to_path_buf(),
+            executable: self.resolve_executable(&setup_command.executable, cwd),
+            setup_command: setup_command.clone(),
+            started,
+            deadline: deadline.clone(),
+          })
+          .boxed_local()
+          .shared();
+          setups.insert(
+            key,
+            SetupEntry::Running(RunningSetup {
+              outcome: attempt.downgrade().expect("not polled yet"),
+              started,
+              deadline,
+            }),
+          );
+          attempt
+        }
       }
+    };
+    // a request that's cancelled stops waiting, which leaves the attempt to
+    // the others, and drops it when there are none
+    tokio::select! {
+      _ = token.wait_cancellation() => Ok(SetupRun::Cancelled),
+      outcome = attempt => outcome.into_result(),
     }
   }
 }
 
-async fn run_setup_command(
-  cwd: &Path,
-  executable: &Path,
-  setup_command: &SetupCommand,
-  timeout: Duration,
-  token: &Arc<dyn CancellationToken>,
-) -> Result<(), SetupInitError> {
-  let mut child = OwnedChild::spawn(
+/// An attempt at running a setup command.
+struct SetupAttempt {
+  setups: Rc<RefCell<HashMap<SetupKey, SetupEntry>>>,
+  key: SetupKey,
+  cwd: PathBuf,
+  executable: PathBuf,
+  setup_command: SetupCommand,
+  started: Instant,
+  deadline: Rc<Cell<Instant>>,
+}
+
+/// Runs a setup command, and records its outcome as final before any request
+/// sees it (see [`SetupState`]).
+async fn run_setup_command(run: SetupAttempt) -> SetupOutcome {
+  let outcome = run_setup_command_process(&run).await;
+  run.setups.borrow_mut().insert(run.key.clone(), SetupEntry::Finished(outcome.clone()));
+  outcome
+}
+
+async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
+  let SetupAttempt {
+    cwd,
+    executable,
+    setup_command,
+    started,
+    deadline,
+    ..
+  } = run;
+  let mut child = match OwnedChild::spawn(
     Command::new(executable)
       .current_dir(cwd)
       .stdin(Stdio::null())
@@ -392,8 +482,10 @@ async fn run_setup_command(
       .stdout(Stdio::null())
       .stderr(Stdio::piped())
       .args(&setup_command.args),
-  )
-  .map_err(|e| SetupInitError::Failed(FormatError::new(format!("Cannot start setup command process: {}", e))))?;
+  ) {
+    Ok(child) => child,
+    Err(err) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
+  };
 
   // capture stderr to surface it if the command fails
   let (err_tx, err_rx) = oneshot::channel();
@@ -402,8 +494,8 @@ async fn run_setup_command(
     handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
   }
 
-  // the child stays owned by this function, so returning on a timeout or
-  // cancellation kills it
+  // the child stays owned by this function, so returning on a timeout, or
+  // being dropped once no request waits for it, kills it
   let result_future = async {
     let handles_future = dprint_core::async_runtime::future::join_all(handles);
     let handle_results = handles_future.await;
@@ -412,23 +504,32 @@ async fn run_setup_command(
     }
     wait_for_exit(&mut child, "setup command").await
   };
+  let timed_out = async {
+    // until the deadline, which may move later meanwhile
+    loop {
+      let current = deadline.get();
+      tokio::time::sleep_until(current.into()).await;
+      if deadline.get() <= current {
+        break;
+      }
+    }
+  };
 
   tokio::select! {
-    _ = token.wait_cancellation() => Err(SetupInitError::Cancelled),
-    _ = tokio::time::sleep(timeout) => Err(SetupInitError::TimedOut(format!(
+    _ = timed_out => SetupOutcome::Failed(format!(
       "Setup command '{}' did not finish within {} seconds, so it was killed. Increase the \"setupTimeout\" configuration if it needs longer.",
       setup_command.executable,
-      timeout.as_secs(),
-    ))),
+      (deadline.get() - *started).as_secs(),
+    )),
     result = result_future => match result {
-      Ok(exit_status) if exit_status.success() => Ok(()),
-      Ok(exit_status) => Err(SetupInitError::Failed(FormatError::new(format!(
+      Ok(exit_status) if exit_status.success() => SetupOutcome::Succeeded,
+      Ok(exit_status) => SetupOutcome::Failed(format!(
         "Setup command '{}' exited with {}: {}",
         setup_command.executable,
         exit_status_text(exit_status),
         String::from_utf8_lossy(&err_rx.await.unwrap_or_default())
-      )))),
-      Err(err) => Err(SetupInitError::Failed(err)),
+      )),
+      Err(err) => SetupOutcome::Failed(err.to_string()),
     }
   }
 }
@@ -768,5 +869,219 @@ mod test {
     // the next file fails right away instead of waiting out the timeout again
     assert_eq!(format(&config, "text", &setup_state).await, expected);
     assert!(start.elapsed() < Duration::from_secs(3));
+  }
+
+  #[cfg(unix)]
+  /// A setup command that records each start of it in `dir`, as the id of the
+  /// process that then runs for `seconds`.
+  fn counting_setup_command(dir: &std::path::Path, seconds: u32) -> String {
+    format!("sh -c \"echo $$ >> {}; exec sleep {}\"", dir.join("starts").display(), seconds)
+  }
+
+  #[cfg(unix)]
+  /// The process ids of the setup command's starts, in order.
+  fn setup_starts(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("starts"))
+      .unwrap_or_default()
+      .lines()
+      .map(ToOwned::to_owned)
+      .collect()
+  }
+
+  #[cfg(unix)]
+  fn is_running(process_id: &str) -> bool {
+    std::process::Command::new("kill")
+      .args(["-0", process_id])
+      .stderr(std::process::Stdio::null())
+      .status()
+      .unwrap()
+      .success()
+  }
+
+  #[cfg(unix)]
+  /// Runs the future on a runtime of its own, then checks that nothing it
+  /// started (ex. a reader of a process's output) keeps running.
+  fn run_leaving_nothing_running<T>(future: impl std::future::Future<Output = T>) -> T {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let result = runtime.block_on(future);
+    let start = Instant::now();
+    runtime.shutdown_timeout(Duration::from_secs(10));
+    assert!(start.elapsed() < Duration::from_secs(5), "something it started was left running");
+    result
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn times_out_a_setup_command_once_for_every_request_waiting_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = resolve(serde_json::json!({
+      "setupTimeout": 1,
+      "commands": [{ "command": "cat", "setupCommand": counting_setup_command(dir.path(), 30), "exts": ["txt"] }]
+    }));
+    let expected =
+      Err("Setup command 'sh' did not finish within 1 seconds, so it was killed. Increase the \"setupTimeout\" configuration if it needs longer.".to_string());
+    run_leaving_nothing_running(async {
+      let setup_state = SetupState::default();
+      // requests that all wait for the setup command
+      let barrier = tokio::sync::Barrier::new(3);
+      let start = Instant::now();
+      let results = dprint_core::async_runtime::future::join_all((0..3).map(|_| async {
+        barrier.wait().await;
+        format(&config, "text", &setup_state).await
+      }))
+      .await;
+      // all get the outcome of one attempt, rather than each waiting out one
+      assert_eq!(results, vec![expected.clone(); 3]);
+      assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+      // and so do later files, without running it again
+      assert_eq!(format(&config, "text", &setup_state).await, expected);
+    });
+    let starts = setup_starts(dir.path());
+    assert_eq!(starts.len(), 1);
+    assert!(!is_running(&starts[0]));
+  }
+
+  #[cfg(unix)]
+  /// How a request went, and how long after the start it returned.
+  type RequestResult = (Result<Option<String>, String>, Duration);
+
+  #[cfg(unix)]
+  /// Formats with requests that wait for a setup command that takes a second,
+  /// cancelling the ones that say so after 300ms. Gives what they returned and
+  /// the starts of the setup command.
+  fn format_cancelling(cancelled: &[bool]) -> (Vec<RequestResult>, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = resolve(serde_json::json!({
+      "commands": [{ "command": "tr a-z A-Z", "setupCommand": counting_setup_command(dir.path(), 1), "exts": ["txt"] }]
+    }));
+    let results = run_leaving_nothing_running(async {
+      let setup_state = SetupState::default();
+      let tokens = cancelled.iter().map(|_| tokio_util::sync::CancellationToken::new()).collect::<Vec<_>>();
+      let start = Instant::now();
+      let requests = dprint_core::async_runtime::future::join_all(tokens.iter().map(|token| {
+        let token = Arc::new(token.clone());
+        let (config, setup_state) = (&config, &setup_state);
+        async move { (format_with_token(config, "text", setup_state, token).await, start.elapsed()) }
+      }));
+      let cancel = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for (token, cancelled) in tokens.iter().zip(cancelled) {
+          if *cancelled {
+            token.cancel();
+          }
+        }
+      };
+      tokio::join!(requests, cancel).0
+    });
+    (results, setup_starts(dir.path()))
+  }
+
+  #[cfg(unix)]
+  #[track_caller]
+  fn assert_returned_once_cancelled(result: &RequestResult) {
+    assert_eq!(result.0, Ok(None));
+    assert!(result.1 < Duration::from_millis(800), "{:?}", result.1);
+  }
+
+  #[cfg(unix)]
+  #[track_caller]
+  fn assert_formatted_after_setup(result: &RequestResult) {
+    assert_eq!(result.0, Ok(Some("TEXT".to_string())));
+    assert!(result.1 >= Duration::from_secs(1), "{:?}", result.1);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn a_cancelled_request_stops_waiting_for_a_setup_command_another_waits_for() {
+    let (results, starts) = format_cancelling(&[false, true]);
+    assert_returned_once_cancelled(&results[1]);
+    assert_formatted_after_setup(&results[0]);
+    assert_eq!(starts.len(), 1);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn the_request_that_started_a_setup_command_can_stop_waiting_for_it() {
+    // the setup command keeps running for the other request
+    let (results, starts) = format_cancelling(&[true, false]);
+    assert_returned_once_cancelled(&results[0]);
+    assert_formatted_after_setup(&results[1]);
+    assert_eq!(starts.len(), 1);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn kills_a_setup_command_no_request_waits_for() {
+    let (results, starts) = format_cancelling(&[true, true]);
+    assert_returned_once_cancelled(&results[0]);
+    assert_returned_once_cancelled(&results[1]);
+    assert_eq!(starts.len(), 1);
+    assert!(!is_running(&starts[0]));
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn runs_a_setup_command_again_once_no_request_waited_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = resolve(serde_json::json!({
+      "commands": [{ "command": "tr a-z A-Z", "setupCommand": counting_setup_command(dir.path(), 1), "exts": ["txt"] }]
+    }));
+    run_leaving_nothing_running(async {
+      let setup_state = SetupState::default();
+      let token = tokio_util::sync::CancellationToken::new();
+      let cancel = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        token.cancel();
+      };
+      let (result, ()) = tokio::join!(format_with_token(&config, "text", &setup_state, Arc::new(token.clone())), cancel);
+      assert_eq!(result, Ok(None));
+      // it has no outcome, so it's run for the next request
+      assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
+      // which is final
+      assert_eq!(format(&config, "text", &setup_state).await, Ok(Some("TEXT".to_string())));
+    });
+    assert_eq!(setup_starts(dir.path()).len(), 2);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn does_nothing_for_a_request_cancelled_before_it_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let formatted = dir.path().join("formatted");
+    let config = resolve(serde_json::json!({
+      "commands": [{
+        "command": format!("sh -c \"echo x >> {}; cat\"", formatted.display()),
+        "setupCommand": counting_setup_command(dir.path(), 0),
+        "exts": ["txt"],
+      }]
+    }));
+    run_leaving_nothing_running(async {
+      let token = tokio_util::sync::CancellationToken::new();
+      token.cancel();
+      assert_eq!(format_with_token(&config, "text", &SetupState::default(), Arc::new(token)).await, Ok(None));
+    });
+    assert_eq!(setup_starts(dir.path()).len(), 0);
+    assert!(!formatted.exists());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn runs_a_setup_command_for_the_longest_setup_timeout_of_the_requests_waiting_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_with_timeout = |seconds: u32| {
+      resolve(serde_json::json!({
+        "setupTimeout": seconds,
+        "commands": [{ "command": "tr a-z A-Z", "setupCommand": counting_setup_command(dir.path(), 2), "exts": ["txt"] }]
+      }))
+    };
+    let (short, long) = (config_with_timeout(1), config_with_timeout(5));
+    run_leaving_nothing_running(async {
+      let setup_state = SetupState::default();
+      // the one with the short timeout starts it, and the other's lets it finish
+      let (short_result, long_result) = tokio::join!(format(&short, "text", &setup_state), format(&long, "text", &setup_state));
+      assert_eq!(short_result, Ok(Some("TEXT".to_string())));
+      assert_eq!(long_result, Ok(Some("TEXT".to_string())));
+    });
+    assert_eq!(setup_starts(dir.path()).len(), 1);
   }
 }
