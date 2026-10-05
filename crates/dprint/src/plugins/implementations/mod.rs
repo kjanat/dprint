@@ -53,7 +53,7 @@ mod test {
         let resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
         let cli_args = CliArgs::empty();
         let config = Rc::new(resolve_config_from_args(&cli_args, &environment).await.unwrap());
-        let plugins = resolver.resolve_plugins(config.plugins.clone()).await.unwrap();
+        let plugins = resolver.resolve_plugins(config.plugins.sources.clone()).await.unwrap();
         assert_eq!(
           plugins.iter().map(|p| &p.info().name).collect::<Vec<_>>(),
           vec!["test-plugin", "test-process-plugin"]
@@ -118,7 +118,7 @@ mod test {
         let resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
         let cli_args = CliArgs::empty();
         let config = Rc::new(resolve_config_from_args(&cli_args, &environment).await.unwrap());
-        let plugins = resolver.resolve_plugins(config.plugins.clone()).await.unwrap();
+        let plugins = resolver.resolve_plugins(config.plugins.sources.clone()).await.unwrap();
         assert_eq!(
           plugins.iter().map(|p| &p.info().name).collect::<Vec<_>>(),
           vec!["test-plugin", "test-process-plugin"]

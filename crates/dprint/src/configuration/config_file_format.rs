@@ -14,11 +14,9 @@ use toml_edit::Item;
 use toml_edit::Value;
 
 use super::ApplyConfigChangesResult;
-use super::ConfigMap;
 use super::PluginUpdateInfo;
 use super::add_plugins_to_config;
 use super::apply_config_changes;
-use super::config_map_from_values;
 use super::parse_integer;
 use super::parse_json_config;
 use super::update_plugin_in_config;
@@ -74,8 +72,9 @@ impl ConfigFileFormat {
     }
   }
 
-  pub fn deserialize(self, text: &str) -> Result<ConfigMap> {
-    config_map_from_values(self.parse(text)?)
+  #[cfg(test)]
+  pub fn deserialize(self, text: &str) -> Result<super::ConfigMap> {
+    super::config_map_from_values(self.parse(text)?)
   }
 
   /// See [`add_plugins_to_config`].

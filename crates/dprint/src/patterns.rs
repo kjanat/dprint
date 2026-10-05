@@ -48,7 +48,7 @@ impl<TEnvironment: Environment> FileMatcher<TEnvironment> {
     let mut patterns = get_all_file_patterns(config, args, root_dir, &environment);
     // resolve args with an existing literal name the same way `glob()` does
     // (ex. `--stdin` matching must agree with a normal `fmt`)
-    rewrite_literal_arg_patterns(&environment, &mut patterns, &config.base_path);
+    rewrite_literal_arg_patterns(&environment, &mut patterns, &config.origin.base_path);
     let gitignores = if args.no_gitignore {
       None
     } else {
@@ -70,7 +70,7 @@ impl<TEnvironment: Environment> FileMatcher<TEnvironment> {
       patterns,
       &GlobMatcherOptions {
         case_sensitive: true,
-        base_dir: config.base_path.clone(),
+        base_dir: config.origin.base_path.clone(),
       },
     )?;
 
@@ -172,7 +172,7 @@ pub fn get_all_file_patterns(config: &ResolvedConfig, args: &FilePatternArgs, cw
     // includes up front. Discover them when shebang mappings are configured and
     // let plugin resolution filter them down to just the shebang matches. This
     // doesn't apply to an includes override since that should restrict the files.
-    shebangs: match (&args.include_pattern_overrides, &config.shebangs) {
+    shebangs: match (&args.include_pattern_overrides, &config.routing.shebangs) {
       (None, Some(shebangs)) => shebangs.keys().cloned().collect(),
       _ => Vec::new(),
     },
@@ -195,7 +195,10 @@ fn get_config_includes_file_patterns(
         .map(|p| process_cli_override_pattern(p, cwd, config, environment))
         .collect()
     }
-    None => GlobPattern::new_vec(process_config_patterns(config.includes.as_ref()?).collect(), config.base_path.clone()),
+    None => GlobPattern::new_vec(
+      process_config_patterns(config.files.includes.as_ref()?).collect(),
+      config.origin.base_path.clone(),
+    ),
   });
 
   Some(file_patterns)
@@ -217,11 +220,7 @@ fn get_config_exclude_file_patterns(
         .map(|p| process_cli_override_pattern(p, cwd, config, environment))
         .collect::<Vec<_>>()
     }
-    None => config
-      .excludes
-      .as_ref()
-      .map(|excludes| GlobPattern::new_vec(process_config_patterns(excludes).collect(), config.base_path.clone()))
-      .unwrap_or_default(),
+    None => GlobPattern::new_vec(process_config_patterns(&config.files.excludes).collect(), config.origin.base_path.clone()),
   });
 
   // todo(THIS PR): document removing this flag in favour of a !**/node_modules pattern
@@ -240,7 +239,7 @@ fn get_config_exclude_file_patterns(
     let node_modules_exclude = String::from("**/node_modules");
     let exclude_node_module_patterns = [
       GlobPattern::new(node_modules_exclude.clone(), cwd.clone()),
-      GlobPattern::new(node_modules_exclude, config.base_path.clone()),
+      GlobPattern::new(node_modules_exclude, config.origin.base_path.clone()),
     ];
     for node_modules_exclude in exclude_node_module_patterns {
       if !file_patterns.contains(&node_modules_exclude) {
@@ -281,7 +280,7 @@ fn process_file_pattern_slashes(file_pattern: &str) -> String {
 /// `--includes-override "routes/[id].svelte"` when that file exists).
 fn process_cli_override_pattern(file_pattern: &str, cwd: &CanonicalizedPathBuf, config: &ResolvedConfig, environment: &impl Environment) -> GlobPattern {
   let mut pattern = process_cli_pattern(file_pattern, cwd, environment);
-  rewrite_literal_arg_pattern(environment, &mut pattern, &config.base_path);
+  rewrite_literal_arg_pattern(environment, &mut pattern, &config.origin.base_path);
   pattern
 }
 

@@ -24,11 +24,8 @@ pub struct GlobalConfigurationResult {
   pub diagnostics: Vec<GlobalConfigDiagnostic>,
 }
 
-pub fn get_global_config(mut config_map: ConfigMap) -> GlobalConfigurationResult {
+pub fn get_global_config(config_map: ConfigMap) -> GlobalConfigurationResult {
   let mut diagnostics = Vec::new();
-
-  // ignore this property
-  config_map.shift_remove("$schema");
 
   // now get and resolve the global config
   let mut global_config = get_global_config_from_config_map(&mut diagnostics, config_map);
@@ -141,22 +138,6 @@ mod tests {
         "invalid digit found in string (lineWidth)",
         "Unknown property in configuration (unknownProperty)",
       ],
-    );
-  }
-
-  #[test]
-  fn should_ignore_schema_property() {
-    let mut config_map = ConfigMap::new();
-    config_map.insert(String::from("$schema"), ConfigMapValue::from_str("test"));
-    assert_result(
-      config_map,
-      GlobalConfiguration {
-        line_width: None,
-        use_tabs: None,
-        indent_width: None,
-        new_line_kind: None,
-      },
-      &[],
     );
   }
 

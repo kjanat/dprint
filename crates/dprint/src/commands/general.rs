@@ -195,7 +195,7 @@ pub async fn incremental_state<TEnvironment: Environment>(
     };
     scope.ensure_valid_for_cli_args(args)?;
     configs.push(ConfigIncrementalState {
-      path: display_config_source(&config.source, &cwd),
+      path: display_config_source(&config.origin.source, &cwd),
       // format as fixed width hex so the value is stable and easy to diff
       hash: format!("{:016x}", scope.plugins_hash()),
       plugins: scope

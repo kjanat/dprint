@@ -153,7 +153,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
     environment,
   )
   .await?;
-  let existing_plugin_names = get_config_file_plugin_names(environment, plugin_resolver, config.plugins).await;
+  let existing_plugin_names = get_config_file_plugin_names(environment, plugin_resolver, config.plugins.sources).await;
   let plugins_to_add = get_init_plugins_to_add(
     environment,
     GetInitPluginsToAddOptions {
@@ -264,7 +264,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
     minimum_dependency_age,
   } = options;
   let config = resolve_config_from_args(args, environment).await?;
-  let config_path = match config.source {
+  let config_path = match config.origin.source {
     PathSource::Local(source) => source.path,
     PathSource::Remote(_) | PathSource::Npm(_) => bail!("Cannot update plugins in a remote configuration."),
   };
@@ -286,7 +286,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
     if no_version || update_package_json {
       bail!("--no-version / --package-json require an explicit `npm:` specifier.");
     }
-    let mut possible_plugins = get_possible_plugins_to_add(environment, plugin_resolver, config.plugins).await?;
+    let mut possible_plugins = get_possible_plugins_to_add(environment, plugin_resolver, config.plugins.sources).await?;
     if possible_plugins.is_empty() {
       bail!("Could not find any plugins to add. Please provide one by specifying `dprint add <plugin-url>`.");
     }
@@ -314,7 +314,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
         ResolvePluginUrlOptions {
           plugin_name_or_url,
           config_path: &config_path,
-          config_plugins: &config.plugins,
+          config_plugins: &config.plugins.sources,
           no_version,
           update_package_json,
           checksum,
@@ -935,10 +935,10 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     let Some(config) = &scope.scope.config else {
       continue;
     };
-    let config_path = match &config.source {
+    let config_path = match &config.origin.source {
       PathSource::Local(source) => &source.path,
       PathSource::Remote(_) | PathSource::Npm(_) => {
-        log_warn!(environment, "Skipping non-local configuration file: {}", config.source.display());
+        log_warn!(environment, "Skipping non-local configuration file: {}", config.origin.source.display());
         continue;
       }
     };
@@ -951,7 +951,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     let plugins_to_update = get_plugins_to_update(
       environment,
       plugin_resolver,
-      config.plugins.clone(),
+      config.plugins.sources.clone(),
       PluginUpdateContext {
         npm_info_plugins: npm_info_plugins.clone(),
         config_dir,
@@ -1185,7 +1185,7 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     let Some(config) = &scope.scope.config else {
       continue;
     };
-    let config_path = match &config.source {
+    let config_path = match &config.origin.source {
       PathSource::Local(source) => &source.path,
       PathSource::Remote(_) | PathSource::Npm(_) => {
         continue;
@@ -1642,7 +1642,7 @@ pub async fn output_config_schema<TEnvironment: Environment>(
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<()> {
   let config = resolve_config_from_args(args, environment).await?;
-  let text = get_config_schema_text(environment, plugin_resolver, config.plugins).await?;
+  let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
   environment.log_machine_readable(text.as_bytes());
   Ok(())
 }
@@ -1713,7 +1713,7 @@ async fn update_config_schema_file<TEnvironment: Environment>(
       environment,
     )
     .await?;
-    let text = get_config_schema_text(environment, plugin_resolver, config.plugins).await?;
+    let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
     if environment.read_file(&schema_path).ok().as_deref() != Some(text.as_str()) {
       environment.write_file(&schema_path, &text)?;
       log_stdout_info!(environment, "Updated {}", schema_path.display());
