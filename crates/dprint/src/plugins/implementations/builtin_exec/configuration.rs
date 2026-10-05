@@ -9,7 +9,6 @@ use dprint_core::configuration::get_nullable_vec;
 use dprint_core::configuration::get_unknown_property_diagnostics;
 use dprint_core::configuration::get_value;
 use globset::GlobMatcher;
-use handlebars::Handlebars;
 use serde::Serialize;
 use serde::Serializer;
 use sha2::Digest;
@@ -17,6 +16,8 @@ use sha2::Sha256;
 use std::fs::read_to_string;
 use std::path::Path;
 use std::path::PathBuf;
+
+use super::template::validate_template;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,11 +172,7 @@ impl Configuration {
 
 fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
   let mut diagnostics = Vec::new();
-  let mut command = splitty::split_unquoted_whitespace(&get_value(&mut command_obj, "command", String::default(), &mut diagnostics))
-    .unwrap_quotes(true)
-    .filter(|p| !p.is_empty())
-    .map(String::from)
-    .collect::<Vec<_>>();
+  let mut command = split_command(&get_value(&mut command_obj, "command", String::default(), &mut diagnostics));
   if command.is_empty() {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: "command".to_string(),
@@ -184,17 +181,12 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
     return (None, diagnostics);
   }
 
-  {
-    let mut handlebars = Handlebars::new();
-    handlebars.set_strict_mode(true);
-    for arg in command.iter().skip(1) {
-      if let Err(e) = handlebars.register_template_string("tmp", arg) {
-        diagnostics.push(ConfigurationDiagnostic {
-          property_name: "command".to_string(),
-          message: format!("Invalid template: {}", e),
-        });
-      }
-      handlebars.unregister_template("tmp");
+  for arg in command.iter().skip(1) {
+    if let Err(err) = validate_template(arg) {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: "command".to_string(),
+        message: format!("Invalid template in argument '{}': {}", arg, err),
+      });
     }
   }
 
@@ -317,22 +309,50 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
   (Some(config), diagnostics)
 }
 
-/// Splits a command into its program and arguments.
+/// Splits a command into its program and arguments the way the exec plugin
+/// always has (with splitty 1.0.1):
+///
+/// - Parts are separated by spaces. Other whitespace (ex. a tab) is part of
+///   a part.
+/// - A part that starts with a quote (`"`) goes on to a quote followed by a
+///   space or the end, and doesn't include those quotes, so it may contain
+///   spaces. Without such a quote, it's the rest of the command as is.
+/// - Quotes anywhere else are kept, and empty parts (ex. `""`) are left out.
 pub fn split_command(command: &str) -> Vec<String> {
-  splitty::split_unquoted_whitespace(command)
-    .unwrap_quotes(true)
-    .filter(|p| !p.is_empty())
-    .map(String::from)
-    .collect()
+  let mut parts = Vec::new();
+  let mut rest = command.trim_start_matches(' ');
+  while !rest.is_empty() {
+    let (part, after) = split_first_part(rest);
+    if !part.is_empty() {
+      parts.push(part.to_string());
+    }
+    rest = after.trim_start_matches(' ');
+  }
+  parts
+}
+
+/// The first part of a command that doesn't start with a space, and what's
+/// after it.
+fn split_first_part(text: &str) -> (&str, &str) {
+  if let Some(quoted) = text.strip_prefix('"') {
+    return match quoted.find("\" ") {
+      Some(end) => (&quoted[..end], &quoted[end + 1..]),
+      None => match quoted.strip_suffix('"') {
+        Some(part) => (part, ""),
+        // an opening quote without a closing one is kept, as is what follows
+        None => (text, ""),
+      },
+    };
+  }
+  match text.find(' ') {
+    Some(end) => (&text[..end], &text[end..]),
+    None => (text, ""),
+  }
 }
 
 fn parse_setup_command(command_obj: &mut ConfigKeyMap, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
   let raw = get_nullable_value::<String>(command_obj, "setupCommand", diagnostics)?;
-  let mut parts = splitty::split_unquoted_whitespace(&raw)
-    .unwrap_quotes(true)
-    .filter(|p| !p.is_empty())
-    .map(String::from)
-    .collect::<Vec<_>>();
+  let mut parts = split_command(&raw);
   if parts.is_empty() {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: "setupCommand".to_string(),
@@ -548,6 +568,68 @@ mod tests {
         message: "Expected string or array value.".to_string(),
       }],
     );
+  }
+
+  #[test]
+  fn reports_an_unknown_template_variable_in_the_configuration() {
+    // the variable is `file_path`, which the configuration says before
+    // anything is formatted
+    let config: ConfigKeyMap = serde_json::from_value(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] })).unwrap();
+    let result = Configuration::resolve(config, &Default::default());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].property_name, "commands[0].command");
+    assert!(
+      result.diagnostics[0]
+        .message
+        .starts_with("Invalid template in argument '{{filePath}}': Unknown variable '{{filePath}}'."),
+      "{}",
+      result.diagnostics[0].message
+    );
+  }
+
+  #[test]
+  fn splits_commands_like_the_exec_plugin() {
+    let cases: &[(&str, &[&str])] = &[
+      // the tests of splitty 1.0.1 (https://github.com/Canop/splitty), which
+      // the exec plugin split commands with, without the empty parts it
+      // leaves out
+      ("", &[]),
+      ("    ", &[]),
+      (" a    试bc d  ", &["a", "试bc", "d"]),
+      ("e^iπ^ = 1", &["e^iπ^", "=", "1"]),
+      ("1234", &["1234"]),
+      ("1234\"", &["1234\""]),
+      (r#"""#, &["\""]),
+      (r#""a""#, &["a"]),
+      (r#" " "#, &["\" "]),
+      (r#"a  "deux mots" b"#, &["a", "deux mots", "b"]),
+      (r#" " ""#, &[" "]),
+      (r#" a  "2 * 试" x"x "z "#, &["a", "2 * 试", "x\"x", "\"z "]),
+      (r#"""""#, &["\""]),
+      (r#""""""#, &["\"\""]),
+      // empty parts are left out
+      (r#""""#, &[]),
+      (r#"a "" b"#, &["a", "b"]),
+      // only spaces separate parts
+      ("a\tb c", &["a\tb", "c"]),
+      // a part that starts with a quote ends at a quote followed by a space
+      (r#""a b" c"#, &["a b", "c"]),
+      (r#""a" "b c""#, &["a", "b c"]),
+      (r#""a"" b"#, &["a\"", "b"]),
+      (r#""a"b c"#, &["\"a\"b c"]),
+      (r#""a b"#, &["\"a b"]),
+      (
+        r#"prettier --stdin-filepath "{{file_path}}""#,
+        &["prettier", "--stdin-filepath", "{{file_path}}"],
+      ),
+      (
+        "rustup toolchain install nightly-2025-09-01",
+        &["rustup", "toolchain", "install", "nightly-2025-09-01"],
+      ),
+    ];
+    for (command, parts) in cases {
+      assert_eq!(split_command(command), *parts, "{:?}", command);
+    }
   }
 
   #[test]
