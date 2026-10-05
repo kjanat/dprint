@@ -154,8 +154,9 @@ impl WasmModuleCreator {
   /// so nothing is copied and only the pages that are used get loaded.
   ///
   /// The file must not change while the module is alive. The plugin cache
-  /// replaces a file by renaming a new one over it, which leaves the mapped
-  /// file as it was.
+  /// only renames a new file over it (the same build compiled again) or
+  /// removes it (once another build replaced it), which both leave the
+  /// mapped file as it was.
   pub fn create_from_serialized_file(&self, file_path: &Path) -> Result<WasmModule> {
     // SAFETY: see `create_from_serialized`, and the file isn't changed in place
     unsafe {
