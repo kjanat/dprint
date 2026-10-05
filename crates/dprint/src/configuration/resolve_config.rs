@@ -2657,6 +2657,34 @@ lineWidth = 80
     }
 
     #[test]
+    fn treats_another_remote_exec_version_as_a_process_plugin() {
+      // the built-in exec only serves the version it was built from, so a remote
+      // configuration asking for another one asks for a process plugin
+      let other_version = "npm:@dprint/exec@0.6.0/plugin.json@abc";
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+        &format!(r#"{{ "plugins": ["{}"] }}"#, other_version),
+      )
+      .unwrap();
+      assert_eq!(result.plugins, Vec::<String>::new());
+      assert_eq!(result.messages, vec![get_warn_non_wasm_plugins_message()]);
+    }
+
+    #[test]
+    fn doesnt_add_the_remote_exec_plugin_when_local_config_uses_another_exec_version() {
+      let other_version = "npm:@dprint/exec@0.6.0/plugin.json@abc";
+      let result = resolve(
+        &format!(
+          r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": true }} }}"#,
+          REMOTE_URL, other_version
+        ),
+        &remote_config(""),
+      )
+      .unwrap();
+      assert_eq!(result.plugins, vec![other_version.to_string()]);
+    }
+
+    #[test]
     fn runs_any_remote_exec_command_when_playing_with_fire() {
       let result = resolve(
         &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),

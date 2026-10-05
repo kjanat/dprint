@@ -2,8 +2,6 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,36 +32,12 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::oneshot::Sender;
 
+use dprint_core::owned_child::OwnedChild;
+
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
-
-struct ChildKillOnDrop(std::process::Child);
-
-impl Drop for ChildKillOnDrop {
-  fn drop(&mut self) {
-    // both are no-ops for a child that already exited and was waited on.
-    // waiting reaps a killed child so it doesn't linger as a zombie
-    if self.0.kill().is_ok() {
-      let _ignore = self.0.wait();
-    }
-  }
-}
-
-impl Deref for ChildKillOnDrop {
-  type Target = std::process::Child;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-impl DerefMut for ChildKillOnDrop {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.0
-  }
-}
 
 #[derive(Default)]
 pub struct ExecHandler {
@@ -170,21 +144,24 @@ pub async fn format_bytes(
     // format here
     let args = maybe_substitute_variables(&file_path, &config, command)?;
 
-    let mut child = ChildKillOnDrop(
+    // killed with whatever it started (ex. the `node` process of an npm
+    // installed command) once this returns, including on a timeout or
+    // cancellation. Untied, since a command runs for every file and ends
+    // on its own once dprint is gone and its pipes close.
+    let mut child = OwnedChild::spawn_untied(
       Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
         .current_dir(&command.cwd)
         .stdout(Stdio::piped())
         .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::piped())
-        .args(args)
-        .spawn()
-        .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?,
-    );
+        .args(args),
+    )
+    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
 
     // capturing stdout
     let (out_tx, out_rx) = oneshot::channel();
     let mut handles = Vec::with_capacity(2);
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = child.take_stdout() {
       handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stdout, out_tx)));
     } else {
       let _ = child.kill();
@@ -193,7 +170,7 @@ pub async fn format_bytes(
 
     // capturing stderr
     let (err_tx, err_rx) = oneshot::channel();
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = child.take_stderr() {
       handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
     }
 
@@ -201,8 +178,7 @@ pub async fn format_bytes(
     // because a command that never reads its stdin would block the write
     let stdin_write = if command.stdin {
       let mut stdin = child
-        .stdin
-        .take()
+        .take_stdin()
         .ok_or_else(|| FormatError::new("Cannot open the command's stdin. Perhaps you meant to set the command's \"stdin\" configuration to false?"))?;
       let file_bytes = file_bytes.into_owned();
       Some(dprint_core::async_runtime::spawn_blocking(move || match stdin.write_all(&file_bytes) {
@@ -396,22 +372,21 @@ async fn run_setup_command(
   timeout: Duration,
   token: &Arc<dyn CancellationToken>,
 ) -> Result<(), SetupInitError> {
-  let mut child = ChildKillOnDrop(
+  let mut child = OwnedChild::spawn(
     Command::new(executable)
       .current_dir(cwd)
       .stdin(Stdio::null())
       // a plugin must not write to stdout (it's the protocol channel)
       .stdout(Stdio::null())
       .stderr(Stdio::piped())
-      .args(&setup_command.args)
-      .spawn()
-      .map_err(|e| SetupInitError::Failed(FormatError::new(format!("Cannot start setup command process: {}", e))))?,
-  );
+      .args(&setup_command.args),
+  )
+  .map_err(|e| SetupInitError::Failed(FormatError::new(format!("Cannot start setup command process: {}", e))))?;
 
   // capture stderr to surface it if the command fails
   let (err_tx, err_rx) = oneshot::channel();
   let mut handles = Vec::with_capacity(1);
-  if let Some(stderr) = child.stderr.take() {
+  if let Some(stderr) = child.take_stderr() {
     handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stream_lines(stderr, err_tx)));
   }
 
@@ -449,7 +424,7 @@ async fn run_setup_command(
 /// Waits for a child that has closed its output streams to exit. It's polled
 /// rather than waited on from another thread so that the child stays owned by
 /// the caller, whose drop kills it.
-async fn wait_for_exit(child: &mut ChildKillOnDrop, description: &str) -> Result<ExitStatus, FormatError> {
+async fn wait_for_exit(child: &mut OwnedChild, description: &str) -> Result<ExitStatus, FormatError> {
   let mut delay = Duration::from_millis(1);
   loop {
     match child.try_wait() {
@@ -511,8 +486,7 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
     .collect()
 }
 
-// the tests run shell commands
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[allow(clippy::disallowed_methods)] // tests run real commands against real files
 mod test {
   use std::path::PathBuf;
@@ -521,6 +495,7 @@ mod test {
   use std::time::Instant;
 
   use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::plugins::CancellationToken;
   use dprint_core::plugins::NullCancellationToken;
 
   use super::SetupState;
@@ -535,24 +510,136 @@ mod test {
   }
 
   async fn format(config: &Arc<Configuration>, text: &str, setup_state: &SetupState) -> Result<Option<String>, String> {
-    format_bytes(
-      PathBuf::from("file.txt"),
-      text.as_bytes().to_vec(),
-      config.clone(),
-      Arc::new(NullCancellationToken),
-      setup_state,
-    )
-    .await
-    .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
-    .map_err(|err| err.to_string())
+    format_with_token(config, text, setup_state, Arc::new(NullCancellationToken)).await
   }
 
+  async fn format_with_token(
+    config: &Arc<Configuration>,
+    text: &str,
+    setup_state: &SetupState,
+    token: Arc<dyn CancellationToken>,
+  ) -> Result<Option<String>, String> {
+    format_bytes(PathBuf::from("file.txt"), text.as_bytes().to_vec(), config.clone(), token, setup_state)
+      .await
+      .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
+      .map_err(|err| err.to_string())
+  }
+
+  /// A formatter that right away starts a process that keeps the formatter's
+  /// output open, then exits. The process it started appends to a file about
+  /// every 100ms (unix) or second (Windows) as long as it runs.
+  struct LingeringFormatter {
+    dir: tempfile::TempDir,
+  }
+
+  impl LingeringFormatter {
+    fn new() -> Self {
+      let dir = tempfile::tempdir().unwrap();
+      let heartbeat = dir.path().join("heartbeat.txt");
+      #[cfg(unix)]
+      std::fs::write(
+        dir.path().join("formatter.sh"),
+        format!("(while :; do echo x >> '{}'; sleep 0.1; done) &\n", heartbeat.display()),
+      )
+      .unwrap();
+      #[cfg(windows)]
+      {
+        let script = dir.path().join("heartbeat.cmd");
+        std::fs::write(
+          &script,
+          format!(
+            "@echo off\r\n:beat\r\necho x>>\"{}\"\r\nping -n 2 127.0.0.1 >nul\r\ngoto beat\r\n",
+            heartbeat.display()
+          ),
+        )
+        .unwrap();
+        std::fs::write(
+          dir.path().join("formatter.cmd"),
+          format!("@echo off\r\nstart \"\" /b \"{}\"\r\n", script.display()),
+        )
+        .unwrap();
+      }
+      Self { dir }
+    }
+
+    fn config(&self, timeout: u32) -> Arc<Configuration> {
+      resolve(serde_json::json!({
+        "timeout": timeout,
+        "commands": [{
+          "command": if cfg!(windows) { "./formatter.cmd" } else { "sh formatter.sh" },
+          "cwd": self.dir.path().to_string_lossy(),
+          "exts": ["txt"]
+        }]
+      }))
+    }
+
+    fn heartbeat_len(&self) -> u64 {
+      std::fs::metadata(self.dir.path().join("heartbeat.txt"))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+    }
+
+    /// Whether the process it started stopped, once a beat that was underway
+    /// had time to finish.
+    fn stopped(&self) -> bool {
+      std::thread::sleep(Duration::from_millis(500));
+      let len = self.heartbeat_len();
+      std::thread::sleep(Duration::from_millis(2500));
+      self.heartbeat_len() == len
+    }
+
+    /// Formats with it, and how long that took.
+    ///
+    /// The threads reading its output only finish once what it started is
+    /// gone, which a test's runtime would wait for when it's dropped, so this
+    /// runs on a runtime that stops waiting for them after a second. That way
+    /// a process that's left running fails the test rather than hanging it.
+    fn format(&self, timeout: u32, token: Arc<dyn CancellationToken>) -> (Result<Option<String>, String>, Duration) {
+      let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+      let start = Instant::now();
+      let result = runtime.block_on(format_with_token(&self.config(timeout), "text", &SetupState::default(), token));
+      let elapsed = start.elapsed();
+      runtime.shutdown_timeout(Duration::from_secs(1));
+      (result, elapsed)
+    }
+  }
+
+  #[test]
+  fn ends_a_timed_out_formatter_together_with_what_it_started() {
+    let formatter = LingeringFormatter::new();
+    let (result, elapsed) = formatter.format(2, Arc::new(NullCancellationToken));
+    assert_eq!(result, Err("Child process has not returned a result within 2 seconds.".to_string()));
+    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
+    assert!(formatter.stopped(), "the process the formatter started should have been killed");
+  }
+
+  #[test]
+  fn ends_a_cancelled_formatter_together_with_what_it_started() {
+    let formatter = LingeringFormatter::new();
+    let token = tokio_util::sync::CancellationToken::new();
+    std::thread::spawn({
+      let token = token.clone();
+      move || {
+        std::thread::sleep(Duration::from_secs(2));
+        token.cancel();
+      }
+    });
+    let (result, elapsed) = formatter.format(60, Arc::new(token));
+    assert_eq!(result, Ok(None));
+    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
+    assert!(formatter.stopped(), "the process the formatter started should have been killed");
+  }
+
+  #[cfg(unix)]
   #[tokio::test]
   async fn formats_with_stdin_and_stdout() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }));
     assert_eq!(format(&config, "hello\n", &SetupState::default()).await, Ok(Some("HELLO\n".to_string())));
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn should_error_output_empty_file() {
     // `true` exits without reading its input, which used to fail writing the
@@ -579,6 +666,7 @@ mod test {
     assert!(err.starts_with("Cannot substitute the variables in argument '{{filePath}}': "), "{}", err);
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn errors_for_a_formatter_killed_by_a_signal() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "sh -c \"kill -TERM $$\"", "exts": ["txt"] }] }));
@@ -588,6 +676,7 @@ mod test {
     );
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_command_once_across_formats() {
     let dir = tempfile::tempdir().unwrap();
@@ -607,6 +696,7 @@ mod test {
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.
+  #[cfg(unix)]
   fn sleep_is_running(seconds: &str) -> bool {
     let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
     String::from_utf8_lossy(&output.stdout)
@@ -614,6 +704,7 @@ mod test {
       .any(|line| line.trim() == format!("sleep {}", seconds))
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_formatter_that_times_out() {
     // a unique duration so this test finds its own process
@@ -627,6 +718,7 @@ mod test {
     assert!(!sleep_is_running("31.7"), "the formatter should have been killed");
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn times_out_a_formatter_that_never_reads_its_stdin() {
     // more than a pipe buffer, so writing it blocks until the formatter reads
@@ -638,6 +730,7 @@ mod test {
     assert!(!sleep_is_running("32.7"), "the formatter should have been killed");
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_setup_command_that_times_out_and_does_not_rerun_it() {
     let config = resolve(serde_json::json!({

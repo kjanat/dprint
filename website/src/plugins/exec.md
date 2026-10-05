@@ -14,7 +14,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
   </div>
 </div>
 
-The CLI has this plugin built in. When a config references it, the CLI runs it in its own process rather than downloading it, so it works on every platform the CLI does (ex. FreeBSD). To download and run the separate plugin process instead, set `DPRINT_BUILTIN_EXEC=0`.
+The CLI has version 0.7.3 of this plugin built in. When a config references that version (ex. `npm:@dprint/exec@0.7.3/plugin.json` or `https://plugins.dprint.dev/exec-0.7.3.json`), the CLI runs it in its own process rather than downloading it, so it works on every platform the CLI does (ex. FreeBSD). A reference to another version, or to none in particular (ex. `npm:@dprint/exec` resolved from `node_modules`), gets the plugin it asks for, downloaded and run as a separate process like before. To run the separate plugin process for 0.7.3 too, set `DPRINT_BUILTIN_EXEC=0`.
 
 Compared to the downloaded plugin, the built-in one:
 

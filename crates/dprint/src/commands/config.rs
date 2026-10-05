@@ -2134,7 +2134,7 @@ mod test {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
         "/dprint.toml",
-        "plugins = [\"https://plugins.dprint.dev/exec-0.5.0.json@0000000000000000000000000000000000000000000000000000000000000000\"]\n",
+        "plugins = [\"https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000\"]\n",
       )
       .build();
     run_test_cli(vec!["schema"], &environment).unwrap();

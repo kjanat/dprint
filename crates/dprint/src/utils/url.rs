@@ -364,8 +364,8 @@ fn read_response(url: &Url, retry_count: u8, reader: &mut impl Read, total_size:
 
 #[cfg(test)]
 mod test {
+  use dprint_core::owned_child::OwnedChild;
   use std::io::ErrorKind;
-  use std::process::Child;
   use std::process::Command;
   use std::process::Stdio;
   use std::sync::Arc;
@@ -483,17 +483,7 @@ mod test {
     }
   }
 
-  struct ChildDrop {
-    child: Child,
-  }
-
-  impl Drop for ChildDrop {
-    fn drop(&mut self) {
-      _ = self.child.kill();
-    }
-  }
-
-  fn start_deno_server() -> Option<ChildDrop> {
+  fn start_deno_server() -> Option<OwnedChild> {
     let cert = "-----BEGIN CERTIFICATE-----
 MIIC+zCCAeOgAwIBAgIJAOFEwE15PYGsMA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNV
 BAMMCWxvY2FsaG9zdDAeFw0yNTAyMDEyMzE3MzFaFw0yNjAyMDEyMzE3MzFaMBQx
@@ -542,16 +532,17 @@ SUHki7X8yemi+g10U4xJWZcQkbkivDuGLopt87f1BHmy/1O2pFmMwh7+cVQIpm1l
 kGUMOx8j0U5fU8eSLECGi0FxBA==
 -----END PRIVATE KEY-----
 ";
-    let result = Command::new("deno")
-      .args([
-        "eval".to_string(),
-        format!("Deno.serve({{ port: 8063, cert: `{cert}`, key: `{key}` }}, req => new Response('Hi'));"),
-      ])
-      .stderr(Stdio::null())
-      .stdout(Stdio::null())
-      .spawn();
+    let result = OwnedChild::spawn(
+      Command::new("deno")
+        .args([
+          "eval".to_string(),
+          format!("Deno.serve({{ port: 8063, cert: `{cert}`, key: `{key}` }}, req => new Response('Hi'));"),
+        ])
+        .stderr(Stdio::null())
+        .stdout(Stdio::null()),
+    );
     match result {
-      Ok(child) => Some(ChildDrop { child }),
+      Ok(child) => Some(child),
       Err(err) => {
         if err.kind() == ErrorKind::NotFound {
           return None;

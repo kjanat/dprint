@@ -23,6 +23,7 @@ use crate::environment::Environment;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_command_program;
 use crate::plugins::is_builtin_exec_reference;
+use crate::plugins::is_exec_plugin_reference;
 use crate::utils::PathSource;
 
 const EXEC_CONFIG_KEY: &str = "exec";
@@ -285,8 +286,9 @@ impl RemoteExec {
     }
 
     // the exec plugin of remote configuration only matters when the local
-    // configuration doesn't use exec, and only one of it is added
-    let uses_exec = plugins.iter().any(|plugin| is_builtin_exec_reference(environment, plugin));
+    // configuration doesn't use exec (in any version), and only one of it is
+    // added
+    let uses_exec = plugins.iter().any(is_exec_plugin_reference);
     if !self.plugins.is_empty() && !uses_exec {
       if matches!(policy, Policy::None) {
         log_warn!(
