@@ -1,7 +1,11 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Read;
+use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -60,6 +64,7 @@ struct AgentStore<TProxyUrlProvider: ProxyProvider> {
   logger: Arc<Logger>,
   no_proxy: NoProxy,
   proxy_url_provider: TProxyUrlProvider,
+  resolver: BoundedResolver,
   unsafely_ignore_certificates: Option<UnsafelyIgnoreCertificates>,
 }
 
@@ -118,7 +123,78 @@ impl<TProxyUrlProvider: ProxyProvider> AgentStore<TProxyUrlProvider> {
     if let Some(proxy) = proxy {
       agent = agent.proxy(ureq::Proxy::new(proxy)?);
     }
+    agent = agent.resolver(self.resolver.clone());
     Ok(agent.build())
+  }
+}
+
+// the deadline of the request being made on this thread, which its host
+// lookups give up at (see `BoundedResolver`)
+thread_local! {
+  static REQUEST_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Looks a host up, given as `host:port`.
+type Lookup = Arc<dyn Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
+
+/// Looks hosts up for an agent's requests, giving up at the deadline of the
+/// request being made on the calling thread (see
+/// [`BoundedResolver::with_request_deadline`]).
+///
+/// A lookup itself can't be interrupted and ureq's timeout doesn't cover it,
+/// so a request with a deadline does it on a thread of its own and stops
+/// waiting for that thread at the deadline. That way a resolver that stalls
+/// can't keep a download, and the blocking task it runs in, going past the
+/// deadline. The lookup's thread goes on until the lookup gives up on its
+/// own, but nothing waits for it.
+#[derive(Clone)]
+struct BoundedResolver {
+  lookup: Lookup,
+}
+
+impl BoundedResolver {
+  /// Looks hosts up with `lookup`.
+  fn new(lookup: Lookup) -> Self {
+    Self { lookup }
+  }
+
+  /// Looks hosts up the way the operating system does.
+  fn system() -> Self {
+    Self::new(Arc::new(|netloc: &str| netloc.to_socket_addrs().map(|addresses| addresses.collect())))
+  }
+
+  /// Runs `request` as the request on this thread with the deadline, which
+  /// its host lookups give up at.
+  fn with_request_deadline<T>(deadline: Option<Instant>, request: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Instant>);
+    impl Drop for Restore {
+      fn drop(&mut self) {
+        REQUEST_DEADLINE.set(self.0);
+      }
+    }
+    let _restore = Restore(REQUEST_DEADLINE.replace(deadline));
+    request()
+  }
+}
+
+impl ureq::Resolver for BoundedResolver {
+  fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+    let Some(deadline) = REQUEST_DEADLINE.get() else {
+      return (self.lookup)(netloc);
+    };
+    let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, format!("Looking up {} timed out.", netloc));
+    let remaining = deadline
+      .checked_duration_since(Instant::now())
+      .filter(|remaining| !remaining.is_zero())
+      .ok_or_else(timed_out)?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new().name("dprint-host-lookup".to_string()).spawn({
+      let lookup = self.lookup.clone();
+      let netloc = netloc.to_string();
+      // the receiver is gone once the request gave up on this
+      move || drop(sender.send(lookup(&netloc)))
+    })?;
+    receiver.recv_timeout(remaining).unwrap_or_else(|_| Err(timed_out()))
   }
 }
 
@@ -260,9 +336,17 @@ impl RealUrlDownloader {
         no_proxy,
         proxy_url_provider: RealProxyUrlProvider,
         unsafely_ignore_certificates,
+        resolver: BoundedResolver::system(),
       },
       logger,
     })
+  }
+
+  /// Looks hosts up with `lookup` rather than the operating system.
+  #[cfg(test)]
+  fn with_lookup(mut self, lookup: Lookup) -> Self {
+    self.agent_store.resolver = BoundedResolver::new(lookup);
+    self
   }
 
   /// Downloads the file, giving up at the deadline when there's one.
@@ -312,7 +396,7 @@ impl RealUrlDownloader {
     let mut request = agent.request_url("GET", url);
     if let Some(deadline) = deadline {
       // the whole request, reading the response included, gives up at the
-      // deadline (except for a DNS lookup, which can't be interrupted)
+      // deadline, and so does looking up the host (see `BoundedResolver`)
       match deadline.checked_duration_since(Instant::now()) {
         Some(remaining) if !remaining.is_zero() => request = request.timeout(remaining),
         _ => bail!("Error downloading {} - Timed out.", url),
@@ -321,7 +405,7 @@ impl RealUrlDownloader {
     if let Some(auth) = auth {
       request = request.set("Authorization", auth);
     }
-    let resp = match request.call() {
+    let resp = match BoundedResolver::with_request_deadline(deadline, || request.call()) {
       Ok(resp) => resp,
       Err(ureq::Error::Status(404, _)) => {
         return Ok(None);
@@ -399,6 +483,7 @@ mod test {
   use crate::utils::url::ProxyProvider;
 
   use super::AgentStore;
+  use super::BoundedResolver;
   use super::RealUrlDownloader;
 
   #[test]
@@ -421,6 +506,7 @@ mod test {
       no_proxy: NoProxy::from_string("dprint.dev"),
       proxy_url_provider: TestProxyProvider,
       unsafely_ignore_certificates: None,
+      resolver: BoundedResolver::system(),
     };
 
     let agent = agent_store.get(super::AgentKind::Http, &"http://example.com".parse().unwrap()).unwrap();
@@ -539,14 +625,82 @@ mod test {
   /// Downloads the url with the deadline, failing the test when it doesn't
   /// give up soon after it rather than hanging.
   fn download_before(url: &str, deadline: Duration) -> (anyhow::Result<Option<Vec<u8>>>, Duration) {
+    download_before_with(create_silent_downloader(), url, deadline)
+  }
+
+  fn download_before_with(downloader: RealUrlDownloader, url: &str, deadline: Duration) -> (anyhow::Result<Option<Vec<u8>>>, Duration) {
     let (sender, receiver) = std::sync::mpsc::channel();
     let url = url::Url::parse(url).unwrap();
     std::thread::spawn(move || {
       let start = Instant::now();
-      let result = create_silent_downloader().download_with_auth(&url, None, Some(start + deadline));
+      let result = downloader.download_with_auth(&url, None, Some(start + deadline));
       sender.send((result.map(|file| file.map(|file| file.content)), start.elapsed())).unwrap();
     });
     receiver.recv_timeout(deadline + Duration::from_secs(10)).expect("the download didn't give up")
+  }
+
+  /// A lookup that never finishes in time, counting how often it's asked.
+  fn stalled_lookup(lookups: &Arc<AtomicUsize>) -> super::Lookup {
+    let lookups = lookups.clone();
+    Arc::new(move |_: &str| {
+      lookups.fetch_add(1, Ordering::SeqCst);
+      std::thread::sleep(Duration::from_secs(60));
+      Err(std::io::Error::other("the lookup gave up"))
+    })
+  }
+
+  #[test]
+  fn a_host_lookup_gives_up_at_the_requests_deadline() {
+    use ureq::Resolver;
+
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let stalled = BoundedResolver::new(stalled_lookup(&lookups));
+    let start = Instant::now();
+    let err = BoundedResolver::with_request_deadline(Some(start + Duration::from_millis(200)), || stalled.resolve("stalled.invalid:80")).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(err.to_string(), "Looking up stalled.invalid:80 timed out.");
+    assert!(start.elapsed() >= Duration::from_millis(200), "{:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
+    // a deadline that passed doesn't start a lookup
+    let err = BoundedResolver::with_request_deadline(Some(start), || stalled.resolve("stalled.invalid:80")).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
+
+    // one that finishes in time gives its addresses
+    let address: std::net::SocketAddr = "127.0.0.1:80".parse().unwrap();
+    let quick = BoundedResolver::new(Arc::new(move |_: &str| Ok(vec![address])));
+    let addresses = BoundedResolver::with_request_deadline(Some(Instant::now() + Duration::from_secs(10)), || quick.resolve("quick.invalid:80"));
+    assert_eq!(addresses.unwrap(), vec![address]);
+
+    // a request without a deadline looks hosts up on its own thread, as is
+    let thread = std::thread::current().id();
+    let own_thread = BoundedResolver::new(Arc::new(move |_: &str| {
+      if std::thread::current().id() == thread {
+        Ok(Vec::new())
+      } else {
+        Err(std::io::Error::other("on another thread"))
+      }
+    }));
+    assert!(own_thread.resolve("quick.invalid:80").is_ok());
+    assert!(BoundedResolver::with_request_deadline(None, || own_thread.resolve("quick.invalid:80")).is_ok());
+    // and the deadline only applies while the request runs
+    BoundedResolver::with_request_deadline(Some(Instant::now()), || {});
+    assert!(own_thread.resolve("quick.invalid:80").is_ok());
+  }
+
+  #[test]
+  fn gives_up_on_a_host_lookup_that_stalls_at_the_deadline() {
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let downloader = create_silent_downloader().with_lookup(stalled_lookup(&lookups));
+    let (result, elapsed) = download_before_with(downloader, "http://stalled.invalid/schema.json", Duration::from_millis(500));
+    let err = result.unwrap_err().to_string();
+    assert!(err.starts_with("Error downloading http://stalled.invalid/schema.json"), "{}", err);
+    assert!(err.contains("Looking up stalled.invalid:80 timed out."), "{}", err);
+    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
+    // without retrying once the deadline passed
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
   }
 
   #[test]
