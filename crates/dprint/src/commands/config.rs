@@ -178,6 +178,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
   let file_text = environment.read_file(&config_file_path)?;
   let file_text = ConfigFileFormat::from_path(&config_file_path).add_plugins(&file_text, &[], &entries)?;
   environment.write_file(&config_file_path, &file_text)?;
+  update_config_schema_file(environment, plugin_resolver, &config_file_path).await;
   log_stdout_info!(
     environment,
     "\nAdded {} to {}",
@@ -335,6 +336,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
   let file_text = environment.read_file(&config_path)?;
   let file_text = ConfigFileFormat::from_path(&config_path).add_plugins(&file_text, &npm_packages_to_replace, &plugin_urls_to_add)?;
   environment.write_file(&config_path, &file_text)?;
+  update_config_schema_file(environment, plugin_resolver, &config_path).await;
 
   if update_package_json && !package_json_additions.is_empty() {
     apply_package_json_additions(&config_path, &package_json_additions, environment)?;
@@ -1045,6 +1047,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       dry_run_texts.insert(config_path.clone(), file_text);
     } else {
       environment.write_file(config_path, &file_text)?;
+      update_config_schema_file(environment, plugin_resolver, config_path).await;
     }
   }
 
@@ -1629,6 +1632,100 @@ pub async fn output_resolved_config<TEnvironment: Environment>(
   Ok(())
 }
 
+/// Prints one schema for the configuration file: dprint's schema, with each
+/// plugin's schema for its table. A configuration file refers to it like any
+/// schema (ex. `#:schema ./dprint.schema.json` in TOML or
+/// `"$schema": "./dprint.schema.json"` in JSON).
+pub async fn output_config_schema<TEnvironment: Environment>(
+  args: &CliArgs,
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+) -> Result<()> {
+  let config = resolve_config_from_args(args, environment).await?;
+  let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
+  environment.log_machine_readable(text.as_bytes());
+  Ok(())
+}
+
+async fn get_config_schema_text<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+  plugins: Vec<PluginSourceReference>,
+) -> Result<String> {
+  let mut schemas = Vec::new();
+  for plugin in plugin_resolver.resolve_plugins(plugins).await? {
+    let info = plugin.info();
+    if let Some(schema) = plugin.config_schema() {
+      schemas.push(PluginSchema {
+        config_key: info.config_key.clone(),
+        schema: serde_json::from_str(schema)?,
+      });
+      continue;
+    }
+    if info.config_schema_url.is_empty() {
+      continue;
+    }
+    match download_json(environment, &info.config_schema_url).await {
+      Ok(schema) => schemas.push(PluginSchema {
+        config_key: info.config_key.clone(),
+        schema,
+      }),
+      Err(err) => log_warn!(
+        environment,
+        "Failed getting the configuration schema of {} ({}): {:#}",
+        info.name,
+        info.config_schema_url,
+        err
+      ),
+    }
+  }
+  Ok(format!("{}\n", serde_json::to_string_pretty(&build_config_schema(schemas)?)?))
+}
+
+async fn download_json(environment: &impl Environment, url: &str) -> Result<serde_json::Value> {
+  let url = Url::parse(url)?;
+  let Some(file) = environment.download_file(&url, None).await?.1 else {
+    bail!("Not found.");
+  };
+  Ok(serde_json::from_slice(&file.content)?)
+}
+
+/// Regenerates the schema file next to a configuration file whose plugins
+/// changed, when there's one.
+async fn update_config_schema_file<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
+  config_path: &CanonicalizedPathBuf,
+) {
+  let schema_path = AsRef::<Path>::as_ref(config_path).with_file_name(CONFIG_SCHEMA_FILE_NAME);
+  if !environment.path_is_file(&schema_path) {
+    return;
+  }
+  let result = async {
+    let config = resolve_config_from_path_with_bytes(
+      &ResolvedConfigPathWithText {
+        source: PathSource::new_local(config_path.clone()),
+        is_first_download: false,
+        content: environment.read_file(config_path)?,
+        base_path: config_path.parent().unwrap_or_else(|| environment.cwd()),
+        is_global_config: false,
+      },
+      environment,
+    )
+    .await?;
+    let text = get_config_schema_text(environment, plugin_resolver, config.plugins.sources).await?;
+    if environment.read_file(&schema_path).ok().as_deref() != Some(text.as_str()) {
+      environment.write_file(&schema_path, &text)?;
+      log_stdout_info!(environment, "Updated {}", schema_path.display());
+    }
+    Ok::<_, anyhow::Error>(())
+  }
+  .await;
+  if let Err(err) = result {
+    log_warn!(environment, "Failed updating {}: {:#}", schema_path.display(), err);
+  }
+}
+
 /// The names of the plugins a config file resolves to, skipping (with a
 /// warning) the ones that fail to resolve.
 async fn get_config_file_plugin_names<TEnvironment: Environment>(
@@ -1996,6 +2093,100 @@ mod test {
       environment.read_file("./dprint.toml").unwrap(),
       "# formatting\nlineWidth = 80\nplugins = [\n  \"https://plugins.dprint.dev/test-plugin.wasm\",\n]\n"
     );
+  }
+
+  const TEST_PLUGIN_SCHEMA: &str = r##"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plugins.dprint.dev/test/schema.json",
+  "type": "object",
+  "definitions": { "ending": { "type": "string" } },
+  "properties": { "ending": { "$ref": "#/definitions/ending" } }
+}"##;
+
+  #[test]
+  fn should_output_config_schema() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
+      .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
+      .build();
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    let output = environment.take_stdout_messages();
+    let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
+    assert_eq!(
+      schema["properties"]["test-plugin"],
+      serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin" })
+    );
+    let plugin = &schema["definitions"]["plugin:test-plugin"];
+    assert_eq!(
+      plugin["properties"]["ending"],
+      serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin/definitions/ending" })
+    );
+    assert!(plugin["properties"]["associations"].is_object());
+  }
+
+  #[test]
+  fn should_output_the_built_in_exec_schema() {
+    // no plugin files are served, so this would fail if it tried to download
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.toml",
+        "plugins = [\"https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000\"]\n",
+      )
+      .build();
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    let output = environment.take_stdout_messages();
+    let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
+    assert_eq!(schema["properties"]["exec"], serde_json::json!({ "$ref": "#/definitions/plugin:exec" }));
+    let plugin = &schema["definitions"]["plugin:exec"];
+    // what only the built-in exec has
+    assert!(plugin["properties"]["playWithFire"].is_object());
+    assert!(plugin["properties"]["setupTimeout"].is_object());
+    let command = &plugin["properties"]["commands"]["items"];
+    assert!(command["properties"]["setupCommand"].is_object());
+    assert_eq!(
+      command["properties"]["exts"]["$ref"],
+      serde_json::json!("#/definitions/plugin:exec/definitions/stringOrStrings")
+    );
+    // and dprint's properties of every plugin table
+    assert!(plugin["properties"]["associations"].is_object());
+  }
+
+  #[test]
+  fn config_add_updates_the_config_schema_file() {
+    let environment = get_setup_env(SetupEnvOptions {
+      config_has_wasm: false,
+      config_has_wasm_checksum: false,
+      config_has_process: false,
+      remote_has_wasm_checksum: false,
+      remote_has_process_checksum: false,
+    });
+    environment.add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA.as_bytes());
+    // regenerating it gets the plugin's schema url from the plugin
+    environment.add_remote_file("https://plugins.dprint.dev/test-plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES);
+    environment.write_file("./dprint.schema.json", "{}").unwrap();
+    run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
+    let messages = environment.take_stdout_messages();
+    assert!(
+      messages
+        .iter()
+        .any(|message| message.starts_with("Updated ") && message.ends_with("dprint.schema.json")),
+      "{:?}",
+      messages
+    );
+    let schema: serde_json::Value = serde_json::from_str(&environment.read_file("./dprint.schema.json").unwrap()).unwrap();
+    assert!(schema["definitions"]["plugin:test-plugin"].is_object());
+    environment.take_stderr_messages();
+
+    // and it's left alone when there isn't one
+    environment.remove_file("./dprint.schema.json").unwrap();
+    run_test_cli(vec!["add", "test-plugin"], &environment).unwrap();
+    assert!(!environment.path_exists("./dprint.schema.json"));
+    assert!(!environment.take_stdout_messages().iter().any(|message| message.starts_with("Updated ")));
   }
 
   #[test]

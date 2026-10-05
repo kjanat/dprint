@@ -22,6 +22,10 @@ use super::in_process::InProcessPlugin;
 pub const EXEC_PLUGIN_NAME: &str = "dprint-plugin-exec";
 /// The dprint-plugin-exec release this was built from.
 pub const EXEC_PLUGIN_VERSION: &str = "0.7.3";
+/// The schema of the built-in exec's configuration. It describes what this
+/// version accepts (ex. `playWithFire` and `setupTimeout`), which the schema
+/// published with the exec plugin doesn't.
+const EXEC_CONFIG_SCHEMA: &str = include_str!("schema.json");
 /// The exec plugin versions the built-in exec serves references to. A config
 /// that asks for another version (or no specific one) gets that version, run
 /// as the process plugin, since the built-in exec only behaves like the
@@ -54,7 +58,7 @@ pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvi
     EXEC_PLUGIN_VERSION,
     reference.display()
   );
-  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default)))
+  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, EXEC_CONFIG_SCHEMA)))
 }
 
 /// Whether dprint serves the reference with the built-in exec rather than
@@ -118,8 +122,6 @@ fn exec_plugin_reference(reference: &PluginSourceReference) -> Option<Option<&st
 mod test {
   use super::*;
   use crate::environment::TestEnvironment;
-  use crate::environment::TestEnvironmentBuilder;
-  use crate::test_helpers::run_test_cli;
 
   fn parse_reference(text: &str, environment: &TestEnvironment) -> PluginSourceReference {
     let base = PathSource::new_local(crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
@@ -142,6 +144,9 @@ mod test {
   #[cfg(unix)]
   #[test]
   fn formats_with_built_in_exec_without_downloading_the_plugin() {
+    use crate::environment::TestEnvironmentBuilder;
+    use crate::test_helpers::run_test_cli;
+
     // no plugin files are served, so this would fail if it tried to download
     let environment = TestEnvironmentBuilder::new()
       .with_default_config(|config_file| {
@@ -154,6 +159,55 @@ mod test {
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
     assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_singular_formatted_text()]);
+  }
+
+  #[test]
+  fn the_schema_describes_the_configuration() {
+    let schema: serde_json::Value = serde_json::from_str(EXEC_CONFIG_SCHEMA).unwrap();
+    let keys = |value: &serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    let command_schema = &schema["properties"]["commands"]["items"];
+    assert_eq!(
+      keys(&schema["properties"]),
+      [
+        "lineWidth",
+        "indentWidth",
+        "useTabs",
+        "cacheKey",
+        "cwd",
+        "timeout",
+        "setupTimeout",
+        "playWithFire",
+        "commands"
+      ]
+    );
+    assert_eq!(
+      keys(&command_schema["properties"]),
+      ["command", "exts", "fileNames", "associations", "stdin", "cwd", "cacheKeyFiles", "setupCommand"]
+    );
+
+    // the configuration accepts all of them. `playWithFire` is read and
+    // removed by dprint before the configuration gets here
+    let config = serde_json::json!({
+      "lineWidth": 100,
+      "indentWidth": 4,
+      "useTabs": true,
+      "cacheKey": "1",
+      "cwd": ".",
+      "timeout": 60,
+      "setupTimeout": 600,
+      "commands": [{
+        "command": "tr a-z A-Z",
+        "exts": ["txt"],
+        "fileNames": "README",
+        "associations": "**/*.txt",
+        "stdin": true,
+        "cwd": ".",
+        "cacheKeyFiles": ["./src/plugins/implementations/builtin_exec/testdata/one-line.txt"],
+        "setupCommand": "true",
+      }],
+    });
+    let result = configuration::Configuration::resolve(serde_json::from_value(config).unwrap(), &Default::default());
+    assert_eq!(result.diagnostics, vec![]);
   }
 
   #[test]

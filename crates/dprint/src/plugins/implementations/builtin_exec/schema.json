@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "The exec plugin built into dprint, which formats files with external commands.",
+  "type": "object",
+  "required": ["commands"],
+  "additionalProperties": false,
+  "definitions": {
+    "stringOrStrings": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    }
+  },
+  "properties": {
+    "lineWidth": {
+      "description": "The width of a line the formatter will try to stay under. Available to commands as {{line_width}}.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "indentWidth": {
+      "description": "The number of spaces for an indent. Available to commands as {{indent_width}}.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "useTabs": {
+      "description": "Whether to use tabs (true) or spaces (false). Available to commands as {{use_tabs}}.",
+      "type": "boolean"
+    },
+    "cacheKey": {
+      "description": "Change this to invalidate the incremental cache, ex. when a command's version changes.",
+      "type": "string"
+    },
+    "cwd": {
+      "description": "The working directory to run the commands in. Defaults to the current working directory.",
+      "type": "string"
+    },
+    "timeout": {
+      "description": "Seconds a command may take to format a file before it's killed and the format fails.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 30
+    },
+    "setupTimeout": {
+      "description": "Seconds a setup command may run before it's killed. A setup command that times out isn't run again for the other files.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 300
+    },
+    "playWithFire": {
+      "description": "Allows the exec commands of remote configuration (ex. an `extends` url) to run. `true` allows any program, or list the programs their commands and setup commands may run. Only a local configuration file can allow it.",
+      "anyOf": [
+        { "type": "boolean" },
+        { "type": "array", "items": { "type": "string" } }
+      ],
+      "default": false
+    },
+    "commands": {
+      "description": "Commands to format with.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "anyOf": [
+          { "required": ["exts"] },
+          { "required": ["fileNames"] },
+          { "required": ["associations"] }
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "description": "The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.",
+            "type": "string"
+          },
+          "exts": {
+            "description": "File extensions to format with this command.",
+            "$ref": "#/definitions/stringOrStrings"
+          },
+          "fileNames": {
+            "description": "File names to format with this command, ex. for files without an extension.",
+            "$ref": "#/definitions/stringOrStrings"
+          },
+          "associations": {
+            "description": "A glob of the file paths to format with this command. Prefer \"exts\" when possible.",
+            "anyOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "maxItems": 1 }
+            ]
+          },
+          "stdin": {
+            "description": "Whether to pass the file text to the command on stdin.",
+            "type": "boolean",
+            "default": true
+          },
+          "cwd": {
+            "description": "The working directory to run this command in.",
+            "type": "string"
+          },
+          "cacheKeyFiles": {
+            "description": "Files whose contents invalidate the incremental cache when they change, ex. the command's own configuration file.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "setupCommand": {
+            "description": "A command to run once before this command formats its first file, ex. to install it. It's killed after \"setupTimeout\" seconds.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -147,6 +147,7 @@ impl CliArgs {
       SubCommand::StdInFmt(..)
         | SubCommand::EditorInfo
         | SubCommand::OutputResolvedConfig(..)
+        | SubCommand::Schema
         | SubCommand::IncrementalState
         | SubCommand::Completions(..)
         | SubCommand::Check(CheckSubCommand { json: true, .. })
@@ -188,6 +189,7 @@ pub enum SubCommand {
   ClearCache,
   OutputFilePaths(OutputFilePathsSubCommand),
   OutputResolvedConfig(OutputResolvedConfigSubCommand),
+  Schema,
   IncrementalState,
   OutputFormatTimes(OutputFormatTimesSubCommand),
   Version,
@@ -233,6 +235,7 @@ impl SubCommand {
       SubCommand::Config(_)
       | SubCommand::ClearCache
       | SubCommand::OutputResolvedConfig(_)
+      | SubCommand::Schema
       | SubCommand::IncrementalState
       | SubCommand::Version
       | SubCommand::License
@@ -564,6 +567,7 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     ("resolved-config", matches) => SubCommand::OutputResolvedConfig(OutputResolvedConfigSubCommand {
       file_path: matches.get_one::<String>("file").map(String::from),
     }),
+    ("schema", _) => SubCommand::Schema,
     ("incremental-state", _) => SubCommand::IncrementalState,
     ("format-times", matches) => SubCommand::OutputFormatTimes(OutputFormatTimesSubCommand {
       patterns: parse_file_patterns(matches, &std_in_reader)?,
@@ -1147,6 +1151,11 @@ EXAMPLES:
             .num_args(1)
             .required(false)
         )
+    )
+    .subcommand(
+      Command::new("schema")
+        .alias("output-schema")
+        .about("Prints a JSON schema of the configuration file, including the plugins' configuration.")
     )
     .subcommand(
       Command::new("incremental-state")
