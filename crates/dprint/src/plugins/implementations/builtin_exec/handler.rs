@@ -1225,3 +1225,57 @@ mod test {
     assert_eq!(setup_starts(dir.path()).len(), attempts + 1);
   }
 }
+
+// A command's working directory decides what a program it runs by a relative
+// path is, on every platform. That's why remote configuration can't set both
+// under a list of programs (see `configuration::remote_exec`).
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)] // runs a real command from a real directory
+mod relative_program_test {
+  use std::path::PathBuf;
+  use std::sync::Arc;
+
+  use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::plugins::NullCancellationToken;
+
+  use super::SetupState;
+  use super::format_bytes;
+  use crate::plugins::implementations::builtin_exec::configuration::Configuration;
+
+  #[test]
+  fn runs_a_relative_program_from_the_commands_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let chosen = dir.path().join("chosen");
+    std::fs::create_dir(&chosen).unwrap();
+    // the formatter that directory provides, run by a relative path
+    #[cfg(windows)]
+    {
+      std::fs::write(chosen.join("formatter.cmd"), "@echo chosen\r\n").unwrap();
+    }
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      let script = chosen.join("formatter");
+      std::fs::write(&script, "#!/bin/sh\necho chosen\n").unwrap();
+      std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = serde_json::json!({
+      "commands": [{ "command": "./formatter", "cwd": chosen.to_string_lossy(), "exts": ["txt"] }]
+    });
+    let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
+    let result = Configuration::resolve(config, &Default::default());
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let output = runtime
+      .block_on(format_bytes(
+        PathBuf::from("file.txt"),
+        b"text".to_vec(),
+        Arc::new(result.config),
+        Arc::new(NullCancellationToken),
+        &SetupState::default(),
+      ))
+      .unwrap()
+      .unwrap();
+    assert_eq!(String::from_utf8(output).unwrap().trim_end(), "chosen");
+  }
+}
