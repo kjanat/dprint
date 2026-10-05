@@ -914,7 +914,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       let mut config = resolve_config_from_path_with_bytes(&config_path, self.environment).await?;
       // when a nested config opts into inheriting, merge in the ancestor config
       if is_descendant_config && config.inherit == Some(true) {
-        config = inherit_config(config, &parent_config)?;
+        config = inherit_config(config, &parent_config, self.environment)?;
       }
       if !self.args.plugins.is_empty() {
         config.plugins.clone_from(&parent_config.plugins);
