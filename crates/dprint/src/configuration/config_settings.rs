@@ -57,6 +57,95 @@ pub struct PluginConfiguration {
   /// The global configuration (ex. `lineWidth`) and each plugin's
   /// configuration by its key.
   pub config: ConfigMap,
+  /// The configuration file each property of `config` is from.
+  pub origins: PropertyOrigins,
+}
+
+/// The configuration file each property of a configuration is from, so a
+/// diagnostic about a property can say which file to change.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PropertyOrigins {
+  /// By root property: the global configuration's and each plugin's key.
+  root: IndexMap<String, PathSource>,
+  /// By plugin key, then by property of the plugin's configuration or its
+  /// overrides.
+  plugins: IndexMap<String, IndexMap<String, PathSource>>,
+}
+
+impl PropertyOrigins {
+  /// Every property of a configuration file's `config`, from `source`.
+  pub(super) fn of(config: &ConfigMap, source: &PathSource) -> Self {
+    let mut origins = PropertyOrigins::default();
+    for (key, value) in config {
+      origins.root.insert(key.clone(), source.clone());
+      if let ConfigMapValue::PluginConfig(plugin_config) = value {
+        let properties = plugin_config
+          .properties
+          .keys()
+          .chain(plugin_config.overrides.iter().flat_map(|override_config| override_config.properties.keys()));
+        for property in properties {
+          origins.add_plugin_property(key, property, source);
+        }
+      }
+    }
+    origins
+  }
+
+  /// Sets where a root property is from, unless it's already from
+  /// somewhere.
+  pub(super) fn add_root_property(&mut self, key: &str, source: &PathSource) {
+    self.root.entry(key.to_string()).or_insert_with(|| source.clone());
+  }
+
+  /// Sets where a plugin property is from, replacing where it was from.
+  pub(super) fn set_plugin_property(&mut self, plugin_key: &str, property: &str, source: &PathSource) {
+    self
+      .plugins
+      .entry(plugin_key.to_string())
+      .or_default()
+      .insert(property.to_string(), source.clone());
+  }
+
+  /// Sets where a plugin property is from, unless it's already from
+  /// somewhere.
+  pub(super) fn add_plugin_property(&mut self, plugin_key: &str, property: &str, source: &PathSource) {
+    self
+      .plugins
+      .entry(plugin_key.to_string())
+      .or_default()
+      .entry(property.to_string())
+      .or_insert_with(|| source.clone());
+  }
+
+  fn add_lower_precedence(&mut self, other: PropertyOrigins) {
+    for (key, source) in other.root {
+      self.root.entry(key).or_insert(source);
+    }
+    for (plugin_key, properties) in other.plugins {
+      let own = self.plugins.entry(plugin_key).or_default();
+      for (property, source) in properties {
+        own.entry(property).or_insert(source);
+      }
+    }
+  }
+
+  /// Where a root property is from, when that's not `config_source`.
+  pub fn root_elsewhere(&self, property: &str, config_source: &PathSource) -> Option<&PathSource> {
+    self.root.get(property).filter(|source| *source != config_source)
+  }
+
+  /// Where the properties a plugin's configuration diagnostics can be about
+  /// are from (its own, then the global configuration's), when that's not
+  /// `config_source`.
+  pub fn plugin_elsewhere(&self, plugin_key: &str, config_source: &PathSource) -> IndexMap<String, PathSource> {
+    let mut result = IndexMap::new();
+    let plugin = self.plugins.get(plugin_key).into_iter().flatten();
+    for (property, source) in plugin.chain(&self.root) {
+      result.entry(property.clone()).or_insert_with(|| source.clone());
+    }
+    result.retain(|_, source| source != config_source);
+    result
+  }
 }
 
 impl FileSelection {
@@ -137,10 +226,12 @@ impl ExecutionPolicy {
 
 impl PluginConfiguration {
   pub(super) fn extend(&mut self, extended: PluginConfiguration) -> Result<()> {
+    self.origins.add_lower_precedence(extended.origins);
     self.add_lower_precedence(extended.sources, extended.config)
   }
 
   pub(super) fn inherit(&mut self, ancestor: &PluginConfiguration) -> Result<()> {
+    self.origins.add_lower_precedence(ancestor.origins.clone());
     self.add_lower_precedence(ancestor.sources.iter().cloned(), ancestor.config.clone())
   }
 

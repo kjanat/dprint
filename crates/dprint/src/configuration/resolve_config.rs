@@ -23,6 +23,7 @@ use super::ExecutionPolicy;
 use super::FileRouting;
 use super::FileSelection;
 use super::PluginConfiguration;
+use super::PropertyOrigins;
 use super::config_layer::ConfigDocument;
 use super::config_layer::ConfigLayer;
 use super::config_layer::ConfigReference;
@@ -246,6 +247,7 @@ async fn resolve_config_file<TEnvironment: Environment>(
   let mut layers = collected.layers.into_iter();
   let mut root = layers.next().expect("the configuration file being resolved");
   apply_remote_restrictions(&mut root, &ConfigMap::new(), &mut remote_exec, environment);
+  root.record_property_origins();
   let mut config = ResolvedConfig::new(
     ConfigOrigin {
       source: root.origin.source,
@@ -256,11 +258,12 @@ async fn resolve_config_file<TEnvironment: Environment>(
   );
   for mut layer in layers {
     apply_remote_restrictions(&mut layer, &config.plugins.config, &mut remote_exec, environment);
+    layer.record_property_origins();
     if let Err(err) = config.extend(layer.settings) {
       return Err(layer.origin.locate(err).into());
     }
   }
-  remote_exec.apply(&mut config.plugins.config, &mut config.plugins.sources, environment)?;
+  remote_exec.apply(&mut config.plugins, environment)?;
 
   if let Some(ancestor) = ancestor
     && collected.inherit
@@ -274,6 +277,15 @@ async fn resolve_config_file<TEnvironment: Environment>(
 struct CollectedLayer {
   origin: LayerOrigin,
   settings: ConfigSettings,
+}
+
+impl CollectedLayer {
+  /// Records that its plugin configuration is from this file, for
+  /// diagnostics.
+  fn record_property_origins(&mut self) {
+    let plugins = &mut self.settings.plugins;
+    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin.source);
+  }
 }
 
 struct CollectedLayers {
@@ -767,6 +779,43 @@ lineWidth = 80
       assert_eq!(result.plugins.config, ConfigMap::new());
       let result = resolve_local_config("/specified.json", &environment).await;
       assert_eq!(result.execution.incremental, Some(true));
+    });
+  }
+
+  #[test]
+  fn should_record_which_file_each_property_is_from() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/exec.json",
+      r#"{
+            "indentWidth": 4,
+            "exec": { "commands": [{ "command": "tombi format -", "exts": ["toml"] }], "timeout": 5 }
+        }"#
+        .as_bytes(),
+    );
+    environment
+      .write_file(
+        "/dprint.json",
+        r#"{
+            "extends": "https://dprint.dev/exec.json",
+            "lineWidth": 80,
+            "exec": { "playWithFire": true, "timeout": 10 }
+        }"#,
+      )
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dprint.json", &environment).await.unwrap();
+      let remote = PathSource::new_remote_from_str("https://dprint.dev/exec.json");
+      let origins = &result.plugins.origins;
+      assert_eq!(origins.root_elsewhere("indentWidth", &result.origin.source), Some(&remote));
+      assert_eq!(origins.root_elsewhere("lineWidth", &result.origin.source), None);
+      // the remote commands the local configuration allows are from the remote file,
+      // while the timeout specified in both is the local one
+      assert_eq!(
+        origins.plugin_elsewhere("exec", &result.origin.source),
+        IndexMap::from([("commands".to_string(), remote.clone()), ("indentWidth".to_string(), remote)])
+      );
     });
   }
 
@@ -2211,6 +2260,7 @@ lineWidth = 80
       },
       execution: ExecutionPolicy { incremental: Some(true) },
       plugins: PluginConfiguration {
+        origins: Default::default(),
         sources: vec![
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
@@ -2243,6 +2293,7 @@ lineWidth = 80
       },
       execution: Default::default(),
       plugins: PluginConfiguration {
+        origins: Default::default(),
         // a plugin specified in the child has precedence over the ancestor's
         sources: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
         config: ConfigMap::from([(
@@ -2388,6 +2439,7 @@ lineWidth = 80
         routing: Default::default(),
         execution: Default::default(),
         plugins: PluginConfiguration {
+          origins: Default::default(),
           sources: Vec::new(),
           config: ConfigMap::from([(
             "test".to_string(),

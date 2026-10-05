@@ -17,6 +17,7 @@ use dprint_core::configuration::ConfigKeyValue;
 
 use super::ConfigMap;
 use super::ConfigMapValue;
+use super::PluginConfiguration;
 use super::RawPluginConfigOverride;
 use crate::environment::Environment;
 use crate::plugins::PluginSourceReference;
@@ -49,7 +50,7 @@ pub struct RemoteExec {
 
 struct RemoteValue<T> {
   value: T,
-  source: String,
+  source: PathSource,
 }
 
 struct RemoteOverrides {
@@ -58,7 +59,7 @@ struct RemoteOverrides {
   /// these were taken. Lower precedence overrides are merged in before the
   /// existing ones, so these go back in before that many last ones.
   higher_precedence_count: usize,
-  source: String,
+  source: PathSource,
 }
 
 enum Policy {
@@ -115,7 +116,6 @@ impl RemoteExec {
     environment: &impl Environment,
   ) -> Vec<PluginSourceReference> {
     if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
-      let source = source.display();
       // a remote configuration can't allow itself to run commands
       let mut has_play_with_fire = exec_config.properties.shift_remove(PLAY_WITH_FIRE_KEY).is_some();
       for override_config in &mut exec_config.overrides {
@@ -126,7 +126,7 @@ impl RemoteExec {
           environment,
           "Note: \"{}\" is ignored in remote configuration ({}). Specify it in a local configuration file.",
           PLAY_WITH_FIRE_KEY,
-          source
+          source.display()
         );
       }
       let resolved_exec_config = match resolved.get(EXEC_CONFIG_KEY) {
@@ -157,7 +157,7 @@ impl RemoteExec {
         self.overrides.push(RemoteOverrides {
           overrides: std::mem::take(&mut exec_config.overrides),
           higher_precedence_count: resolved_exec_config.map(|exec_config| exec_config.overrides.len()).unwrap_or(0),
-          source,
+          source: source.clone(),
         });
       }
     }
@@ -168,27 +168,34 @@ impl RemoteExec {
 
   /// Adds the remote exec commands, working directory, overrides and plugin
   /// references the local configuration allows to the resolved configuration.
-  pub fn apply(self, config_map: &mut ConfigMap, plugins: &mut Vec<PluginSourceReference>, environment: &impl Environment) -> Result<()> {
+  pub fn apply(self, plugin_configuration: &mut PluginConfiguration, environment: &impl Environment) -> Result<()> {
+    let PluginConfiguration {
+      sources: plugins,
+      config: config_map,
+      origins,
+    } = plugin_configuration;
     let policy = take_policy(config_map)?;
     let mut ignored_commands = IgnoredCommands::default();
     let mut ignored_cwd_sources = Vec::new();
 
     if let Some(remote) = self.commands {
-      let commands = allowed_commands(remote.value, &policy, &remote.source, &mut ignored_commands);
+      let commands = allowed_commands(remote.value, &policy, &remote.source.display(), &mut ignored_commands);
       if !commands.is_empty()
         && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
       {
         // these have precedence over any commands of lower precedence local configuration
         exec_config.properties.insert(COMMANDS_KEY.to_string(), ConfigKeyValue::Array(commands));
+        origins.set_plugin_property(EXEC_CONFIG_KEY, COMMANDS_KEY, &remote.source);
       }
     }
     if let Some(remote) = self.cwd {
       if matches!(policy, Policy::AnyProgram) {
         if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
           exec_config.properties.insert(CWD_KEY.to_string(), remote.value);
+          origins.set_plugin_property(EXEC_CONFIG_KEY, CWD_KEY, &remote.source);
         }
       } else {
-        ignored_cwd_sources.push(remote.source);
+        ignored_cwd_sources.push(remote.source.display());
       }
     }
     // the lowest precedence ones first, so the count of higher precedence
@@ -203,7 +210,7 @@ impl RemoteExec {
               // as is, so the plugin reports what's wrong with it
               (commands, Policy::AnyProgram) => Some(commands),
               (ConfigKeyValue::Array(commands), _) => {
-                let commands = allowed_commands(commands, &policy, &remote.source, &mut ignored_commands);
+                let commands = allowed_commands(commands, &policy, &remote.source.display(), &mut ignored_commands);
                 (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
               }
               _ => None,
@@ -215,8 +222,8 @@ impl RemoteExec {
           if let Some(cwd) = override_config.properties.shift_remove(CWD_KEY) {
             if matches!(policy, Policy::AnyProgram) {
               override_config.properties.insert(CWD_KEY.to_string(), cwd);
-            } else if !ignored_cwd_sources.contains(&remote.source) {
-              ignored_cwd_sources.push(remote.source.clone());
+            } else if !ignored_cwd_sources.contains(&remote.source.display()) {
+              ignored_cwd_sources.push(remote.source.display());
             }
           }
           (!override_config.properties.is_empty()).then_some(override_config)
@@ -225,6 +232,12 @@ impl RemoteExec {
       if overrides.is_empty() {
         continue;
       }
+      for override_config in &overrides {
+        for property in override_config.properties.keys() {
+          origins.add_plugin_property(EXEC_CONFIG_KEY, property, &remote.source);
+        }
+      }
+      origins.add_root_property(EXEC_CONFIG_KEY, &remote.source);
       let exec_config = config_map
         .entry(EXEC_CONFIG_KEY.to_string())
         .or_insert_with(|| ConfigMapValue::PluginConfig(Default::default()));

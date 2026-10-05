@@ -71,6 +71,7 @@ mod test {
           plugins_with_config.push(Rc::new(PluginWithConfig::new(
             plugin,
             PluginWithConfigOptions {
+              property_origins: Default::default(),
               associations: None,
               format_config,
               file_matching,
@@ -136,6 +137,7 @@ mod test {
           plugins_with_config.push(Rc::new(PluginWithConfig::new(
             plugin,
             PluginWithConfigOptions {
+              property_origins: Default::default(),
               associations: None,
               format_config,
               file_matching,

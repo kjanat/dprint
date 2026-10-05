@@ -12,6 +12,7 @@ use anyhow::bail;
 use dprint_core::async_runtime::FutureExt;
 use dprint_core::async_runtime::LocalBoxFuture;
 use dprint_core::configuration::ConfigKeyMap;
+use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::plugins::CancellationToken;
 use dprint_core::plugins::CheckConfigUpdatesMessage;
 use dprint_core::plugins::ConfigChange;
@@ -59,6 +60,7 @@ use crate::plugins::OutputPluginConfigDiagnosticsError;
 use crate::plugins::PluginNameResolutionMaps;
 use crate::plugins::PluginResolver;
 use crate::plugins::PluginWrapper;
+use crate::plugins::describe_config_diagnostic;
 use crate::plugins::output_plugin_config_diagnostics;
 use crate::utils::FastInsecureHasher;
 use crate::utils::GlobMatcher;
@@ -90,6 +92,7 @@ pub struct PluginWithConfig {
   /// the incremental hash so that values the plugin derives at resolution time
   /// (ex. the exec plugin's `cacheKeyFiles` hash) invalidate the cache.
   serialized_resolved_config: String,
+  property_origins: IndexMap<String, PathSource>,
   config_diagnostic_count: tokio::sync::Mutex<Option<usize>>,
 }
 
@@ -100,6 +103,10 @@ pub struct PluginWithConfigOptions {
   pub overrides: Vec<PluginConfigOverride>,
   /// The plugin's resolved configuration serialized as JSON.
   pub serialized_resolved_config: String,
+  /// The configuration files the properties of its configuration (and the
+  /// global configuration) are from, when that's not the configuration file
+  /// being resolved, for diagnostics.
+  pub property_origins: IndexMap<String, PathSource>,
 }
 
 impl PluginWithConfig {
@@ -112,6 +119,7 @@ impl PluginWithConfig {
       config_diagnostic_count: Default::default(),
       file_matching: options.file_matching,
       serialized_resolved_config: options.serialized_resolved_config,
+      property_origins: options.property_origins,
     }
   }
 
@@ -262,7 +270,14 @@ impl InitializedPluginWithConfig {
     &self,
     environment: &TEnvironment,
   ) -> Result<Result<(), OutputPluginConfigDiagnosticsError>> {
-    output_plugin_config_diagnostics(&self.info().name, &*self.instance, self.plugin.format_config.clone(), environment).await
+    output_plugin_config_diagnostics(
+      &self.info().name,
+      &*self.instance,
+      self.plugin.format_config.clone(),
+      &self.plugin.property_origins,
+      environment,
+    )
+    .await
   }
 
   pub async fn output_override_config_diagnostics<TEnvironment: Environment>(
@@ -281,7 +296,12 @@ impl InitializedPluginWithConfig {
         global: self.plugin.format_config.global.clone(),
       });
       for diagnostic in self.instance.config_diagnostics(format_config).await? {
-        log_warn!(environment, "[{}]: {}", self.info().name, diagnostic);
+        log_warn!(
+          environment,
+          "[{}]: {}",
+          self.info().name,
+          describe_config_diagnostic(&diagnostic, &self.plugin.property_origins)
+        );
         diagnostic_count += 1;
       }
     }
@@ -361,6 +381,20 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     if self.plugins.is_empty() { Err(NoPluginsFoundError) } else { Ok(()) }
   }
 
+  /// A global configuration diagnostic, followed by the configuration file
+  /// its property is from when that's not the configuration file being
+  /// resolved (ex. a file it extends).
+  fn describe_global_config_diagnostic(&self, diagnostic: &ConfigurationDiagnostic) -> String {
+    let source = self
+      .config
+      .as_ref()
+      .and_then(|config| config.plugins.origins.root_elsewhere(&diagnostic.property_name, &config.origin.source));
+    match source {
+      Some(source) => format!("{}\n    at {}", diagnostic, source.display()),
+      None => diagnostic.to_string(),
+    }
+  }
+
   pub fn ensure_no_global_config_diagnostics(&self) -> Result<(), ResolveConfigError> {
     if self.global_config_diagnostics.is_empty() {
       return Ok(());
@@ -370,7 +404,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       .iter()
       .filter_map(|d| match d {
         GlobalConfigDiagnostic::UnknownProperty(_) => None,
-        GlobalConfigDiagnostic::Other(d) => Some(d.to_string()),
+        GlobalConfigDiagnostic::Other(d) => Some(self.describe_global_config_diagnostic(d)),
       })
       .collect::<Vec<_>>();
     self.error_for_diagnostics(&diagnostics)
@@ -384,7 +418,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       .global_config_diagnostics
       .iter()
       .filter_map(|d| match d {
-        GlobalConfigDiagnostic::UnknownProperty(d) => Some(d.to_string()),
+        GlobalConfigDiagnostic::UnknownProperty(d) => Some(self.describe_global_config_diagnostic(d)),
         GlobalConfigDiagnostic::Other(_) => None,
       })
       .collect::<Vec<_>>();
@@ -1049,6 +1083,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     .map(|(plugin_config, plugin)| {
       let global_config = global_config.clone();
       let overrides = resolve_plugin_config_overrides(plugin_config.overrides, &config_base_path, plugin_resolver)?;
+      let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
       let next_config_id = plugin_resolver.next_config_id();
       Ok(
         async move {
@@ -1068,6 +1103,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
               file_matching,
               overrides,
               serialized_resolved_config,
+              property_origins,
             },
           )))
         }
@@ -1145,6 +1181,7 @@ mod test {
       let plugin_with_config = PluginWithConfig::new(
         plugin,
         PluginWithConfigOptions {
+          property_origins: Default::default(),
           associations: None,
           format_config,
           file_matching: FileMatchingInfo {
@@ -1263,6 +1300,7 @@ mod test {
     PluginWithConfig::new(
       Rc::new(PluginWrapper::new(Box::new(TestPlugin::new("test-plugin", "test-plugin", vec!["txt"], vec![])))),
       PluginWithConfigOptions {
+        property_origins: Default::default(),
         associations: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),

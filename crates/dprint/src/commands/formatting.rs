@@ -2531,6 +2531,57 @@ text2"
   }
 
   #[test]
+  fn should_say_which_file_a_plugin_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#)
+          .add_config_section("test-plugin", r#"{ "also-non-existent": 1 }"#);
+      })
+      .write_file("/base.json", r#"{ "test-plugin": { "non-existent": 25 } }"#)
+      .write_file("/test.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 2 errors formatting.");
+    let mut messages = environment.take_stderr_messages();
+    messages.sort();
+    assert_eq!(
+      messages,
+      vec![
+        // the one in the configuration file being used doesn't say so
+        "[test-plugin]: Error initializing from configuration file. Had 2 diagnostic(s).",
+        "[test-plugin]: Unknown property in configuration (also-non-existent)",
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /base.json",
+      ]
+    );
+  }
+
+  #[test]
+  fn should_say_which_file_an_inherited_plugin_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("test-plugin", r#"{ "non-existent": 25 }"#);
+      })
+      .with_local_config("/sub/dprint.json", |c| {
+        c.set_inherit(true);
+      })
+      .write_file("/sub/test.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "sub/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 1 error formatting.");
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /dprint.json",
+        "[test-plugin]: Error initializing from configuration file. Had 1 diagnostic(s)."
+      ]
+    );
+  }
+
+  #[test]
   fn should_error_on_process_plugin_config_diagnostic() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
       .with_default_config(|c| {
@@ -2707,6 +2758,24 @@ text2"
     assert_eq!(
       err.to_string(),
       "* Unknown property in configuration (excess-primitive)\n\nHad 1 config diagnostic(s) in /dprint.json"
+    );
+  }
+
+  #[test]
+  fn should_say_which_file_a_global_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#);
+      })
+      .write_file("/base.json", r#"{ "excess-primitive": true }"#)
+      .write_file("/test.txt", "test")
+      .build();
+
+    let err = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+    err.assert_exit_code(11);
+    assert_eq!(
+      err.to_string(),
+      "* Unknown property in configuration (excess-primitive)\n    at /base.json\n\nHad 1 config diagnostic(s) in /dprint.json"
     );
   }
 

@@ -22,6 +22,7 @@ pub use config_settings::ExecutionPolicy;
 pub use config_settings::FileRouting;
 pub use config_settings::FileSelection;
 pub use config_settings::PluginConfiguration;
+pub use config_settings::PropertyOrigins;
 pub use deserialize_config::*;
 pub use get_global_config::*;
 pub use get_init_config_file_text::*;
