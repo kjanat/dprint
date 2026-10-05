@@ -44,10 +44,13 @@ pub struct ConfigSchema {
 /// plugin's schema for its table. It isn't necessarily self-contained, as
 /// what a plugin's schema refers to in other files stays a url.
 ///
-/// The plugin schemas are copied in rather than referred to with `allOf`,
-/// because some tools check each part of an `allOf` separately when they
-/// report properties a schema doesn't have (ex. tombi's strict mode), which
-/// would flag a plugin's `associations` and dprint's own properties.
+/// A plugin's table is what dprint says every plugin table is (an object,
+/// with its own properties such as `associations`), which also has to be
+/// valid by the plugin's schema, whatever that says (ex. `true`). The
+/// plugin's schema is copied in, and gets dprint's properties too, because
+/// some tools check each part of an `allOf` separately when they report
+/// properties a schema doesn't have (ex. tombi's strict mode), which would
+/// otherwise flag a plugin's `associations`.
 ///
 /// dprint's schema is draft-07, so only draft-06 and draft-07 plugin schemas
 /// can be copied in, as other drafts mean something else by some keywords. A
@@ -73,6 +76,11 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     let location = format!("/definitions/{}", escape_pointer_segment(&definition_name));
     let reference = match embed_plugin_schema(plugin.schema, plugin.url.as_ref(), &location) {
       Ok(mut schema) => {
+        // a plugin whose schema is `false` takes no configuration of its own,
+        // which leaves dprint's properties of its table
+        if schema == Value::Bool(false) {
+          schema = serde_json::json!({ "additionalProperties": false });
+        }
         if let Some(reference) = add_table_properties(&mut schema, &location, &plugin_table_properties) {
           warnings.push(format!(
             "The configuration schema of the {} plugin{} refers to {} for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
@@ -104,7 +112,15 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
         }
       },
     };
-    object_entry(&mut root, "properties").insert(plugin.config_key, serde_json::json!({ "$ref": reference }));
+    // dprint's table, which the plugin's schema applies to as well
+    object_entry(&mut root, "properties").insert(
+      plugin.config_key,
+      serde_json::json!({
+        "type": "object",
+        "properties": plugin_table_properties,
+        "allOf": [{ "$ref": reference }],
+      }),
+    );
   }
 
   let mut result = Map::new();
@@ -473,6 +489,17 @@ mod test {
       .collect()
   }
 
+  /// What dprint says a plugin's table is, with the plugin's schema at
+  /// `reference` applying to it as well.
+  fn table_schema(reference: &str) -> Value {
+    let base: Value = serde_json::from_str(DPRINT_CONFIG_SCHEMA).unwrap();
+    json!({
+      "type": "object",
+      "properties": base["additionalProperties"]["properties"],
+      "allOf": [{ "$ref": reference }],
+    })
+  }
+
   #[test]
   fn copies_plugin_schemas_into_the_configuration_schema() {
     let schema = build_config_schema(vec![PluginSchema {
@@ -499,7 +526,7 @@ mod test {
     // dprint's own properties are there
     assert!(schema["properties"]["lineWidth"].is_object());
     assert!(schema["properties"]["plugins"].is_object());
-    assert_eq!(schema["properties"]["typescript"], json!({ "$ref": "#/definitions/plugin:typescript" }));
+    assert_eq!(schema["properties"]["typescript"], table_schema("#/definitions/plugin:typescript"));
 
     let plugin = &schema["definitions"]["plugin:typescript"];
     assert!(plugin.get("$id").is_none() && plugin.get("$schema").is_none());
@@ -529,7 +556,7 @@ mod test {
     }])
     .unwrap()
     .schema;
-    assert_eq!(schema["properties"]["a/b~c d"], json!({ "$ref": "#/definitions/plugin:a~1b~0c%20d" }));
+    assert_eq!(schema["properties"]["a/b~c d"], table_schema("#/definitions/plugin:a~1b~0c%20d"));
     assert_eq!(
       schema["definitions"]["plugin:a/b~c d"]["properties"]["x"],
       json!({ "$ref": "#/definitions/plugin:a~1b~0c%20d" })
@@ -658,6 +685,42 @@ mod test {
   }
 
   #[test]
+  fn keeps_dprints_table_contract_whatever_the_plugins_schema_says() {
+    let object_schema = json!({ "type": "object", "properties": { "a": { "type": "string" } }, "additionalProperties": false });
+    let dprints_properties = json!({ "associations": "**/*.x", "locked": true, "overrides": [{ "files": "*.x", "a": "b" }] });
+    for plugin_schema in [json!(true), json!({}), object_schema.clone(), json!(false)] {
+      let schema = build(plugin_schema.clone(), Some(URL));
+      assert_eq!(schema.warnings, Vec::<String>::new(), "{}", plugin_schema);
+      let validate = |table: Value| validate_with_schema(&schema.schema, &json!({ "test": table }));
+      // only an object is a plugin table, however little the plugin's schema says
+      for not_a_table in [json!(123), json!("a"), json!([]), json!(null), json!(true)] {
+        assert!(validate(not_a_table.clone()).is_err(), "{} {}", plugin_schema, not_a_table);
+      }
+      assert_eq!(validate(json!({})), Ok(()), "{}", plugin_schema);
+      // with dprint's own properties, as dprint describes them
+      assert_eq!(validate(dprints_properties.clone()), Ok(()), "{}", plugin_schema);
+      assert!(validate(json!({ "locked": "yes" })).is_err(), "{}", plugin_schema);
+      assert!(validate(json!({ "associations": 5 })).is_err(), "{}", plugin_schema);
+      assert!(validate(json!({ "overrides": [{ "a": "b" }] })).is_err(), "{}", plugin_schema);
+    }
+
+    // and the plugin's own properties, by its schema
+    let allows = |plugin_schema: &Value, table: Value| validate_with_schema(&build(plugin_schema.clone(), Some(URL)).schema, &json!({ "test": table })).is_ok();
+    for open in [json!(true), json!({})] {
+      assert!(allows(&open, json!({ "a": 1, "zzz": true })), "{}", open);
+    }
+    assert!(allows(&object_schema, json!({ "a": "x" })));
+    assert!(!allows(&object_schema, json!({ "a": 1 })));
+    assert!(!allows(&object_schema, json!({ "zzz": true })));
+    // a plugin whose schema is `false` takes no configuration of its own
+    assert!(!allows(&json!(false), json!({ "a": "x" })));
+    assert_eq!(
+      build(json!(false), Some(URL)).schema["definitions"]["plugin:test"]["additionalProperties"],
+      json!(false)
+    );
+  }
+
+  #[test]
   fn warns_when_a_tables_schema_is_in_another_document() {
     let schema = build(json!({ "$ref": "https://example.com/config.json" }), Some(URL));
     assert_eq!(
@@ -782,7 +845,8 @@ mod test {
         json!({ "$schema": dialect, "$defs": { "a": { "type": "string" } }, "properties": { "a": { "$ref": "#/$defs/a" } } }),
         Some(URL),
       );
-      assert_eq!(schema.schema["properties"]["test"], json!({ "$ref": URL }));
+      // dprint's table, which that schema applies to as well
+      assert_eq!(schema.schema["properties"]["test"], table_schema(URL));
       assert!(schema.schema["definitions"].get("plugin:test").is_none());
       assert_eq!(
         schema.warnings,
@@ -801,7 +865,7 @@ mod test {
       json!({ "definitions": { "a": { "$schema": "https://json-schema.org/draft/2019-09/schema" } } }),
       Some(URL),
     );
-    assert_eq!(schema.schema["properties"]["test"], json!({ "$ref": URL }));
+    assert_eq!(schema.schema["properties"]["test"], table_schema(URL));
 
     // and one built into dprint is left out
     let schema = build(json!({ "$schema": "https://json-schema.org/draft/2020-12/schema" }), None);
@@ -817,12 +881,7 @@ mod test {
       "http://json-schema.org/draft-06/schema#",
     ] {
       let schema = build(json!({ "$schema": dialect, "properties": { "a": { "type": "string" } } }), Some(URL));
-      assert_eq!(
-        schema.schema["properties"]["test"],
-        json!({ "$ref": "#/definitions/plugin:test" }),
-        "{}",
-        dialect
-      );
+      assert_eq!(schema.schema["properties"]["test"], table_schema("#/definitions/plugin:test"), "{}", dialect);
       assert_eq!(schema.warnings, Vec::<String>::new());
     }
   }

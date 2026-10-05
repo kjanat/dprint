@@ -2414,9 +2414,10 @@ mod test {
     );
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
+    assert_eq!(schema["properties"]["test-plugin"]["type"], "object");
     assert_eq!(
-      schema["properties"]["test-plugin"],
-      serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin" })
+      schema["properties"]["test-plugin"]["allOf"],
+      serde_json::json!([{ "$ref": "#/definitions/plugin:test-plugin" }])
     );
     let plugin = &schema["definitions"]["plugin:test-plugin"];
     assert_eq!(
@@ -2472,8 +2473,8 @@ mod test {
     );
     let schema: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
     assert_eq!(
-      schema["properties"]["test-plugin"],
-      serde_json::json!({ "$ref": "https://plugins.dprint.dev/test/schema.json" })
+      schema["properties"]["test-plugin"]["allOf"],
+      serde_json::json!([{ "$ref": "https://plugins.dprint.dev/test/schema.json" }])
     );
   }
 
@@ -2490,7 +2491,10 @@ mod test {
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
-    assert_eq!(schema["properties"]["exec"], serde_json::json!({ "$ref": "#/definitions/plugin:exec" }));
+    assert_eq!(
+      schema["properties"]["exec"]["allOf"],
+      serde_json::json!([{ "$ref": "#/definitions/plugin:exec" }])
+    );
     let plugin = &schema["definitions"]["plugin:exec"];
     // what only the built-in exec has
     assert!(plugin["properties"]["playWithFire"].is_object());
