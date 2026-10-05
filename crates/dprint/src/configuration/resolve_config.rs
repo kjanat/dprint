@@ -2680,7 +2680,7 @@ lineWidth = 80
               "includes": ["src/**"],
               "excludes": ["**/dist", "generated"],
               "shebangs": { "#!/usr/bin/env node": "js" },
-              "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "npm:@dprint/exec@0.7.3/plugin.json@abc"],
+              "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"],
               "test": {
                 "associations": ["**/*.txt", "!**/skip.txt"],
                 "binaryExpression.operatorPosition": "sameLine",
@@ -2899,7 +2899,7 @@ lineWidth = 80
 
     use super::*;
 
-    const EXEC_PLUGIN: &str = "npm:@dprint/exec@0.7.3/plugin.json@abc";
+    const EXEC_PLUGIN: &str = "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67";
     const REMOTE_URL: &str = "https://dprint.dev/exec.json";
 
     fn remote_config(exec_extra: &str) -> String {
@@ -3340,7 +3340,7 @@ lineWidth = 80
           ),
           (
             "https://dprint.dev/lower",
-            r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@abc"] }"#,
+            r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"] }"#,
           ),
         ])
         .unwrap()
@@ -3360,7 +3360,8 @@ lineWidth = 80
     fn applies_a_nested_configurations_play_with_fire_to_the_remote_commands_it_inherits() {
       let inherit = |nested_exec: &str| {
         let nested_config = format!(r#"{{ "inherit": true{} }}"#, nested_exec);
-        let remote_config = remote_config("");
+        // with a property the exec plugin 0.7.3 doesn't have
+        let remote_config = remote_config(r#""shell": "bash","#);
         resolve_in_every_format(
           &[
             ("dprint", r#"{ "extends": "<https://dprint.dev/exec>", "exec": { "playWithFire": true } }"#),
@@ -3378,6 +3379,7 @@ lineWidth = 80
       // what the ancestor allowed, when it doesn't say
       let (exec, plugins) = inherit("");
       assert_eq!(exec.properties.commands, ALL_REMOTE_COMMANDS.to_vec());
+      assert_eq!(exec.properties.other_keys, vec!["shell".to_string()]);
       assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
       // nothing remote, when it doesn't allow any
       let (exec, plugins) = inherit(r#", "exec": { "playWithFire": false }"#);
@@ -3386,7 +3388,94 @@ lineWidth = 80
       // the remote commands of the programs it allows
       let (exec, plugins) = inherit(r#", "exec": { "playWithFire": ["tombi"] }"#);
       assert_eq!(exec.properties.commands, vec!["tombi format -".to_string()]);
+      assert_eq!(exec.properties.other_keys, Vec::<String>::new());
       assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
+    }
+
+    /// A remote configuration with exec properties the exec plugin 0.7.3
+    /// doesn't have (ex. ones a later version might add), at the root, in an
+    /// override and in a command, next to ones it has that don't decide what
+    /// runs.
+    fn remote_config_with_unknown_properties() -> String {
+      r#"{
+        "exec": {
+          "lineWidth": 100,
+          "cacheKey": "remote",
+          "shell": "bash",
+          "commands": [
+            { "command": "tombi format -", "exts": ["toml"] },
+            { "command": "tombi lint", "exts": ["toml"], "shell": "bash" }
+          ],
+          "overrides": [{ "files": "**/*.txt", "timeout": 5, "env": { "PATH": "/remote" } }]
+        }
+      }"#
+        .to_string()
+    }
+
+    fn exec_with(commands: &[&str], other_keys: &[&str], override_keys: &[&str]) -> Exec {
+      let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
+      Exec {
+        properties: ExecProperties {
+          other_keys: keys(other_keys),
+          ..ExecProperties::new(commands, None)
+        },
+        overrides: vec![ExecOverride {
+          files: vec!["**/*.txt".to_string()],
+          properties: ExecProperties {
+            other_keys: keys(override_keys),
+            ..ExecProperties::default()
+          },
+        }],
+      }
+    }
+
+    #[test]
+    fn only_uses_remote_exec_properties_known_not_to_decide_what_runs() {
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          &remote_config_with_unknown_properties(),
+        )
+        .unwrap()
+      };
+      let ignored_property = |key: &str| {
+        format!(
+          concat!(
+            "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
+            "as the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+          key
+        )
+      };
+
+      // the programs a command runs can't be checked when it has others
+      let result = resolve_allowing(r#"["tombi"]"#);
+      assert_eq!(result.exec, exec_with(&["tombi format -"], &["lineWidth", "cacheKey"], &["timeout"]));
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that have properties ",
+            "the exec plugin 0.7.3 doesn't, which only run with \"playWithFire\": true: shell"
+          )
+          .to_string(),
+          ignored_property("shell"),
+          ignored_property("env"),
+        ]
+      );
+
+      let result = resolve_allowing("false");
+      assert_eq!(result.exec, exec_with(&[], &["lineWidth", "cacheKey"], &["timeout"]));
+      assert_eq!(result.messages[1..], [ignored_property("shell"), ignored_property("env")]);
+
+      // all of them when any program may run
+      let result = resolve_allowing("true");
+      assert_eq!(
+        result.exec,
+        exec_with(&["tombi format -", "tombi lint"], &["lineWidth", "cacheKey", "shell"], &["timeout", "env"])
+      );
+      assert_eq!(result.messages, Vec::<String>::new());
     }
   }
 

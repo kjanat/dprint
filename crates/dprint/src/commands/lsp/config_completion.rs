@@ -982,7 +982,7 @@ mod test {
       .write_file(
         "/dprint.json",
         r#"{
-  "plugins": ["https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000"],
+  "plugins": ["https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa"],
   "exec": { "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }
 }"#,
       )
