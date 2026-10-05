@@ -25,6 +25,7 @@ use sys_traits::SystemTimeNow;
 use sys_traits::ThreadSleep;
 
 use crate::plugins::CompilationResult;
+use crate::plugins::WasmCompileControl;
 use crate::utils::BasicShowConfirmStrategy;
 use crate::utils::LogLevel;
 use crate::utils::MultiSelectItem;
@@ -328,8 +329,9 @@ pub trait Environment:
   fn is_ci(&self) -> bool;
   fn is_terminal_interactive(&self) -> bool;
   fn log_level(&self) -> LogLevel;
-  /// Compiles a wasm plugin. `plugin_display` names the plugin in messages.
-  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8]) -> Result<CompilationResult>;
+  /// Compiles a wasm plugin. `plugin_display` names the plugin in messages,
+  /// and `control` stops the compile from outside.
+  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8], control: &WasmCompileControl) -> Result<CompilationResult>;
   fn wasm_cache_key(&self) -> String;
   /// Returns the current CPU usage as a value from 0-100.
   async fn cpu_usage(&self) -> u8;

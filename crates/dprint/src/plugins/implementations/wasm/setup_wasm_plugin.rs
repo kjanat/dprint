@@ -6,6 +6,16 @@ use anyhow::Result;
 use crate::environment::Environment;
 
 use super::super::SetupPluginResult;
+use super::CompileControl;
+
+/// Cancels the compile when dropped.
+struct CancelOnDrop<'a>(&'a CompileControl);
+
+impl Drop for CancelOnDrop<'_> {
+  fn drop(&mut self) {
+    self.0.cancel();
+  }
+}
 
 // cache-busting key for the serialized wasmtime artifact. wasmtime additionally
 // validates engine/CPU compatibility on deserialize (recompiling on mismatch),
@@ -25,10 +35,16 @@ pub async fn setup_wasm_plugin<TEnvironment: Environment>(
   if guard.is_none() {
     log_stderr_info!(environment, "Compiling {}", url_or_file_path.display());
   }
+  // what it's set up for has no deadline of its own
+  let control = CompileControl::new(None);
+  // the compile is stopped once nothing waits for it, rather than left
+  // running in its blocking task
+  let _cancel_on_drop = CancelOnDrop(&control);
   let compile_result = dprint_core::async_runtime::spawn_blocking({
     let environment = environment.clone();
     let plugin_display = url_or_file_path.display().to_string();
-    move || environment.compile_wasm(&plugin_display, &file_bytes)
+    let control = control.clone();
+    move || environment.compile_wasm(&plugin_display, &file_bytes, &control)
   })
   .await??;
   drop(guard);
