@@ -43,7 +43,6 @@ rustls-native-certs = "=0.7.0"
 rustls-pemfile = "=2.1.2"
 sha2 = "=0.10.9"
 similar = { workspace = true, features = ["inline"] }
-splitty = "=1.0.1"
 sys_traits = { workspace = true, features = ["real"] }
 sysinfo = { version = "=0.39.6", features = ["system"], default-features = false }
 tar = "=0.4.45"

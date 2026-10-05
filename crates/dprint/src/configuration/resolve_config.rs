@@ -2488,7 +2488,7 @@ mod tests {
 
     use super::*;
 
-    const EXEC_PLUGIN: &str = "npm:@dprint/exec@0.7.3/plugin.json@abc";
+    const EXEC_PLUGIN: &str = "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67";
     const REMOTE_URL: &str = "https://dprint.dev/exec.json";
 
     fn remote_config(exec_extra: &str) -> String {
@@ -2912,7 +2912,7 @@ mod tests {
         (REMOTE_URL, r#"{ "extends": "./lower.json", "exec": { "commands": "evil" } }"#),
         (
           "https://dprint.dev/lower.json",
-          r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@abc"] }"#,
+          r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"] }"#,
         ),
       ];
       let resolve_allowing = |play_with_fire: &str| {
