@@ -1,6 +1,7 @@
 //! One schema for a configuration file: dprint's, with each plugin's
 //! schema for its table.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
@@ -124,7 +125,7 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
       }
     };
     let table_schemas = TableSchemas::of(&resource);
-    if let Some((pointer, keyword)) = table_schemas.whole_object {
+    if let Some((pointer, keyword)) = &table_schemas.whole_object {
       warnings.push(format!(
         concat!(
           "The configuration schema of the {} describes its table as a whole (`{}`{}), which can't say what it does of the table dprint ",
@@ -140,7 +141,7 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
       );
       continue;
     }
-    if let Some(reference) = table_schemas.not_followed {
+    if let Some(reference) = &table_schemas.not_followed {
       warnings.push(format!(
         "The configuration schema of the {} refers to {} for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
         plugin_display, reference
@@ -150,7 +151,7 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     // resource refers to has to be within it (or at an absolute uri)
     let override_name = override_definition_name(&resource.schema);
     let override_reference = pointer::resource_reference(resource.uri.as_str(), &pointer::append("/$defs", &override_name));
-    let override_schema = override_schema(&resource, &table_schemas.unconditional, &table_properties, &files);
+    let override_schema = override_schema(&resource, &table_schemas, &table_properties, &files);
     if let Some((pointer, keyword)) = &table_schemas.conditional_properties {
       warnings.push(format!(
         concat!(
@@ -287,6 +288,9 @@ struct TableSchemas {
   /// schema, its `$ref` targets and `allOf` items), whose properties every
   /// override may set.
   unconditional: Vec<String>,
+  /// By each of those, the ones it applies in turn (its `$ref` target and
+  /// `allOf` items): what its `unevaluatedProperties` sees.
+  applied: HashMap<String, Vec<String>>,
   /// Where the first schema that applies to the table on a condition (ex.
   /// an `anyOf` branch) says what properties it may have, and the keyword
   /// it's under. An override can't be checked against it on its own, as
@@ -302,15 +306,17 @@ impl TableSchemas {
     let mut result = Self {
       whole_object: None,
       unconditional: Vec::new(),
+      applied: HashMap::new(),
       conditional_properties: None,
       not_followed: None,
     };
-    // each schema to visit: where it is, and the keyword it applies to the
-    // table on a condition of, if it doesn't apply unconditionally
-    let mut pending = VecDeque::from([(String::new(), None)]);
+    // each schema to visit: where it is, the keyword it applies to the table
+    // on a condition of, if it doesn't apply unconditionally, and the schema
+    // that applies it
+    let mut pending = VecDeque::from([(String::new(), None, None)]);
     let mut visited = HashSet::new();
     // nearest first, so a warning names the first of what's at a level
-    while let Some((pointer, condition)) = pending.pop_front() {
+    while let Some((pointer, condition, applied_by)) = pending.pop_front() {
       if !visited.insert(pointer.clone()) {
         continue;
       }
@@ -320,7 +326,7 @@ impl TableSchemas {
       // (what's next to a `$ref` applies too, in 2020-12)
       if let Some(reference) = object.get("$ref") {
         match reference.as_str().and_then(|reference| resource.index.resolve(reference, &pointer)) {
-          Some(target) => pending.push_back((target, condition)),
+          Some(target) => pending.push_back((target, condition, Some(pointer.clone()))),
           None => {
             result
               .not_followed
@@ -334,7 +340,12 @@ impl TableSchemas {
         result.whole_object = Some((pointer.clone(), keyword));
       }
       match condition {
-        None => result.unconditional.push(pointer.clone()),
+        None => {
+          result.unconditional.push(pointer.clone());
+          if let Some(applied_by) = applied_by {
+            result.applied.entry(applied_by).or_default().push(pointer.clone());
+          }
+        }
         Some(keyword) => {
           let constrains_properties = object.contains_key("properties")
             || ["additionalProperties", "unevaluatedProperties"]
@@ -347,17 +358,21 @@ impl TableSchemas {
       }
       for (keyword, condition) in [("allOf", condition), ("anyOf", Some("anyOf")), ("oneOf", Some("oneOf"))] {
         if let Some(Value::Array(schemas)) = object.get(keyword) {
-          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), condition)));
+          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), condition, Some(pointer.clone()))));
         }
       }
       for keyword in ["if", "then", "else", "not"] {
         if object.contains_key(keyword) {
-          pending.push_back((format!("{}/{}", pointer, keyword), Some(keyword)));
+          pending.push_back((format!("{}/{}", pointer, keyword), Some(keyword), Some(pointer.clone())));
         }
       }
       if let Some(Value::Object(dependencies)) = object.get("dependentSchemas") {
         for name in dependencies.keys() {
-          pending.push_back((pointer::append(&format!("{}/dependentSchemas", pointer), name), Some("dependentSchemas")));
+          pending.push_back((
+            pointer::append(&format!("{}/dependentSchemas", pointer), name),
+            Some("dependentSchemas"),
+            Some(pointer.clone()),
+          ));
         }
       }
     }
@@ -365,50 +380,84 @@ impl TableSchemas {
     result.unconditional.sort();
     result
   }
+
+  /// The schema at `pointer` and the ones it applies to the table
+  /// unconditionally, in turn: what its `unevaluatedProperties` sees.
+  fn evaluated_by(&self, pointer: &str) -> Vec<String> {
+    let mut result = vec![pointer.to_string()];
+    let mut index = 0;
+    while index < result.len() {
+      if let Some(applied) = self.applied.get(&result[index]) {
+        let new = applied.iter().filter(|applied| !result.contains(applied)).cloned().collect::<Vec<_>>();
+        result.extend(new);
+      }
+      index += 1;
+    }
+    result
+  }
 }
 
 /// The schema of an override of a plugin's table, which is `files` and the
 /// plugin's own properties (what dprint hands the plugin for the files, so
 /// nothing is required): each property as the plugin's schema has it in the
-/// schemas that apply to the table unconditionally (`unconditional`, see
-/// [`TableSchemas`]), referred to where it is in the plugin's resource,
-/// other properties as those allow. What a schema says on a condition (ex. an
-/// `anyOf` branch) isn't in it, as the table an override is merged into
-/// decides the condition, which is warned about (see
+/// schemas that apply to the table unconditionally (see
+/// [`TableSchemas::unconditional`]), referred to where it is in the plugin's
+/// resource, and what each of those schemas says of the other properties
+/// (`additionalProperties`, `unevaluatedProperties`), kept to that schema:
+/// one that allows no others forbids a property another declares, as in the
+/// plugin's schema. What a schema says on a condition (ex. an `anyOf`
+/// branch) isn't in it, as the table an override is merged into decides the
+/// condition, which is warned about (see
 /// [`TableSchemas::conditional_properties`]).
-fn override_schema(resource: &Resource, unconditional: &[String], table_properties: &Map<String, Value>, files: &Value) -> Value {
+fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: &Map<String, Value>, files: &Value) -> Value {
+  // the plugin's own properties a schema declares
+  let declared = |pointer: &str| -> Vec<String> {
+    match resource.schema.pointer(pointer).and_then(|schema| schema.get("properties")) {
+      Some(Value::Object(declared)) => declared.keys().filter(|name| !table_properties.contains_key(*name)).cloned().collect(),
+      _ => Vec::new(),
+    }
+  };
   let mut properties = Map::new();
-  let mut additional = Vec::new();
-  let mut closed = false;
-  for pointer in unconditional {
+  let mut restrictions = Vec::new();
+  for pointer in &table.unconditional {
     let Some(Value::Object(object)) = resource.schema.pointer(pointer) else {
       continue;
     };
-    if let Some(Value::Object(declared)) = object.get("properties") {
-      for name in declared.keys().filter(|name| !table_properties.contains_key(*name)) {
-        let reference = serde_json::json!({ "$ref": resource.index.reference_to(&pointer::append(&format!("{}/properties", pointer), name)) });
-        match properties.get_mut(name) {
-          None => {
-            properties.insert(name.clone(), reference);
-          }
-          // declared more than once: all of them apply
-          Some(Value::Object(existing)) => match existing.get_mut("allOf") {
-            Some(Value::Array(all)) => all.push(reference),
-            _ => {
-              let first = Value::Object(std::mem::take(existing));
-              existing.insert("allOf".to_string(), Value::Array(vec![first, reference]));
-            }
-          },
-          Some(_) => {}
+    for name in declared(pointer) {
+      let reference = serde_json::json!({ "$ref": resource.index.reference_to(&pointer::append(&format!("{}/properties", pointer), &name)) });
+      match properties.get_mut(&name) {
+        None => {
+          properties.insert(name, reference);
         }
+        // declared more than once: all of them apply
+        Some(Value::Object(existing)) => match existing.get_mut("allOf") {
+          Some(Value::Array(all)) => all.push(reference),
+          _ => {
+            let first = Value::Object(std::mem::take(existing));
+            existing.insert("allOf".to_string(), Value::Array(vec![first, reference]));
+          }
+        },
+        Some(_) => {}
       }
     }
-    for keyword in ["additionalProperties", "unevaluatedProperties"] {
-      match object.get(keyword) {
-        Some(Value::Bool(false)) => closed = true,
-        Some(Value::Object(_)) => additional.push(serde_json::json!({ "$ref": resource.index.reference_to(&format!("{}/{}", pointer, keyword)) })),
-        _ => {}
+    // what this schema says of the properties it doesn't declare
+    // (`additionalProperties`), or that nothing it applies declares
+    // (`unevaluatedProperties`); `files` is dprint's, so it's exempt
+    for (keyword, evaluated) in [
+      ("additionalProperties", vec![pointer.clone()]),
+      ("unevaluatedProperties", table.evaluated_by(pointer)),
+    ] {
+      let others = match object.get(keyword) {
+        Some(Value::Bool(false)) => Value::Bool(false),
+        Some(Value::Object(_)) => serde_json::json!({ "$ref": resource.index.reference_to(&format!("{}/{}", pointer, keyword)) }),
+        _ => continue,
+      };
+      let mut allowed = Map::new();
+      allowed.insert("files".to_string(), Value::Bool(true));
+      for name in evaluated.iter().flat_map(|pointer| declared(pointer)) {
+        allowed.insert(name, Value::Bool(true));
       }
+      restrictions.push(serde_json::json!({ "properties": allowed, "additionalProperties": others }));
     }
   }
   // `files`, as dprint describes it for every override
@@ -420,28 +469,37 @@ fn override_schema(resource: &Resource, unconditional: &[String], table_properti
   result.insert("required".to_string(), serde_json::json!(["files"]));
   result.insert("minProperties".to_string(), serde_json::json!(2));
   result.insert("properties".to_string(), Value::Object(all_properties));
-  if closed {
-    result.insert("additionalProperties".to_string(), Value::Bool(false));
-  } else if additional.len() == 1 {
-    result.insert("additionalProperties".to_string(), additional.pop().unwrap());
-  } else if !additional.is_empty() {
-    result.insert("additionalProperties".to_string(), serde_json::json!({ "allOf": additional }));
+  if !restrictions.is_empty() {
+    result.insert("allOf".to_string(), Value::Array(restrictions));
   }
   Value::Object(result)
 }
 
 /// dprint's `overrides` property of a plugin's table, with each override
-/// checked by the schema at `reference` rather than the one for any plugin.
+/// checked by the schema at `reference` rather than the one for any plugin:
+/// the property as dprint's schema has it, with its references to the
+/// generic override's schema replaced, so that whatever else it says (ex.
+/// that it may be left out as `null`) stays as the model says.
 fn override_table_property(generic: &Value, reference: &str) -> Value {
-  let mut property = Map::new();
-  if let Some(description) = generic.get("description") {
-    property.insert("description".to_string(), description.clone());
+  const GENERIC_OVERRIDE: &str = "#/$defs/pluginOverride";
+  fn replace(value: &mut Value, reference: &str) {
+    match value {
+      Value::Object(object) => {
+        for (key, value) in object.iter_mut() {
+          if key == "$ref" && value == GENERIC_OVERRIDE {
+            *value = Value::String(reference.to_string());
+          } else {
+            replace(value, reference);
+          }
+        }
+      }
+      Value::Array(values) => values.iter_mut().for_each(|value| replace(value, reference)),
+      _ => {}
+    }
   }
-  property.insert(
-    "anyOf".to_string(),
-    serde_json::json!([{ "$ref": reference }, { "type": "array", "items": { "$ref": reference } }]),
-  );
-  Value::Object(property)
+  let mut property = generic.clone();
+  replace(&mut property, reference);
+  property
 }
 
 /// Adds what every plugin table may have (`properties`) to the schemas in a
@@ -533,11 +591,10 @@ mod test {
     let base = crate::root_schema();
     let mut properties = base["$defs"]["pluginTable"]["properties"].clone();
     if embedded {
+      // the model's property, referring to the plugin's own override schema
       let override_reference = format!("{}#/$defs/dprint-override", reference);
-      properties["overrides"] = json!({
-        "description": properties["overrides"]["description"],
-        "anyOf": [{ "$ref": override_reference }, { "type": "array", "items": { "$ref": override_reference } }],
-      });
+      let text = serde_json::to_string(&properties["overrides"]).unwrap();
+      properties["overrides"] = serde_json::from_str(&text.replace("#/$defs/pluginOverride", &override_reference)).unwrap();
     }
     json!({
       "description": format!("The configuration of the {} plugin.", key),
@@ -797,11 +854,16 @@ mod test {
     assert_eq!(
       validate_with_schema(
         &schema.schema,
-        &json!({ "test": { "a": "a", "associations": "**/*.a", "overrides": [{ "files": "*.a", "b": 1 }] } })
+        &json!({ "test": { "a": "a", "associations": "**/*.a", "overrides": [{ "files": "*.a", "a": "b" }] } })
       ),
       Ok(())
     );
     assert!(validate_with_schema(&schema.schema, &json!({ "test": { "b": "one" } })).is_err());
+    // `closed` allows no property but its own, so `b`, which only the root
+    // declares, isn't allowed in the table nor in an override, as the plugin's
+    // schema says (`additionalProperties` is the schema's own)
+    assert!(validate_with_schema(&schema.schema, &json!({ "test": { "a": "a", "b": 1 } })).is_err());
+    assert!(validate_with_schema(&schema.schema, &json!({ "test": { "overrides": [{ "files": "*.a", "b": 1 }] } })).is_err());
     assert!(validate_with_schema(&schema.schema, &json!({ "test": { "overrides": [{ "files": "*.a", "b": "one" }] } })).is_err());
   }
 
@@ -998,11 +1060,16 @@ mod test {
       override_schema["properties"]["b"],
       json!({ "$ref": "https://plugins.dprint.dev/test/schema.json#/definitions/root/allOf/1/properties/b" })
     );
-    assert_eq!(override_schema["additionalProperties"], json!(false));
+    // what each schema says of the other properties is kept to that schema:
+    // the second allows none but `b`, so it forbids `a`, which the first
+    // declares, as it does of the table
     assert_eq!(
-      validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y", "b": 1 }] })),
-      Ok(())
+      override_schema["allOf"],
+      json!([{ "properties": { "files": true, "b": true }, "additionalProperties": false }])
     );
+    assert!(override_schema.get("additionalProperties").is_none());
+    assert_eq!(validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "b": 1 }] })), Ok(()));
+    assert!(validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y", "b": 1 }] })).is_err());
     assert!(validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "a": 1 }] })).is_err());
     // (a property declared twice is what both say)
     let twice = json!({ "allOf": [{ "properties": { "a": { "type": "string" } } }, { "properties": { "a": { "minLength": 2 } } }] });
@@ -1024,6 +1091,123 @@ mod test {
     );
     assert!(validate(unevaluated.clone(), json!({ "zzz": 1 })).is_err());
     assert!(validate(unevaluated.clone(), json!({ "overrides": [{ "files": "*.x", "zzz": 1 }] })).is_err());
+  }
+
+  /// Whether a plugin's own schema accepts a table of its own properties
+  /// (what dprint hands it), as a validator reading the schema does.
+  fn plugin_accepts(plugin_schema: &Value, plugin_properties: &Value) -> bool {
+    let mut schemas = boon::Schemas::new();
+    let mut compiler = boon::Compiler::new();
+    compiler.add_resource(URL, plugin_schema.clone()).unwrap();
+    let index = compiler.compile(URL, &mut schemas).unwrap();
+    schemas.validate(plugin_properties, index).is_ok()
+  }
+
+  #[test]
+  fn an_override_validates_exactly_when_the_plugin_accepts_what_it_makes_of_the_table() {
+    // an override's properties replace the table's for its files, so the
+    // configuration schema accepts an override exactly when the plugin's
+    // schema accepts the table that makes (the base tables here are valid)
+    let typed_others_in_a_branch = json!({
+      "allOf": [
+        { "properties": { "a": { "type": "string" } } },
+        { "properties": { "b": { "type": "number" } }, "additionalProperties": { "type": "boolean" } },
+      ],
+    });
+    let closed_branch = json!({
+      "$ref": "#/definitions/root",
+      "definitions": {
+        "root": { "allOf": [{ "$ref": "#/definitions/one" }, { "properties": { "b": { "type": "number" } }, "additionalProperties": false }] },
+        "one": { "properties": { "a": { "type": "string" } } },
+      },
+    });
+    let closed = json!({
+      "type": "object",
+      "properties": { "a": { "type": "string" }, "b": { "type": "number" } },
+      "required": ["a"],
+      "additionalProperties": false,
+    });
+    let unevaluated = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": { "a": { "type": "string" } },
+      "allOf": [{ "properties": { "b": { "type": "number" } } }],
+      "unevaluatedProperties": false,
+    });
+    let cases = [
+      (&closed_branch, json!({}), json!({ "b": 1 }), true),
+      (&closed_branch, json!({}), json!({ "a": "x" }), false),
+      (&closed_branch, json!({}), json!({ "a": "x", "b": 1 }), false),
+      (&closed_branch, json!({ "b": 2 }), json!({ "b": 3 }), true),
+      (&typed_others_in_a_branch, json!({}), json!({ "b": 1, "zzz": true }), true),
+      (&typed_others_in_a_branch, json!({}), json!({ "zzz": 1 }), false),
+      // `a` is declared by one schema, and must be a boolean by the other
+      (&typed_others_in_a_branch, json!({}), json!({ "a": "x" }), false),
+      (&typed_others_in_a_branch, json!({}), json!({ "a": true }), false),
+      (&closed, json!({ "a": "x" }), json!({ "a": "y", "b": 1 }), true),
+      (&closed, json!({ "a": "x" }), json!({ "zzz": true }), false),
+      (&closed, json!({ "a": "x" }), json!({ "b": "one" }), false),
+      (&unevaluated, json!({}), json!({ "b": 1 }), true),
+      (&unevaluated, json!({}), json!({ "a": "x", "b": 2 }), true),
+      (&unevaluated, json!({}), json!({ "zzz": 1 }), false),
+    ];
+    for (plugin_schema, base, override_properties, expected) in cases {
+      let schema = build((*plugin_schema).clone(), Some(URL));
+      assert_eq!(schema.warnings, Vec::<String>::new(), "{}", plugin_schema);
+      assert!(plugin_accepts(plugin_schema, &base), "{} {}", plugin_schema, base);
+      let mut merged = base.as_object().unwrap().clone();
+      merged.extend(override_properties.as_object().unwrap().clone());
+      assert_eq!(
+        plugin_accepts(plugin_schema, &Value::Object(merged)),
+        expected,
+        "{} {} {}",
+        plugin_schema,
+        base,
+        override_properties
+      );
+      let mut table = base.as_object().unwrap().clone();
+      let mut override_config = override_properties.as_object().unwrap().clone();
+      override_config.insert("files".to_string(), json!("*.x"));
+      table.insert("overrides".to_string(), json!([override_config]));
+      assert_eq!(
+        validate_with_schema(&schema.schema, &json!({ "test": table })).is_ok(),
+        expected,
+        "{} {} {}",
+        plugin_schema,
+        base,
+        override_properties
+      );
+    }
+  }
+
+  #[test]
+  fn follows_a_reference_into_a_translated_tuple() {
+    // a draft-07 tuple's items move to `prefixItems`, and a reference into
+    // one of them (not just to the tuple) follows
+    let schema = build(
+      json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "pair": { "type": "array", "items": [{ "type": "string" }, { "type": "integer" }], "additionalItems": false },
+        },
+        "properties": {
+          "label": { "$ref": "#/definitions/pair/items/0" },
+          "pair": { "$ref": "#/definitions/pair" },
+          "rest": { "type": "array", "items": { "$ref": "#/definitions/pair/additionalItems" } },
+        },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert_eq!(
+      schema.schema["$defs"]["plugin:test"]["properties"]["label"],
+      json!({ "$ref": "#/definitions/pair/prefixItems/0" })
+    );
+    let validate = |table: Value| validate_with_schema(&schema.schema, &json!({ "test": table }));
+    assert_eq!(validate(json!({ "label": "x", "pair": ["x", 1], "rest": [] })), Ok(()));
+    assert!(validate(json!({ "label": 1 })).is_err());
+    assert!(validate(json!({ "pair": ["x", 1, 2] })).is_err());
+    // `additionalItems: false` is `items: false` now, which the reference follows to
+    assert!(validate(json!({ "rest": [1] })).is_err());
   }
 
   #[test]
