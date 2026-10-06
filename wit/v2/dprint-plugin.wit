@@ -1,0 +1,129 @@
+/// dprint Wasm plugin ABI, plugin system schema version 2.
+///
+/// Historical. dprint 0.7.0 to 0.7.4 (dprint-core 0.26.0 to 0.26.2,
+/// 2020-07-28). The host of that time called `get_plugin_schema_version`
+/// and required exactly 2; today's host, which looks the version up by
+/// export name, would take a v2 plugin for a v3 one.
+///
+/// The function set is version 1's. What changed is the payload of
+/// `set-plugin-config`: a `config-key-map` whose values are a string, a
+/// number (i32) or a boolean (an untagged JSON value), where version 1
+/// had strings only. Version 3 then added `set-override-config` and
+/// `host-take-override-config`.
+///
+/// A core-module ABI, not a component: the plugin exports a linear
+/// `memory` and passes byte payloads in chunks through a fixed 4 KiB
+/// transfer buffer. Every value is an `i32` on wasm32, written as `u32`
+/// here. Payloads are JSON unless said otherwise.
+package dprint:plugin@2.0.0;
+
+interface types {
+  type json = string;
+  type pointer = u32;
+
+  /// 0, 1 or 2.
+  enum format-result {
+    no-change,
+    changed,
+    error,
+  }
+
+  /// `get-plugin-info` (keys in camelCase).
+  record plugin-info {
+    name: string,
+    version: string,
+    config-key: string,
+    /// Without a leading dot.
+    file-extensions: list<string>,
+    help-url: string,
+    config-schema-url: string,
+  }
+
+  record global-configuration {
+    line-width: option<u32>,
+    use-tabs: option<bool>,
+    indent-width: option<u8>,
+    /// "auto", "lf" or "crlf".
+    new-line-kind: option<string>,
+  }
+
+  /// The plugin's table: property name to a string, a number (i32) or a
+  /// boolean.
+  type config-key-map = json;
+
+  record configuration-diagnostic {
+    property-name: string,
+    message: string,
+  }
+}
+
+/// What the plugin exports. The shared-bytes protocol is version 3's:
+/// `clear-shared-bytes(len)` then chunks through the transfer buffer with
+/// `add-to-shared-bytes-from-buffer(n)` (host to plugin), and a returned
+/// length read in chunks with `set-buffer-with-shared-bytes(offset, n)`
+/// (plugin to host).
+interface plugin-exports {
+  use types.{pointer, format-result};
+
+  /// `get_plugin_schema_version() -> u32`. Returns 2.
+  get-plugin-schema-version: func() -> u32;
+  /// `get_wasm_memory_buffer() -> *const u8`.
+  get-wasm-memory-buffer: func() -> pointer;
+  /// `get_wasm_memory_buffer_size() -> usize`. 4096.
+  get-wasm-memory-buffer-size: func() -> u32;
+  /// `add_to_shared_bytes_from_buffer(length: usize)`.
+  add-to-shared-bytes-from-buffer: func(length: u32);
+  /// `set_buffer_with_shared_bytes(offset: usize, length: usize)`.
+  set-buffer-with-shared-bytes: func(offset: u32, length: u32);
+  /// `clear_shared_bytes(capacity: usize)`.
+  clear-shared-bytes: func(capacity: u32);
+
+  /// `get_plugin_info() -> usize`. Shared bytes get `types.plugin-info`.
+  get-plugin-info: func() -> u32;
+  /// `get_license_text() -> usize`.
+  get-license-text: func() -> u32;
+
+  /// `set_global_config()`. Shared bytes hold `types.global-configuration`.
+  set-global-config: func();
+  /// `set_plugin_config()`. Shared bytes hold `types.config-key-map`.
+  set-plugin-config: func();
+  /// `get_resolved_config() -> usize`.
+  get-resolved-config: func() -> u32;
+  /// `get_config_diagnostics() -> usize`.
+  get-config-diagnostics: func() -> u32;
+
+  /// `set_file_path()`. Shared bytes hold the file path (UTF-8).
+  set-file-path: func();
+  /// `format() -> u8`. Shared bytes hold the file's text.
+  format: func() -> format-result;
+  /// `get_formatted_text() -> usize`. UTF-8.
+  get-formatted-text: func() -> u32;
+  /// `get_error_text() -> usize`. UTF-8.
+  get-error-text: func() -> u32;
+}
+
+/// What the host provides, in the import module "dprint" (version 3's
+/// without `host-take-override-config`).
+interface host {
+  use types.{pointer, format-result};
+
+  /// `host_clear_bytes(length: u32)`.
+  host-clear-bytes: func(length: u32);
+  /// `host_read_buffer(pointer: u32, length: u32)`.
+  host-read-buffer: func(pointer: pointer, length: u32);
+  /// `host_write_buffer(pointer: u32, offset: u32, length: u32)`.
+  host-write-buffer: func(pointer: pointer, offset: u32, length: u32);
+  /// `host_take_file_path()`.
+  host-take-file-path: func();
+  /// `host_format() -> u8`.
+  host-format: func() -> format-result;
+  /// `host_get_formatted_text() -> u32`.
+  host-get-formatted-text: func() -> u32;
+  /// `host_get_error_text() -> u32`.
+  host-get-error-text: func() -> u32;
+}
+
+world plugin {
+  import host;
+  export plugin-exports;
+}
