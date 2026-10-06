@@ -3865,8 +3865,9 @@ lineWidth = 80
           async |environment, paths| {
             // the local file where that url points (the same file on unix)
             let base_path = paths.get("base");
+            environment.mk_dir_all(laundered_dir).unwrap();
             environment
-              .write_file(&format!("{}{}", laundered_dir, &base_path[1..]), &environment.read_file(base_path).unwrap())
+              .write_file(format!("{}{}", laundered_dir, &base_path[1..]), &environment.read_file(base_path).unwrap())
               .unwrap();
             let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string());
             let messages = environment.take_stderr_messages();
