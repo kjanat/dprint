@@ -10,6 +10,7 @@
 
 mod configuration;
 mod executable;
+#[cfg(windows)]
 pub use executable::find_with_path_ext;
 mod handler;
 mod template;

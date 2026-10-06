@@ -31,6 +31,7 @@ pub fn resolve_executable(executable: &str, cwd: &Path) -> PathBuf {
 /// does (see `resolve_executable`), with the PATH, PATHEXT and working
 /// directory given: a name is looked for on the PATH, a path from the working
 /// directory.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn find_with_path_ext(
   executable: &str,
   cwd: &Path,
