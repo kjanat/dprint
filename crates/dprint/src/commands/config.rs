@@ -2423,20 +2423,19 @@ mod test {
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
     assert_eq!(schema["properties"]["test-plugin"]["type"], "object");
+    // the plugin's schema is a resource of its own, with its references as they are
     assert_eq!(
       schema["properties"]["test-plugin"]["allOf"],
-      serde_json::json!([{ "$ref": "#/definitions/plugin:test-plugin" }])
+      serde_json::json!([{ "$ref": "https://plugins.dprint.dev/test/schema.json" }])
     );
-    let plugin = &schema["definitions"]["plugin:test-plugin"];
-    assert_eq!(
-      plugin["properties"]["ending"],
-      serde_json::json!({ "$ref": "#/definitions/plugin:test-plugin/definitions/ending" })
-    );
+    let plugin = &schema["$defs"]["plugin:test-plugin"];
+    assert_eq!(plugin["$id"], serde_json::json!("https://plugins.dprint.dev/test/schema.json"));
+    assert_eq!(plugin["properties"]["ending"], serde_json::json!({ "$ref": "#/definitions/ending" }));
     assert!(plugin["properties"]["associations"].is_object());
   }
 
   #[test]
-  fn should_resolve_a_plugin_schemas_references_against_where_it_was_downloaded_from() {
+  fn should_give_a_plugin_schema_the_url_it_was_downloaded_from_as_its_id() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .add_remote_file(
         "https://plugins.dprint.dev/test/0.1.0/schema.json",
@@ -2451,18 +2450,18 @@ mod test {
     run_test_cli(vec!["schema"], &environment).unwrap();
     environment.take_stderr_messages();
     let schema: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
-    assert_eq!(
-      schema["definitions"]["plugin:test-plugin"]["properties"]["ending"],
-      serde_json::json!({ "$ref": "https://plugins.dprint.dev/test/0.1.0/common.json#/definitions/ending" })
-    );
+    // which its relative references are resolved against
+    let plugin = &schema["$defs"]["plugin:test-plugin"];
+    assert_eq!(plugin["$id"], serde_json::json!("https://plugins.dprint.dev/test/0.1.0/schema.json"));
+    assert_eq!(plugin["properties"]["ending"], serde_json::json!({ "$ref": "common.json#/definitions/ending" }));
   }
 
   #[test]
-  fn should_warn_when_referring_to_a_plugin_schema_of_another_draft() {
+  fn should_warn_when_referring_to_a_plugin_schema_of_an_unknown_draft() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .add_remote_file(
         "https://plugins.dprint.dev/test/schema.json",
-        r#"{ "$schema": "https://json-schema.org/draft/2020-12/schema", "properties": { "ending": { "type": "string" } } }"#,
+        r#"{ "$schema": "https://json-schema.org/draft/2099-01/schema", "properties": { "ending": { "type": "string" } } }"#,
       )
       .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
       .build();
@@ -2473,7 +2472,7 @@ mod test {
         "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         concat!(
           "The configuration schema of the test-plugin plugin (https://plugins.dprint.dev/test/schema.json) ",
-          "is for https://json-schema.org/draft/2020-12/schema, which isn't copied into dprint's draft-07 schema, so it's referred to instead. ",
+          "is for https://json-schema.org/draft/2099-01/schema, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
           "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
         )
         .to_string(),
@@ -2501,18 +2500,16 @@ mod test {
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
     assert_eq!(
       schema["properties"]["exec"]["allOf"],
-      serde_json::json!([{ "$ref": "#/definitions/plugin:exec" }])
+      serde_json::json!([{ "$ref": "dprint-built-in:/exec/schema.json" }])
     );
-    let plugin = &schema["definitions"]["plugin:exec"];
+    let plugin = &schema["$defs"]["plugin:exec"];
+    assert_eq!(plugin["$id"], serde_json::json!("dprint-built-in:/exec/schema.json"));
     // what only the built-in exec has
     assert!(plugin["properties"]["playWithFire"].is_object());
     assert!(plugin["properties"]["setupTimeout"].is_object());
     let command = &plugin["properties"]["commands"]["items"];
     assert!(command["properties"]["setupCommand"].is_object());
-    assert_eq!(
-      command["properties"]["exts"]["$ref"],
-      serde_json::json!("#/definitions/plugin:exec/definitions/stringOrStrings")
-    );
+    assert!(command["properties"]["exts"]["anyOf"].is_array());
     // and dprint's properties of every plugin table
     assert!(plugin["properties"]["associations"].is_object());
   }
@@ -2540,7 +2537,7 @@ mod test {
       messages
     );
     let schema: serde_json::Value = serde_json::from_str(&environment.read_file("./dprint.schema.json").unwrap()).unwrap();
-    assert!(schema["definitions"]["plugin:test-plugin"].is_object());
+    assert!(schema["$defs"]["plugin:test-plugin"].is_object());
     environment.take_stderr_messages();
 
     // and it's left alone when there isn't one
@@ -2552,11 +2549,10 @@ mod test {
 
   /// The plugins whose tables a configuration schema describes.
   fn config_schema_plugins(schema: &serde_json::Value) -> Vec<String> {
-    let definitions = schema["definitions"].as_object().unwrap();
+    let definitions = schema["$defs"].as_object().unwrap();
     definitions
       .keys()
       .filter_map(|key| key.strip_prefix("plugin:"))
-      .filter(|key| !key.ends_with(":override"))
       .map(ToOwned::to_owned)
       .collect()
   }

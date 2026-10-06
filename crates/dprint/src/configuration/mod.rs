@@ -1,6 +1,5 @@
 mod config_file_format;
 mod config_layer;
-mod config_schema;
 mod config_settings;
 mod deserialize_config;
 mod get_global_config;
@@ -14,10 +13,6 @@ mod types;
 
 pub use config_file_format::ConfigFileFormat;
 pub use config_file_format::json_config_text_to_toml;
-pub use config_schema::CONFIG_SCHEMA_FILE_NAME;
-pub use config_schema::DPRINT_CONFIG_SCHEMA;
-pub use config_schema::PluginSchema;
-pub use config_schema::build_config_schema;
 pub use config_settings::ConfigSettings;
 pub use config_settings::ExecutionPolicy;
 pub use config_settings::FileRouting;
@@ -25,6 +20,9 @@ pub use config_settings::FileSelection;
 pub use config_settings::PluginConfiguration;
 pub use config_settings::PropertyOrigins;
 pub use deserialize_config::*;
+pub use dprint_config_schema::CONFIG_SCHEMA_FILE_NAME;
+pub use dprint_config_schema::PluginSchema;
+pub use dprint_config_schema::build_config_schema;
 pub use get_global_config::*;
 pub use get_init_config_file_text::*;
 pub use get_plugin_config_map::*;
