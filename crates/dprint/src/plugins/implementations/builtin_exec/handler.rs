@@ -3,8 +3,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,6 +32,8 @@ use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::oneshot::Sender;
 
+use dprint_core::owned_child::OwnedChild;
+
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
@@ -55,32 +55,6 @@ const MAX_OUTPUT_HEADROOM: usize = 1024 * 1024;
 /// The most a command formatting `file_len` bytes may write.
 fn max_output_len(file_len: usize) -> usize {
   file_len.saturating_mul(MAX_OUTPUT_FACTOR).saturating_add(MAX_OUTPUT_HEADROOM)
-}
-
-struct ChildKillOnDrop(std::process::Child);
-
-impl Drop for ChildKillOnDrop {
-  fn drop(&mut self) {
-    // both are no-ops for a child that already exited and was waited on.
-    // waiting reaps a killed child so it doesn't linger as a zombie
-    if self.0.kill().is_ok() {
-      let _ignore = self.0.wait();
-    }
-  }
-}
-
-impl Deref for ChildKillOnDrop {
-  type Target = std::process::Child;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-impl DerefMut for ChildKillOnDrop {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.0
-  }
 }
 
 #[derive(Default)]
@@ -192,20 +166,23 @@ pub async fn format_bytes(
     // format here
     let args = maybe_substitute_variables(&file_path, &config, command)?;
 
-    let mut child = ChildKillOnDrop(
+    // killed with whatever it started (ex. the `node` process of an npm
+    // installed command) once this returns, including on a timeout or
+    // cancellation. Untied, since a command runs for every file and ends
+    // on its own once dprint is gone and its pipes close.
+    let mut child = OwnedChild::spawn_untied(
       Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
         .current_dir(&command.cwd)
         .stdout(Stdio::piped())
         .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::piped())
-        .args(args)
-        .spawn()
-        .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?,
-    );
+        .args(args),
+    )
+    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
 
     // capturing stdout, up to what the formatted file could be
     let (out_tx, out_rx) = oneshot::channel();
-    let Some(stdout) = child.stdout.take() else {
+    let Some(stdout) = child.take_stdout() else {
       let _ = child.kill();
       return Err(FormatError::new("Formatter did not have a handle for stdout"));
     };
@@ -218,16 +195,14 @@ pub async fn format_bytes(
     // capturing the end of stderr, for the error when the command fails
     let (err_tx, err_rx) = oneshot::channel();
     let stderr_read = child
-      .stderr
-      .take()
+      .take_stderr()
       .map(|stderr| dprint_core::async_runtime::spawn_blocking(|| read_stderr_end(stderr, err_tx)));
 
     // write file text into child's stdin. this happens within the timeout
     // because a command that never reads its stdin would block the write
     let stdin_write = if command.stdin {
       let mut stdin = child
-        .stdin
-        .take()
+        .take_stdin()
         .ok_or_else(|| FormatError::new("Cannot open the command's stdin. Perhaps you meant to set the command's \"stdin\" configuration to false?"))?;
       let file_bytes = file_bytes.into_owned();
       Some(dprint_core::async_runtime::spawn_blocking(move || match stdin.write_all(&file_bytes) {
@@ -638,23 +613,23 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
     setup_command,
     ..
   } = run;
-  let mut child = match Command::new(executable)
-    .current_dir(cwd)
-    .stdin(Stdio::null())
-    // a plugin must not write to stdout (it's the protocol channel)
-    .stdout(Stdio::null())
-    .stderr(Stdio::piped())
-    .args(&setup_command.args)
-    .spawn()
-  {
-    Ok(child) => ChildKillOnDrop(child),
+  let mut child = match OwnedChild::spawn(
+    Command::new(executable)
+      .current_dir(cwd)
+      .stdin(Stdio::null())
+      // a plugin must not write to stdout (it's the protocol channel)
+      .stdout(Stdio::null())
+      .stderr(Stdio::piped())
+      .args(&setup_command.args),
+  ) {
+    Ok(child) => child,
     Err(err) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
   };
 
   // capture the end of stderr to surface it if the command fails
   let (err_tx, err_rx) = oneshot::channel();
   let mut handles = Vec::with_capacity(1);
-  if let Some(stderr) = child.stderr.take() {
+  if let Some(stderr) = child.take_stderr() {
     handles.push(dprint_core::async_runtime::spawn_blocking(|| read_stderr_end(stderr, err_tx)));
   }
 
@@ -682,7 +657,7 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
 /// Waits for a child that has closed its output streams to exit. It's polled
 /// rather than waited on from another thread so that the child stays owned by
 /// the caller, whose drop kills it.
-async fn wait_for_exit(child: &mut ChildKillOnDrop, description: &str) -> Result<ExitStatus, FormatError> {
+async fn wait_for_exit(child: &mut OwnedChild, description: &str) -> Result<ExitStatus, FormatError> {
   let mut delay = Duration::from_millis(1);
   loop {
     match child.try_wait() {
@@ -762,8 +737,7 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
     .collect()
 }
 
-// the commands they run are unix ones
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[allow(clippy::disallowed_methods)] // tests run real commands against real files
 mod test {
   use std::path::PathBuf;
@@ -786,6 +760,7 @@ mod test {
     Arc::new(result.config)
   }
 
+  #[cfg(unix)]
   async fn format(config: &Arc<Configuration>, text: &str, setup_state: &SetupState) -> Result<Option<String>, String> {
     format_with_token(config, text, setup_state, Arc::new(NullCancellationToken)).await
   }
@@ -802,12 +777,121 @@ mod test {
       .map_err(|err| err.to_string())
   }
 
+  /// A formatter that right away starts a process that keeps the formatter's
+  /// output open, then exits. The process it started appends to a file about
+  /// every 100ms (unix) or second (Windows) as long as it runs.
+  struct LingeringFormatter {
+    dir: tempfile::TempDir,
+  }
+
+  impl LingeringFormatter {
+    fn new() -> Self {
+      let dir = tempfile::tempdir().unwrap();
+      let heartbeat = dir.path().join("heartbeat.txt");
+      #[cfg(unix)]
+      std::fs::write(
+        dir.path().join("formatter.sh"),
+        format!("(while :; do echo x >> '{}'; sleep 0.1; done) &\n", heartbeat.display()),
+      )
+      .unwrap();
+      #[cfg(windows)]
+      {
+        let script = dir.path().join("heartbeat.cmd");
+        std::fs::write(
+          &script,
+          format!(
+            "@echo off\r\n:beat\r\necho x>>\"{}\"\r\nping -n 2 127.0.0.1 >nul\r\ngoto beat\r\n",
+            heartbeat.display()
+          ),
+        )
+        .unwrap();
+        std::fs::write(
+          dir.path().join("formatter.cmd"),
+          format!("@echo off\r\nstart \"\" /b \"{}\"\r\n", script.display()),
+        )
+        .unwrap();
+      }
+      Self { dir }
+    }
+
+    fn config(&self, timeout: u32) -> Arc<Configuration> {
+      resolve(serde_json::json!({
+        "timeout": timeout,
+        "commands": [{
+          "command": if cfg!(windows) { "./formatter.cmd" } else { "sh formatter.sh" },
+          "cwd": self.dir.path().to_string_lossy(),
+          "exts": ["txt"]
+        }]
+      }))
+    }
+
+    fn heartbeat_len(&self) -> u64 {
+      std::fs::metadata(self.dir.path().join("heartbeat.txt"))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+    }
+
+    /// Whether the process it started stopped, once a beat that was underway
+    /// had time to finish.
+    fn stopped(&self) -> bool {
+      std::thread::sleep(Duration::from_millis(500));
+      let len = self.heartbeat_len();
+      std::thread::sleep(Duration::from_millis(2500));
+      self.heartbeat_len() == len
+    }
+
+    /// Formats with it, and how long that took.
+    ///
+    /// The threads reading its output only finish once what it started is
+    /// gone, which a test's runtime would wait for when it's dropped, so this
+    /// runs on a runtime that stops waiting for them after a second. That way
+    /// a process that's left running fails the test rather than hanging it.
+    fn format(&self, timeout: u32, token: Arc<dyn CancellationToken>) -> (Result<Option<String>, String>, Duration) {
+      let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+      let start = Instant::now();
+      let result = runtime.block_on(format_with_token(&self.config(timeout), "text", &SetupState::default(), token));
+      let elapsed = start.elapsed();
+      runtime.shutdown_timeout(Duration::from_secs(1));
+      (result, elapsed)
+    }
+  }
+
+  #[test]
+  fn ends_a_timed_out_formatter_together_with_what_it_started() {
+    let formatter = LingeringFormatter::new();
+    let (result, elapsed) = formatter.format(2, Arc::new(NullCancellationToken));
+    assert_eq!(result, Err("Child process has not returned a result within 2 seconds.".to_string()));
+    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
+    assert!(formatter.stopped(), "the process the formatter started should have been killed");
+  }
+
+  #[test]
+  fn ends_a_cancelled_formatter_together_with_what_it_started() {
+    let formatter = LingeringFormatter::new();
+    let token = tokio_util::sync::CancellationToken::new();
+    std::thread::spawn({
+      let token = token.clone();
+      move || {
+        std::thread::sleep(Duration::from_secs(2));
+        token.cancel();
+      }
+    });
+    let (result, elapsed) = formatter.format(60, Arc::new(token));
+    assert_eq!(result, Ok(None));
+    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
+    assert!(formatter.stopped(), "the process the formatter started should have been killed");
+  }
+
+  #[cfg(unix)]
   #[tokio::test]
   async fn formats_with_stdin_and_stdout() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }));
     assert_eq!(format(&config, "hello\n", &SetupState::default()).await, Ok(Some("HELLO\n".to_string())));
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn should_error_output_empty_file() {
     // `true` exits without reading its input, which used to fail writing the
@@ -826,6 +910,7 @@ mod test {
     );
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn passes_variables_to_the_command_as_they_are() {
     // not escaped for HTML, like Handlebars did
@@ -843,6 +928,7 @@ mod test {
     assert_eq!(formatted, Some(file_path.as_bytes().to_vec()));
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn errors_for_a_formatter_killed_by_a_signal() {
     let config = resolve(serde_json::json!({ "commands": [{ "command": "sh -c \"kill -TERM $$\"", "exts": ["txt"] }] }));
@@ -852,6 +938,7 @@ mod test {
     );
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_command_once_across_formats() {
     let dir = tempfile::tempdir().unwrap();
@@ -870,6 +957,7 @@ mod test {
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x");
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn runs_setup_commands_whose_arguments_only_split_differently() {
     let dir = tempfile::tempdir().unwrap();
@@ -887,16 +975,19 @@ mod test {
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.
+  #[cfg(unix)]
   fn sleep_is_running(seconds: &str) -> bool {
     command_is_running(&format!("sleep {}", seconds))
   }
 
+  #[cfg(unix)]
   /// Gets whether a process running the command line is still alive.
   fn command_is_running(command: &str) -> bool {
     let output = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
     String::from_utf8_lossy(&output.stdout).lines().any(|line| line.trim() == command)
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn fails_a_formatter_that_keeps_writing_without_keeping_what_it_writes() {
     // `yes` writes forever, which is far more than the file could format to.
@@ -921,6 +1012,7 @@ mod test {
     assert_eq!(format(&config, &text, &SetupState::default()).await, Ok(None));
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn keeps_only_the_end_of_what_a_command_writes_to_stderr() {
     // 300 KB of it, of which the error gets the last 64 KiB
@@ -940,6 +1032,7 @@ mod test {
     assert_eq!(err.len(), prefix.len() + 64 * 1024);
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_formatter_that_times_out() {
     // a unique duration so this test finds its own process
@@ -953,6 +1046,7 @@ mod test {
     assert!(!sleep_is_running("31.7"), "the formatter should have been killed");
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn times_out_a_formatter_that_never_reads_its_stdin() {
     // more than a pipe buffer, so writing it blocks until the formatter reads
@@ -964,6 +1058,7 @@ mod test {
     assert!(!sleep_is_running("32.7"), "the formatter should have been killed");
   }
 
+  #[cfg(unix)]
   #[tokio::test]
   async fn kills_a_setup_command_that_times_out_and_does_not_rerun_it() {
     let config = resolve(serde_json::json!({
@@ -980,12 +1075,14 @@ mod test {
     assert!(start.elapsed() < Duration::from_secs(3));
   }
 
+  #[cfg(unix)]
   /// A setup command that records each start of it in `dir`, as the id of the
   /// process that then runs for `seconds`.
   fn counting_setup_command(dir: &std::path::Path, seconds: u32) -> String {
     format!("sh -c \"echo $$ >> {}; exec sleep {}\"", dir.join("starts").display(), seconds)
   }
 
+  #[cfg(unix)]
   /// The process ids of the setup command's starts, in order.
   fn setup_starts(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(dir.join("starts"))
@@ -995,6 +1092,7 @@ mod test {
       .collect()
   }
 
+  #[cfg(unix)]
   fn is_running(process_id: &str) -> bool {
     std::process::Command::new("kill")
       .args(["-0", process_id])
@@ -1004,6 +1102,7 @@ mod test {
       .success()
   }
 
+  #[cfg(unix)]
   /// Runs the future on a runtime of its own, then checks that nothing it
   /// started (ex. a reader of a process's output) keeps running.
   fn run_leaving_nothing_running<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -1015,6 +1114,7 @@ mod test {
     result
   }
 
+  #[cfg(unix)]
   #[test]
   fn times_out_a_setup_command_once_for_every_request_waiting_for_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1044,9 +1144,11 @@ mod test {
     assert!(!is_running(&starts[0]));
   }
 
+  #[cfg(unix)]
   /// How a request went, and how long after the start it returned.
   type RequestResult = (Result<Option<String>, String>, Duration);
 
+  #[cfg(unix)]
   /// Formats with requests that wait for a setup command that takes a second,
   /// cancelling the ones that say so after 300ms. Gives what they returned and
   /// the starts of the setup command.
@@ -1077,18 +1179,21 @@ mod test {
     (results, setup_starts(dir.path()))
   }
 
+  #[cfg(unix)]
   #[track_caller]
   fn assert_returned_once_cancelled(result: &RequestResult) {
     assert_eq!(result.0, Ok(None));
     assert!(result.1 < Duration::from_millis(800), "{:?}", result.1);
   }
 
+  #[cfg(unix)]
   #[track_caller]
   fn assert_formatted_after_setup(result: &RequestResult) {
     assert_eq!(result.0, Ok(Some("TEXT".to_string())));
     assert!(result.1 >= Duration::from_secs(1), "{:?}", result.1);
   }
 
+  #[cfg(unix)]
   #[test]
   fn a_cancelled_request_stops_waiting_for_a_setup_command_another_waits_for() {
     let (results, starts) = format_cancelling(&[false, true]);
@@ -1097,6 +1202,7 @@ mod test {
     assert_eq!(starts.len(), 1);
   }
 
+  #[cfg(unix)]
   #[test]
   fn the_request_that_started_a_setup_command_can_stop_waiting_for_it() {
     // the setup command keeps running for the other request
@@ -1106,6 +1212,7 @@ mod test {
     assert_eq!(starts.len(), 1);
   }
 
+  #[cfg(unix)]
   #[test]
   fn kills_a_setup_command_no_request_waits_for() {
     let (results, starts) = format_cancelling(&[true, true]);
@@ -1115,6 +1222,7 @@ mod test {
     assert!(!is_running(&starts[0]));
   }
 
+  #[cfg(unix)]
   #[test]
   fn runs_a_setup_command_again_once_no_request_waited_for_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1138,6 +1246,7 @@ mod test {
     assert_eq!(setup_starts(dir.path()).len(), 2);
   }
 
+  #[cfg(unix)]
   #[test]
   fn does_nothing_for_a_request_cancelled_before_it_starts() {
     let dir = tempfile::tempdir().unwrap();
@@ -1160,6 +1269,7 @@ mod test {
 
   /// A configuration whose setup command takes the seconds to finish, for
   /// requests that wait for it for `setup_timeout` seconds.
+  #[cfg(unix)]
   fn config_with_setup_timeout(dir: &std::path::Path, setup_timeout: u32, setup_seconds: u32) -> Arc<Configuration> {
     resolve(serde_json::json!({
       "setupTimeout": setup_timeout,
@@ -1167,6 +1277,7 @@ mod test {
     }))
   }
 
+  #[cfg(unix)]
   #[test]
   fn stops_waiting_for_a_setup_command_at_each_requests_own_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -1198,6 +1309,7 @@ mod test {
     assert_eq!(setup_starts(dir.path()).len(), 1);
   }
 
+  #[cfg(unix)]
   #[test]
   fn fails_a_setup_command_once_the_last_request_waiting_for_it_times_out() {
     // the request that would wait longer is cancelled, so the other one is
@@ -1229,6 +1341,7 @@ mod test {
     assert!(!is_running(&starts[0]));
   }
 
+  #[cfg(unix)]
   #[test]
   fn runs_a_failed_setup_command_again_after_a_delay() {
     let dir = tempfile::tempdir().unwrap();
@@ -1262,6 +1375,7 @@ mod test {
     assert_eq!(setup_starts(dir.path()).len(), 2);
   }
 
+  #[cfg(unix)]
   #[test]
   fn waits_longer_to_run_a_setup_command_again_the_more_it_failed() {
     let setup_state = SetupState::default();
@@ -1271,6 +1385,7 @@ mod test {
     assert_eq!(delays, vec![10, 20, 40, 80]);
   }
 
+  #[cfg(unix)]
   #[test]
   fn stops_running_a_setup_command_that_keeps_failing() {
     let dir = tempfile::tempdir().unwrap();
@@ -1302,6 +1417,7 @@ mod test {
     assert_eq!(setup_starts(dir.path()).len(), super::MAX_SETUP_ATTEMPTS as usize);
   }
 
+  #[cfg(unix)]
   #[test]
   fn doesnt_count_a_setup_command_no_request_waited_for_as_failing() {
     let dir = tempfile::tempdir().unwrap();

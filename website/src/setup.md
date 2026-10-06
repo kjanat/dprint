@@ -105,4 +105,12 @@ Process plugins are watched the same way while they start: one that hasn't repor
 
 To compile Wasm plugins inside the dprint process instead, without this supervision, set `DPRINT_WASM_COMPILE_WORKER=0`.
 
+## Child Processes
+
+dprint owns the exec plugin's commands (formatting and setup commands) together with the processes those start, such as the `node` process behind a command installed with `npm install -g`. On Windows each is in a job object, which no process in it can leave. On Linux and macOS each is in a process group of its own, which a process can leave on purpose (`setsid`, ex. a formatter's server started with Node's `detached: true`, which is meant to outlive the command that started it): such a process isn't owned, and outlives everything below.
+
+What's owned is killed once dprint is done with it, when a command times out or formatting is cancelled, and when dprint is interrupted or terminated (ex. Ctrl+C).
+
+When dprint itself is killed (ex. `kill -9`), Windows kills all of them too. On Linux, the formatting commands usually end on their own once their input and output close. The processes they started can outlive it on Linux and macOS.
+
 Next step: [Configuration](/config)
