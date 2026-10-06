@@ -166,11 +166,13 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     if let Some((pointer, keyword)) = &table_schemas.conditional_properties {
       warnings.push(format!(
         concat!(
-          "The configuration schema of the {} says what properties its table may have on a condition too (`{}` at {}), which an override ",
+          "The configuration schema of the {} says which properties its table has on a condition too (`{}`{}), which an override ",
           "can't be checked on by itself, as the table it's merged into decides it, so editors check an override's properties only as far ",
           "as the schema says unconditionally."
         ),
-        plugin_display, keyword, pointer
+        plugin_display,
+        keyword,
+        if pointer.is_empty() { String::new() } else { format!(" at {}", pointer) }
       ));
     }
     if let Some(overrides) = table_properties.get_mut("overrides") {
@@ -303,9 +305,10 @@ struct TableSchemas {
   /// `allOf` items): what its `unevaluatedProperties` sees.
   applied: HashMap<String, Vec<String>>,
   /// Where the first schema that applies to the table on a condition (ex.
-  /// an `anyOf` branch) says what properties it may have, and the keyword
-  /// it's under. An override can't be checked against it on its own, as
-  /// the table it's merged into decides the condition.
+  /// an `anyOf` branch) says which properties it has (what they may be,
+  /// or that it has one), and the keyword it's under. An override can't be
+  /// checked against it on its own, as the table it's merged into decides
+  /// the condition, and the properties it adds can change that.
   conditional_properties: Option<(String, &'static str)>,
   /// A reference to another document that couldn't be followed.
   not_followed: Option<String>,
@@ -356,9 +359,20 @@ impl TableSchemas {
           if let Some(applied_by) = applied_by {
             result.applied.entry(applied_by).or_default().push(pointer.clone());
           }
+          // a dependency is a condition of its own: the property an
+          // override adds can be the one that requires others
+          if object.contains_key("dependentRequired") && result.conditional_properties.is_none() {
+            result.conditional_properties = Some((pointer.clone(), "dependentRequired"));
+          }
         }
         Some(keyword) => {
-          let constrains_properties = object.contains_key("properties")
+          // what an override can change: which properties the table has
+          // (`properties`, and what it says of the others) and whether it
+          // has one (`required`, `dependentRequired`), which decides a
+          // `oneOf`, an `if`, a `not` or a dependency, too
+          let constrains_properties = ["properties", "required", "dependentRequired"]
+            .iter()
+            .any(|keyword| object.contains_key(*keyword))
             || ["additionalProperties", "unevaluatedProperties"]
               .iter()
               .any(|keyword| object.get(*keyword).is_some_and(|allowed| allowed != &Value::Bool(true)));
@@ -1322,11 +1336,12 @@ mod test {
     let warning = |keyword: &str, at: &str| {
       format!(
         concat!(
-          "The configuration schema of the test plugin (https://plugins.dprint.dev/test/schema.json) says what properties its table may have on a condition too ",
-          "(`{}` at {}), which an override can't be checked on by itself, as the table it's merged into decides it, so editors check an override's ",
+          "The configuration schema of the test plugin (https://plugins.dprint.dev/test/schema.json) says which properties its table has on a condition too ",
+          "(`{}`{}), which an override can't be checked on by itself, as the table it's merged into decides it, so editors check an override's ",
           "properties only as far as the schema says unconditionally."
         ),
-        keyword, at
+        keyword,
+        if at.is_empty() { String::new() } else { format!(" at {}", at) }
       )
     };
     let either = json!({ "anyOf": [{ "properties": { "a": { "type": "string" } }, "required": ["a"] }, { "properties": { "b": { "type": "number" } }, "required": ["b"] }] });
@@ -1346,18 +1361,25 @@ mod test {
     assert_eq!(validate(&either, json!({ "a": "x", "overrides": [{ "files": "*.x", "a": 1 }] })), Ok(()));
 
     for (plugin_schema, keyword, at) in [
+      // (the first that says which properties the table has is named, a
+      // `required` included)
       (
         json!({ "oneOf": [{ "required": ["a"] }, { "properties": { "b": { "type": "number" } } }] }),
         "oneOf",
-        "/oneOf/1",
+        "/oneOf/0",
       ),
       (
         json!({ "if": { "required": ["a"] }, "then": { "properties": { "b": { "type": "number" } } } }),
+        "if",
+        "/if",
+      ),
+      (
+        json!({ "if": { "type": "object" }, "then": { "properties": { "b": { "type": "number" } } } }),
         "then",
         "/then",
       ),
       (
-        json!({ "if": { "required": ["a"] }, "else": { "additionalProperties": false } }),
+        json!({ "if": { "type": "object" }, "else": { "additionalProperties": false } }),
         "else",
         "/else",
       ),
@@ -1386,10 +1408,40 @@ mod test {
         plugin_schema
       );
     }
-    // a condition that says nothing about the properties' values is fine
+    // whether the table has a property counts too: the properties an
+    // override adds can decide a `oneOf`, an `if`, a `not` or a dependency
+    let exactly_one = json!({ "oneOf": [{ "required": ["a"] }, { "required": ["b"] }] });
+    let schema = build(exactly_one.clone(), Some(URL));
+    assert_eq!(schema.warnings, vec![warning("oneOf", "/oneOf/0")]);
+    // (the override validates, while the plugin rejects the table it makes)
+    assert_eq!(validate(&exactly_one, json!({ "a": 1, "overrides": [{ "files": "*.x", "b": 1 }] })), Ok(()));
+    assert!(!plugin_accepts(&exactly_one, &json!({ "a": 1, "b": 1 })));
+    for (plugin_schema, keyword, at) in [
+      (json!({ "anyOf": [{ "required": ["a"] }, { "required": ["b"] }] }), "anyOf", "/anyOf/0"),
+      (
+        json!({ "if": { "required": ["a"] }, "then": { "required": ["b"] }, "else": { "additionalProperties": true } }),
+        "if",
+        "/if",
+      ),
+      (json!({ "not": { "required": ["a"] } }), "not", "/not"),
+      // a dependency on a property is a condition wherever it is
+      (json!({ "dependencies": { "a": ["b"] } }), "dependentRequired", ""),
+      (
+        json!({ "allOf": [{ "dependentRequired": { "a": ["b"] } }], "$schema": "https://json-schema.org/draft/2020-12/schema" }),
+        "dependentRequired",
+        "/allOf/0",
+      ),
+    ] {
+      assert_eq!(
+        build(plugin_schema.clone(), Some(URL)).warnings,
+        vec![warning(keyword, at)],
+        "{}",
+        plugin_schema
+      );
+    }
+    // a condition that says nothing about the table's properties is fine
     for plugin_schema in [
-      json!({ "anyOf": [{ "required": ["a"] }, { "required": ["b"] }] }),
-      json!({ "if": { "required": ["a"] }, "then": { "required": ["b"] }, "else": { "additionalProperties": true } }),
+      json!({ "anyOf": [{ "type": "object" }, { "title": "x" }] }),
       json!({ "properties": { "a": { "anyOf": [{ "properties": { "x": { "type": "string" } } }, { "type": "string" }] } } }),
     ] {
       assert_eq!(build(plugin_schema.clone(), Some(URL)).warnings, Vec::<String>::new(), "{}", plugin_schema);
@@ -1465,7 +1517,17 @@ mod test {
       let mut plugin_schema = plugin_schema;
       plugin_schema["$schema"] = json!(dialect);
       let schema = build(plugin_schema.clone(), Some(URL));
-      assert_eq!(schema.warnings, Vec::<String>::new(), "{}", dialect);
+      // (the dependency on `a` is a condition an override can decide, which
+      // is warned about, in each draft's syntax)
+      let has_dependency = plugin_schema.get("dependencies").is_some() || plugin_schema.get("dependentRequired").is_some();
+      assert_eq!(schema.warnings.len(), usize::from(has_dependency), "{}: {:?}", dialect, schema.warnings);
+      if has_dependency {
+        assert!(
+          schema.warnings[0].contains("on a condition too (`dependentRequired`),"),
+          "{}",
+          schema.warnings[0]
+        );
+      }
       let plugin = &schema.schema["$defs"]["plugin:test"];
       assert!(plugin.get("$schema").is_none(), "{}", dialect);
       assert_eq!(plugin["properties"]["pair"]["prefixItems"].as_array().map(Vec::len), Some(2), "{}", dialect);
