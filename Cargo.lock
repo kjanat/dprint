@@ -842,7 +842,7 @@ dependencies = [
  "deno_semver",
  "deno_terminal",
  "dirs",
- "dprint-config-schema",
+ "dprint-config-model",
  "dprint-core",
  "dunce",
  "flate2",
@@ -890,16 +890,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "dprint-config-schema"
+name = "dprint-config-model"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "boon",
+ "dprint-core",
+ "indexmap",
  "percent-encoding",
  "pretty_assertions",
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "url",
 ]
 
@@ -2335,6 +2338,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
+ "indexmap",
  "ref-cast",
  "schemars_derive",
  "serde",
@@ -2466,6 +2470,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

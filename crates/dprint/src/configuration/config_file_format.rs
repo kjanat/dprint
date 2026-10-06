@@ -4,11 +4,13 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use dprint_config_model::ConfigFile;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigKeyValue;
 use dprint_core::plugins::ConfigChange;
 use dprint_core::plugins::ConfigChangeKind;
 use dprint_core::plugins::ConfigChangePathItem;
+use jsonc_parser::JsonValue;
 use toml_edit::DocumentMut;
 use toml_edit::Item;
 use toml_edit::Value;
@@ -17,8 +19,6 @@ use super::ApplyConfigChangesResult;
 use super::PluginUpdateInfo;
 use super::add_plugins_to_config;
 use super::apply_config_changes;
-use super::parse_integer;
-use super::parse_json_config;
 use super::update_plugin_in_config;
 use crate::plugins::PluginSourceReference;
 use crate::utils::PathSource;
@@ -72,7 +72,7 @@ impl ConfigFileFormat {
     }
   }
 
-  /// Reads configuration text into dprint's format-neutral values. This is
+  /// Parses configuration text into dprint's format-neutral values. This is
   /// the only place reading a configuration file depends on its format.
   pub fn parse(self, text: &str) -> Result<ConfigKeyMap> {
     match self {
@@ -81,9 +81,11 @@ impl ConfigFileFormat {
     }
   }
 
-  #[cfg(test)]
-  pub fn deserialize(self, text: &str) -> Result<super::ConfigMap> {
-    super::config_map_from_values(self.parse(text)?)
+  /// Reads configuration text as a configuration file: what one may hold is
+  /// the configuration model's to say (see [`ConfigFile`]), whichever the
+  /// format.
+  pub fn read(self, text: &str) -> Result<ConfigFile> {
+    Ok(dprint_config_model::from_values(self.parse(text)?)?)
   }
 
   /// See [`add_plugins_to_config`].
@@ -128,7 +130,56 @@ fn starts_like_json(text: &str) -> bool {
 
 // ---- reading ----
 
-/// Reads TOML configuration text into the same values as the equivalent
+/// Parses JSON (with comments) configuration text. Text without an object at
+/// its root has no properties.
+fn parse_json_config(config_file_text: &str) -> Result<ConfigKeyMap> {
+  let value = jsonc_parser::parse_to_value(config_file_text, &Default::default())?;
+  match value {
+    Some(JsonValue::Object(obj)) => {
+      let mut properties = ConfigKeyMap::new();
+      for (key, value) in obj.into_iter() {
+        let value = json_value_to_config_value(value, &key)?;
+        properties.insert(key, value);
+      }
+      Ok(properties)
+    }
+    _ => Ok(Default::default()),
+  }
+}
+
+fn json_value_to_config_value(value: JsonValue, path: &str) -> Result<ConfigKeyValue> {
+  Ok(match value {
+    JsonValue::Boolean(value) => ConfigKeyValue::Bool(value),
+    JsonValue::String(value) => ConfigKeyValue::String(value.into_owned()),
+    JsonValue::Number(value) => ConfigKeyValue::Number(parse_integer(value, path)?),
+    JsonValue::Array(values) => ConfigKeyValue::Array(values.into_iter().map(|value| json_value_to_config_value(value, path)).collect::<Result<_>>()?),
+    JsonValue::Object(obj) => {
+      let mut properties = ConfigKeyMap::new();
+      for (key, value) in obj.into_iter() {
+        let value = json_value_to_config_value(value, &format!("{} -> {}", path, key))?;
+        properties.insert(key, value);
+      }
+      ConfigKeyValue::Object(properties)
+    }
+    JsonValue::Null => ConfigKeyValue::Null,
+  })
+}
+
+/// Configuration numbers are 32-bit integers, whatever the format allows.
+/// `path` is the property's path (ex. `typescript -> lineWidth`).
+fn parse_integer(text: &str, path: &str) -> Result<i32> {
+  match text.parse::<i32>() {
+    Ok(value) => Ok(value),
+    Err(err) => bail!(
+      "Expected property '{}' with value '{}' to be convertible to a signed integer. {}",
+      path,
+      text,
+      err
+    ),
+  }
+}
+
+/// Parses TOML configuration text into the same values as the equivalent
 /// JSON: tables are objects and arrays of tables are arrays of objects. TOML
 /// has no null, and dates become strings.
 fn parse_toml_config(text: &str) -> Result<ConfigKeyMap> {
@@ -801,13 +852,49 @@ exts = ["rs"]
   }
 }"##;
     assert_eq!(
-      ConfigFileFormat::Toml.deserialize(toml_text).unwrap(),
-      ConfigFileFormat::Json.deserialize(json_text).unwrap()
-    );
-    assert_eq!(
       ConfigFileFormat::Toml.parse(toml_text).unwrap(),
       ConfigFileFormat::Json.parse(json_text).unwrap()
     );
+    let file = ConfigFileFormat::Toml.read(toml_text).unwrap();
+    assert_eq!(file, ConfigFileFormat::Json.read(json_text).unwrap());
+    assert_eq!(file.global.line_width, Some(100));
+    assert_eq!(file.plugin_tables.keys().collect::<Vec<_>>(), ["typescript", "markdown", "exec"]);
+  }
+
+  #[test]
+  fn json_syntax_errors_say_where() {
+    let err = ConfigFileFormat::Json.read("{prop}").unwrap_err().to_string();
+    assert_eq!(err, "Unexpected token on line 1 column 2");
+  }
+
+  #[test]
+  fn json_without_an_object_at_the_root_has_no_properties() {
+    for text in ["", "[]", "{}"] {
+      assert_eq!(ConfigFileFormat::Json.parse(text).unwrap(), ConfigKeyMap::new(), "{}", text);
+      assert_eq!(ConfigFileFormat::Json.read(text).unwrap(), ConfigFile::default(), "{}", text);
+    }
+  }
+
+  #[test]
+  fn keeps_the_order_of_a_plugins_properties() {
+    for _ in 0..10 {
+      let file = ConfigFileFormat::Json
+        .read(
+          r#"{
+        "exec": {
+          "commands": [{
+            "command": "rustfmt --edition 2024 --config imports_granularity=item",
+            "exts": ["rs"]
+          }]
+        }
+      }"#,
+        )
+        .unwrap();
+      let commands = file.plugin_tables["exec"].plugin["commands"].as_array().unwrap();
+      assert_eq!(commands.len(), 1);
+      let keys = commands[0].as_object().unwrap().keys().collect::<Vec<_>>();
+      assert_eq!(keys, ["command", "exts"]);
+    }
   }
 
   #[test]
@@ -824,7 +911,7 @@ exts = ["rs"]
 
   #[test]
   fn toml_syntax_errors_say_where() {
-    let err = ConfigFileFormat::Toml.deserialize("lineWidth = \n").unwrap_err().to_string();
+    let err = ConfigFileFormat::Toml.read("lineWidth = \n").unwrap_err().to_string();
     assert!(err.contains("line 1, column 13"), "{}", err);
   }
 
@@ -1101,8 +1188,8 @@ exts = ["rs"]
 "#
     );
     // and it reads back the same, apart from the schema it has as a comment
-    let mut json_config = ConfigFileFormat::Json.deserialize(json_text).unwrap();
-    json_config.shift_remove("$schema");
-    assert_eq!(ConfigFileFormat::Toml.deserialize(&toml_text).unwrap(), json_config);
+    let mut json_config = ConfigFileFormat::Json.read(json_text).unwrap();
+    json_config.schema = None;
+    assert_eq!(ConfigFileFormat::Toml.read(&toml_text).unwrap(), json_config);
   }
 }

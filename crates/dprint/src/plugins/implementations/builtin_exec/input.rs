@@ -1,11 +1,12 @@
-//! What the built-in exec plugin's configuration may hold, as types, which
-//! its schema is generated from.
+//! What the built-in exec plugin's configuration may hold, as types.
 //!
-//! These describe the configuration's syntax, what `Configuration::resolve`
-//! (see `configuration.rs`) reads by name; what it resolves it to is the
-//! runtime's. The schema says what this version accepts (ex.
-//! `playWithFire` and `setupTimeout`), which the schema published with the
-//! exec plugin doesn't.
+//! These are what the configuration is read into (`Configuration::resolve`
+//! in `configuration.rs` reads an [`ExecConfigInput`] and resolves it to the
+//! runtime's `Configuration`) and what its schema is generated from, so the
+//! names, types, casing and structure the plugin accepts and the schema
+//! describes are one definition. The schema says what this version accepts
+//! (ex. `playWithFire` and `setupTimeout`), which the schema published with
+//! the exec plugin doesn't.
 
 use std::sync::OnceLock;
 
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The exec plugin built into dprint, which formats files with external commands.
-#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecConfigInput {
   /// The width of a line the formatter will try to stay under. Available to commands as {{line_width}}.
@@ -33,34 +34,66 @@ pub struct ExecConfigInput {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub cwd: Option<String>,
   /// Seconds a command may take to format a file before it's killed and the format fails.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  #[schemars(extend("default" = 30))]
-  pub timeout: Option<u32>,
+  #[serde(default = "default_timeout")]
+  pub timeout: u32,
   /// Seconds a setup command may run before it's killed. A setup command that times out isn't run again for the other files.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  #[schemars(extend("default" = 300))]
-  pub setup_timeout: Option<u32>,
+  #[serde(default = "default_setup_timeout")]
+  pub setup_timeout: u32,
   /// Allows the exec commands of remote configuration (ex. an `extends` url) to run. `true` allows any program, or list the programs their commands and setup commands may run. Only a local configuration file can allow it.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  #[schemars(extend("default" = false))]
-  pub play_with_fire: Option<PlayWithFire>,
+  ///
+  /// dprint reads this when it combines the configuration files (see
+  /// `remote_exec.rs`), before the configuration gets to the plugin.
+  #[serde(default)]
+  pub play_with_fire: PlayWithFire,
   /// Commands to format with.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub commands: Option<Vec<ExecCommandInput>>,
 }
 
+impl Default for ExecConfigInput {
+  /// What an empty configuration reads as.
+  fn default() -> Self {
+    ExecConfigInput {
+      line_width: None,
+      indent_width: None,
+      use_tabs: None,
+      cache_key: None,
+      cwd: None,
+      timeout: default_timeout(),
+      setup_timeout: default_setup_timeout(),
+      play_with_fire: PlayWithFire::default(),
+      commands: None,
+    }
+  }
+}
+
+fn default_timeout() -> u32 {
+  30
+}
+
+/// Setup commands often install a tool, which can take a while.
+fn default_setup_timeout() -> u32 {
+  300
+}
+
 /// Whether the exec commands of remote configuration may run: any program, or the listed ones.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, expecting = "Expected true, false or an array of the programs remote commands may run.")]
 #[schemars(inline)]
 pub enum PlayWithFire {
   Any(bool),
   Programs(Vec<String>),
 }
 
+impl Default for PlayWithFire {
+  fn default() -> Self {
+    PlayWithFire::Any(false)
+  }
+}
+
 /// A command to format files with.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, expecting = "a command (an object)")]
 #[schemars(
   inline,
   extend(
@@ -85,9 +118,8 @@ pub struct ExecCommandInput {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub associations: Option<Associations>,
   /// Whether to pass the file text to the command on stdin.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  #[schemars(extend("default" = true))]
-  pub stdin: Option<bool>,
+  #[serde(default = "default_stdin")]
+  pub stdin: bool,
   /// The working directory to run this command in.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub cwd: Option<String>,
@@ -99,18 +131,32 @@ pub struct ExecCommandInput {
   pub setup_command: Option<String>,
 }
 
+fn default_stdin() -> bool {
+  true
+}
+
 /// One or more.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, expecting = "Expected a string or an array of strings.")]
 #[schemars(inline)]
 pub enum StringOrStrings {
   One(String),
   Many(Vec<String>),
 }
 
-/// A glob, or one in an array (more than one isn't implemented).
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+impl From<StringOrStrings> for Vec<String> {
+  fn from(values: StringOrStrings) -> Self {
+    match values {
+      StringOrStrings::One(value) => vec![value],
+      StringOrStrings::Many(values) => values,
+    }
+  }
+}
+
+/// A glob, or one in an array (more than one isn't implemented, which
+/// resolving the configuration says).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, expecting = "Expected a glob or an array with one glob.")]
 #[schemars(inline)]
 pub enum Associations {
   One(String),
@@ -122,5 +168,37 @@ pub enum Associations {
 /// [`ExecConfigInput`].
 pub fn exec_config_schema() -> &'static str {
   static SCHEMA: OnceLock<String> = OnceLock::new();
-  SCHEMA.get_or_init(dprint_config_schema::schema_json_for::<ExecConfigInput>)
+  SCHEMA.get_or_init(dprint_config_model::schema_json_for::<ExecConfigInput>)
+}
+
+#[cfg(test)]
+mod test {
+  use pretty_assertions::assert_eq;
+  use serde_json::json;
+
+  use super::*;
+
+  #[test]
+  fn an_empty_configuration_reads_as_the_default() {
+    let input: ExecConfigInput = dprint_config_model::from_json(json!({})).unwrap();
+    assert_eq!(input, ExecConfigInput::default());
+    assert_eq!(input.timeout, 30);
+    assert_eq!(input.setup_timeout, 300);
+    assert_eq!(input.play_with_fire, PlayWithFire::Any(false));
+    let command: ExecCommandInput = dprint_config_model::from_json(json!({ "command": "fmt" })).unwrap();
+    assert!(command.stdin);
+  }
+
+  #[test]
+  fn the_schemas_defaults_are_what_an_empty_configuration_reads_as() {
+    let schema: serde_json::Value = serde_json::from_str(exec_config_schema()).unwrap();
+    let input = ExecConfigInput::default();
+    assert_eq!(schema["properties"]["timeout"]["default"], json!(input.timeout));
+    assert_eq!(schema["properties"]["setupTimeout"]["default"], json!(input.setup_timeout));
+    assert_eq!(
+      schema["properties"]["playWithFire"]["default"],
+      serde_json::to_value(&input.play_with_fire).unwrap()
+    );
+    assert_eq!(schema["properties"]["commands"]["items"]["properties"]["stdin"]["default"], json!(true));
+  }
 }

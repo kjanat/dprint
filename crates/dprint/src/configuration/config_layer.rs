@@ -1,14 +1,16 @@
 //! Reading one configuration file: its text (a [`ConfigDocument`]) becomes
 //! what it says in dprint's terms (a [`ConfigLayer`]). Its format only matters
-//! for reading its values (`ConfigFileFormat::parse`), and every root property
-//! dprint knows is read here, by name. Combining the layers of a configuration
-//! is up to `resolve_config.rs`.
+//! for parsing its values (`ConfigFileFormat::parse`); what it may hold is the
+//! configuration model's (`dprint_config_model::ConfigFile`, which the values
+//! are read into); and what that means for resolving is converted here.
+//! Combining the layers of a configuration is up to `resolve_config.rs`.
 
 use std::borrow::Cow;
 
 use anyhow::Result;
 use anyhow::bail;
-use dprint_core::configuration::ConfigKeyMap;
+use dprint_config_model::GlobalSettings;
+use dprint_config_model::PluginTable;
 use dprint_core::configuration::ConfigKeyValue;
 use indexmap::IndexMap;
 
@@ -16,9 +18,7 @@ use super::ConfigFileFormat;
 use super::ConfigMap;
 use super::ConfigMapValue;
 use super::ConfigSettings;
-use super::config_map_from_values;
 use super::config_settings::filter_duplicate_plugin_sources;
-use super::string_vec;
 use crate::environment::Environment;
 use crate::plugins::parse_plugin_source_reference;
 use crate::utils::PathSource;
@@ -109,8 +109,8 @@ impl ConfigDocument<'_> {
 
   fn read(self, environment: &impl Environment) -> Result<(ResolutionDirectives, ConfigSettings)> {
     let source = self.file.source;
-    let values = match ConfigFileFormat::from_source(source, self.file.content).parse(self.file.content) {
-      Ok(values) => values,
+    let file = match ConfigFileFormat::from_source(source, self.file.content).read(self.file.content) {
+      Ok(file) => file,
       Err(err) => bail!("Error deserializing. {}", err),
     };
     let templates = Templates {
@@ -119,99 +119,47 @@ impl ConfigDocument<'_> {
     };
     let base = source.parent();
 
-    let mut directives = ResolutionDirectives::default();
-    let mut settings = ConfigSettings::default();
-    let mut other_values = ConfigKeyMap::new();
-    for (key, value) in values {
-      match key.as_str() {
-        // the configuration file's schema, for editors
-        "$schema" => {}
-        // an old property that's no longer used
-        "projectType" => {}
-        "extends" => {
-          let specifiers = match value {
-            ConfigKeyValue::String(specifier) => vec![specifier],
-            ConfigKeyValue::Array(values) => string_vec(&key, values)?,
-            _ => bail!("Extends in configuration must be a string or an array of strings."),
-          };
-          for specifier in templates.expand_all(specifiers)? {
-            let target = resolve_url_or_file_path_to_path_source(&specifier, &base, environment)?;
-            directives.extends.push(ConfigReference { specifier, target });
-          }
-        }
-        "inherit" => directives.inherit = read_bool(&key, value)?,
-        "includes" => settings.files.includes = Some(templates.expand_all(read_strings(&key, value)?)?),
-        "excludes" => settings.files.excludes = templates.expand_all(read_strings(&key, value)?)?,
-        "shebangs" => settings.routing.shebangs = Some(read_shebangs(value)?),
-        "incremental" => settings.execution.incremental = Some(read_bool(&key, value)?),
-        "plugins" => {
-          let mut sources = Vec::new();
-          for specifier in templates.expand_all(read_strings(&key, value)?)? {
-            sources.push(parse_plugin_source_reference(&specifier, &base, environment)?);
-          }
-          settings.plugins.sources = filter_duplicate_plugin_sources(sources);
-        }
-        // the global configuration and each plugin's configuration
-        _ => {
-          other_values.insert(key, value);
-        }
-      }
+    let mut directives = ResolutionDirectives {
+      extends: Vec::new(),
+      inherit: file.inherit.unwrap_or(false),
+    };
+    for specifier in templates.expand_all(file.extends.map(Vec::from).unwrap_or_default())? {
+      let target = resolve_url_or_file_path_to_path_source(&specifier, &base, environment)?;
+      directives.extends.push(ConfigReference { specifier, target });
     }
-    settings.plugins.config = config_map_from_values(other_values)?;
+
+    let mut settings = ConfigSettings::default();
+    settings.files.includes = file.includes.map(|includes| templates.expand_all(includes)).transpose()?;
+    settings.files.excludes = templates.expand_all(file.excludes.unwrap_or_default())?;
+    settings.routing.shebangs = file
+      .shebangs
+      .map(|shebangs| shebangs.0.into_iter().map(|(shebang, extension)| (shebang, extension.0)).collect());
+    settings.execution.incremental = file.incremental;
+    if let Some(plugins) = file.plugins {
+      let mut sources = Vec::new();
+      for specifier in templates.expand_all(plugins)? {
+        sources.push(parse_plugin_source_reference(&specifier, &base, environment)?);
+      }
+      settings.plugins.sources = filter_duplicate_plugin_sources(sources);
+    }
+    settings.plugins.config = config_map(&file.global, file.plugin_tables)?;
     templates.expand_config_map(&mut settings.plugins.config)?;
     Ok((directives, settings))
   }
 }
 
-fn read_bool(key: &str, value: ConfigKeyValue) -> Result<bool> {
-  match value {
-    ConfigKeyValue::Bool(value) => Ok(value),
-    _ => bail!("Expected boolean in '{}' property.", key),
+/// The global configuration and the plugins' tables of a configuration file,
+/// as the map the configuration files are combined in (see
+/// `config_settings.rs`).
+fn config_map(global: &GlobalSettings, plugin_tables: IndexMap<String, PluginTable>) -> Result<ConfigMap> {
+  let mut config = ConfigMap::new();
+  for (key, value) in dprint_config_model::to_values(global)? {
+    config.insert(key, ConfigMapValue::KeyValue(value));
   }
-}
-
-fn read_strings(key: &str, value: ConfigKeyValue) -> Result<Vec<String>> {
-  match value {
-    ConfigKeyValue::Array(values) => string_vec(key, values),
-    _ => bail!("Expected array in '{}' property.", key),
+  for (key, table) in plugin_tables {
+    config.insert(key, ConfigMapValue::PluginConfig(table.into()));
   }
-}
-
-fn read_shebangs(value: ConfigKeyValue) -> Result<IndexMap<String, String>> {
-  let ConfigKeyValue::Object(properties) = value else {
-    bail!("Expected object in 'shebangs' property.");
-  };
-  // the shebangs and extensions are normalized here so the rest of the
-  // code (ex. merging, hashing, resolution) can compare them directly
-  let mut map = IndexMap::with_capacity(properties.len());
-  for (mut shebang, value) in properties {
-    if !shebang.starts_with("#!") || shebang.contains(['\r', '\n']) {
-      bail!(
-        "Expected the key '{}' in the 'shebangs' property to be a shebang line starting with '#!'.",
-        shebang
-      );
-    }
-    match value {
-      ConfigKeyValue::String(extension) => {
-        let extension_without_dot = extension.strip_prefix('.').unwrap_or(&extension);
-        if extension_without_dot.is_empty()
-          || extension_without_dot.contains(|c: char| c.is_whitespace() || matches!(c, '.' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}'))
-        {
-          bail!(
-            "Expected a file extension (ex. \"sh\") for shebang '{}' in the 'shebangs' property, but found '{}'.",
-            shebang,
-            extension
-          );
-        }
-        // stored lowercased and without a leading dot so it resolves the
-        // same way as a real file extension
-        shebang.truncate(shebang.trim_end().len());
-        map.insert(shebang, extension_without_dot.to_lowercase());
-      }
-      _ => bail!("Expected a string file extension for shebang '{}' in the 'shebangs' property.", shebang),
-    }
-  }
-  Ok(map)
+  Ok(config)
 }
 
 /// Expands the `${configDir}` and `${originConfigDir}` templates in string
@@ -245,11 +193,6 @@ impl Templates<'_> {
           let overrides = config.overrides.iter_mut().flat_map(|override_config| override_config.properties.values_mut());
           for value in config.properties.values_mut().chain(overrides) {
             self.expand_value(value)?;
-          }
-        }
-        ConfigMapValue::Vec(values) => {
-          for value in values {
-            self.expand(value)?;
           }
         }
       }
@@ -348,5 +291,176 @@ impl Templates<'_> {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::configuration::ConfigKeyValue;
+  use pretty_assertions::assert_eq;
+
+  use super::*;
+  use crate::configuration::RawPluginConfig;
+  use crate::configuration::RawPluginConfigOverride;
+
+  /// The global configuration and the plugins' tables of a JSON configuration
+  /// file, as they're combined.
+  fn read_config_map(text: &str) -> Result<ConfigMap> {
+    let file = ConfigFileFormat::Json.read(text)?;
+    config_map(&file.global, file.plugin_tables)
+  }
+
+  #[test]
+  fn has_the_global_configuration_as_values_and_the_tables_as_plugin_configs() {
+    let mut expected = ConfigMap::new();
+    expected.insert("lineWidth".to_string(), ConfigMapValue::from_i32(80));
+    expected.insert("newLineKind".to_string(), ConfigMapValue::from_str("crlf"));
+    expected.insert(
+      "typescript".to_string(),
+      ConfigMapValue::PluginConfig(RawPluginConfig {
+        locked: false,
+        associations: None,
+        overrides: Vec::new(),
+        properties: ConfigKeyMap::from([
+          ("lineWidth".to_string(), ConfigKeyValue::from_i32(40)),
+          ("preferSingleLine".to_string(), ConfigKeyValue::from_bool(true)),
+          ("other".to_string(), ConfigKeyValue::from_str("test")),
+          (
+            "obj".to_string(),
+            ConfigKeyValue::Object(ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(5))])),
+          ),
+          (
+            "array".to_string(),
+            ConfigKeyValue::Array(vec![ConfigKeyValue::from_i32(1), ConfigKeyValue::Null]),
+          ),
+        ]),
+      }),
+    );
+    assert_eq!(
+      read_config_map(
+        "{'lineWidth': 80, 'newLineKind': 'crlf', 'includes': [], 'typescript': { 'lineWidth': 40, 'preferSingleLine': true, 'other': 'test', 'obj': { 'prop': 5 }, 'array': [1, null] }}",
+      )
+      .unwrap(),
+      expected
+    );
+    assert_eq!(read_config_map("{}").unwrap(), ConfigMap::new());
+  }
+
+  #[test]
+  fn has_dprints_properties_of_a_table_apart_from_the_plugins() {
+    let expected = ConfigMap::from([
+      (
+        "typescript".to_string(),
+        ConfigMapValue::PluginConfig(RawPluginConfig {
+          locked: true,
+          associations: Some(vec!["test".to_string()]),
+          overrides: Vec::new(),
+          properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(40))]),
+        }),
+      ),
+      (
+        "other".to_string(),
+        ConfigMapValue::PluginConfig(RawPluginConfig {
+          locked: false,
+          associations: Some(vec!["other".to_string(), "test".to_string()]),
+          overrides: Vec::new(),
+          properties: ConfigKeyMap::new(),
+        }),
+      ),
+    ]);
+    assert_eq!(
+      read_config_map(
+        "{'typescript': { 'lineWidth': 40, locked: true, associations: 'test' }, 'other': { 'locked': false, 'associations': ['other', 'test'] }}"
+      )
+      .unwrap(),
+      expected
+    );
+  }
+
+  #[test]
+  fn has_a_tables_overrides() {
+    let expected = ConfigMap::from([(
+      "typescript".to_string(),
+      ConfigMapValue::PluginConfig(RawPluginConfig {
+        locked: false,
+        associations: None,
+        overrides: vec![RawPluginConfigOverride {
+          files: vec!["**/package.json".to_string(), "**/composer.json".to_string()],
+          properties: ConfigKeyMap::from([
+            ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
+            ("useTabs".to_string(), ConfigKeyValue::from_bool(false)),
+          ]),
+          origin: Default::default(),
+        }],
+        properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+      }),
+    )]);
+    assert_eq!(
+      read_config_map(
+        "{'typescript': { 'lineWidth': 80, 'overrides': { 'files': ['**/package.json', '**/composer.json'], 'indentWidth': 4, 'useTabs': false } }}",
+      )
+      .unwrap(),
+      expected
+    );
+
+    let expected = ConfigMap::from([(
+      "typescript".to_string(),
+      ConfigMapValue::PluginConfig(RawPluginConfig {
+        locked: false,
+        associations: None,
+        overrides: vec![
+          RawPluginConfigOverride {
+            files: vec!["**/package.json".to_string()],
+            properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
+            origin: Default::default(),
+          },
+          RawPluginConfigOverride {
+            files: vec!["**/special-package.json".to_string()],
+            properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+            origin: Default::default(),
+          },
+        ],
+        properties: ConfigKeyMap::new(),
+      }),
+    )]);
+    assert_eq!(
+      read_config_map(
+        "{'typescript': { 'overrides': [{ 'files': '**/package.json', 'indentWidth': 4 }, { 'files': ['**/special-package.json'], 'lineWidth': 80 }] }}",
+      )
+      .unwrap(),
+      expected
+    );
+  }
+
+  #[test]
+  fn errors_are_the_models() {
+    // what a configuration file may hold is the model's to say (see its
+    // tests); a few of its errors, as they come out here
+    let error = |text: &str| read_config_map(text).unwrap_err().to_string();
+    assert_eq!(
+      error("{'prop': null}"),
+      "prop: invalid type: null, expected a plugin's configuration (an object), as a property that isn't one of dprint's"
+    );
+    assert_eq!(
+      error("{'typescript': { 'associations': [1] }}"),
+      "typescript.associations: The 'associations' property in a plugin configuration must be a string or an array of strings."
+    );
+    assert_eq!(
+      error("{'typescript': { locked: 1 }}"),
+      "typescript.locked: invalid type: integer `1`, expected a boolean"
+    );
+    assert_eq!(
+      error("{'typescript': { 'overrides': [{ 'indentWidth': 4 }] }}"),
+      "typescript.overrides[0]: missing field `files`"
+    );
+    assert_eq!(
+      error("{'typescript': { 'overrides': [{ 'files': [], 'indentWidth': 4 }] }}"),
+      "typescript.overrides[0].files: A plugin configuration override must specify at least one file pattern."
+    );
+    assert_eq!(
+      error("{'typescript': { 'overrides': [{ 'files': '**/package.json' }] }}"),
+      "typescript.overrides[0]: A plugin configuration override must specify at least one configuration property."
+    );
   }
 }

@@ -1249,8 +1249,7 @@ lineWidth = 80
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": { "test": 4 }, // should ignore
-            "otherProp2": "a",
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1270,7 +1269,6 @@ lineWidth = 80
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],
             "lineWidth": 1,
-            "otherProp": 6,
             "test": {
                 "prop": 5
             },
@@ -1295,8 +1293,7 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("otherProp2"), ConfigMapValue::from_str("a")),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1452,7 +1449,7 @@ lineWidth = 80
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": 6,
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1467,8 +1464,8 @@ lineWidth = 80
       "https://dprint.dev/test2.json",
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin3.wasm"],
-            "otherProp": 7,
-            "asdf": 4,
+            "useTabs": false,
+            "indentWidth": 4,
             "test": {
                 "other": "test2"
             }
@@ -1508,8 +1505,8 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("asdf"), ConfigMapValue::from_i32(4)),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
+        (String::from("indentWidth"), ConfigMapValue::from_i32(4)),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1546,7 +1543,7 @@ lineWidth = 80
             "extends": "https://dprint.dev/test2.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": 6,
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1561,8 +1558,8 @@ lineWidth = 80
       "https://dprint.dev/test2.json",
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin3.wasm"],
-            "otherProp": 7,
-            "asdf": 4,
+            "useTabs": false,
+            "indentWidth": 4,
             "test": {
                 "other": "test2"
             }
@@ -1572,8 +1569,8 @@ lineWidth = 80
     environment.add_remote_file(
       "https://dprint.dev/test3.json",
       r#"{
-            "asdf": 4,
-            "newProp": "test"
+            "indentWidth": 4,
+            "newLineKind": "lf"
         }"#
         .as_bytes(),
     );
@@ -1610,9 +1607,9 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("asdf"), ConfigMapValue::from_i32(4)),
-        (String::from("newProp"), ConfigMapValue::from_str("test")),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
+        (String::from("indentWidth"), ConfigMapValue::from_i32(4)),
+        (String::from("newLineKind"), ConfigMapValue::from_str("lf")),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1647,7 +1644,7 @@ lineWidth = 80
       "https://dprint.dev/test.json",
       r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#
         .as_bytes(),
     );
@@ -1655,7 +1652,7 @@ lineWidth = 80
       "https://dprint.dev/dir/test.json",
       r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#
         .as_bytes(),
     );
@@ -1663,7 +1660,7 @@ lineWidth = 80
       "https://dprint.dev/otherDir/test.json",
       r#"{
             "extends": "https://test.dprint.dev/test.json",
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#
         .as_bytes(),
     );
@@ -1674,21 +1671,21 @@ lineWidth = 80
                 "other.json",
                 "dir/test.json"
             ],
-            "prop4": 4,
+            "test": { "prop4": 4 },
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://test.dprint.dev/other.json",
       r#"{
-            "prop5": 5,
+            "test": { "prop5": 5 },
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://test.dprint.dev/dir/test.json",
       r#"{
-            "prop6": 6,
+            "test": { "prop6": 6 },
         }"#
         .as_bytes(),
     );
@@ -1697,14 +1694,20 @@ lineWidth = 80
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-        (String::from("prop4"), ConfigMapValue::from_i32(4)),
-        (String::from("prop5"), ConfigMapValue::from_i32(5)),
-        (String::from("prop6"), ConfigMapValue::from_i32(6)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+            ("prop4", ConfigKeyValue::from_i32(4)),
+            ("prop5", ConfigKeyValue::from_i32(5)),
+            ("prop6", ConfigKeyValue::from_i32(6)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1717,7 +1720,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .unwrap();
@@ -1725,14 +1728,14 @@ lineWidth = 80
       "https://dprint.dev/dir/test.json",
       r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://dprint.dev/otherDir/test.json",
       r#"{
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#
         .as_bytes(),
     );
@@ -1741,11 +1744,17 @@ lineWidth = 80
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1757,20 +1766,20 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .write_file(
         &PathBuf::from("/dir/test.json"),
         r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#,
       )
       .write_file(
         &PathBuf::from("/otherDir/test.json"),
         r#"{
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#,
       )
       .build();
@@ -1779,11 +1788,17 @@ lineWidth = 80
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1795,7 +1810,7 @@ lineWidth = 80
       "https://dprint.dev/test.json",
       r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#
         .as_bytes(),
     );
@@ -2524,7 +2539,7 @@ lineWidth = 80
 
     assert_eq!(
       get_error(r##"{ "#!/bin/sh": "" }"##),
-      "Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.\n    at /test.json"
+      "Error deserializing. shebangs: Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.\n    at /test.json"
     );
     for extension in [".", "*.sh", " sh", "tar.gz"] {
       assert!(
@@ -2535,7 +2550,7 @@ lineWidth = 80
     }
     assert_eq!(
       get_error(r##"{ "/bin/sh": "sh" }"##),
-      "Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.\n    at /test.json"
+      "Error deserializing. shebangs: Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.\n    at /test.json"
     );
     assert!(get_error(r##"{ " #!/bin/sh": "sh" }"##).contains("to be a shebang line starting with '#!'"));
     assert!(get_error(r##"{ "#!/bin/sh\ntext": "sh" }"##).contains("to be a shebang line starting with '#!'"));
@@ -2558,7 +2573,10 @@ lineWidth = 80
 
     environment.clone().run_in_runtime(async move {
       let err = get_result("/test.json", &environment).await.err().unwrap();
-      assert!(err.to_string().contains("Expected a string file extension for shebang '#!/bin/sh'"));
+      assert_eq!(
+        err.to_string(),
+        "Error deserializing. shebangs.#!/bin/sh: invalid type: integer `5`, expected a string\n    at /test.json"
+      );
     });
   }
 
@@ -3053,7 +3071,10 @@ lineWidth = 80
         ],
         async |environment, paths| resolve(environment, paths, "dprint").await,
       );
-      assert_eq!(result.unwrap_err(), "Expected boolean in 'incremental' property.\n    at /base.json");
+      assert_eq!(
+        result.unwrap_err(),
+        "Error deserializing. incremental: invalid type: string \"yes\", expected a boolean\n    at /base.json"
+      );
     }
   }
 
@@ -4268,7 +4289,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .unwrap();
@@ -4294,7 +4315,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .write_file(

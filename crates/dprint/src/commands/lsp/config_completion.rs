@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use dprint_config_schema::PluginSchema;
-use dprint_config_schema::SchemaDocument;
-use dprint_config_schema::build_config_schema;
-use dprint_config_schema::root_schema;
+use dprint_config_model::PluginSchema;
+use dprint_config_model::SchemaDocument;
+use dprint_config_model::build_config_schema;
+use dprint_config_model::root_schema;
 use jsonc_parser::Scanner;
 use jsonc_parser::tokens::Token;
 use serde_json::Value;

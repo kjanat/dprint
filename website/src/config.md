@@ -88,7 +88,7 @@ The schema is JSON schema 2020-12, which bundles schemas by embedding each as a 
 
 A plugin's schema describes the plugin's own properties: what dprint hands the plugin is its table without `associations`, `locked` and `overrides`, and each override without `files`. So its properties apply in the table, and in each override (where nothing is required) as far as the schema declares them unconditionally: what it says on a condition (ex. in an `anyOf` branch) isn't checked in an override, as the table the override is merged into decides the condition. A plugin schema that describes its table as a whole (ex. with `maxProperties` or `propertyNames`), which can't say what it does of that, isn't applied at all. `dprint schema` warns about both.
 
-The schema of the built-in [exec plugin](/plugins/exec) comes with dprint rather than being downloaded, and describes what it accepts (ex. `playWithFire` and `setupTimeout`).
+dprint's own part of the schema (the configuration file's properties, and what every plugin's table has) is generated from the types dprint reads a configuration file into, so what dprint accepts and what the schema says are one definition. The schema of the built-in [exec plugin](/plugins/exec) is generated the same way from what it reads its configuration into, and comes with dprint rather than being downloaded, so it describes what this version accepts (ex. `playWithFire` and `setupTimeout`).
 
 The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
 

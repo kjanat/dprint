@@ -1,3 +1,5 @@
+use dprint_config_model::PluginOverride;
+use dprint_config_model::PluginTable;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigKeyValue;
 use indexmap::IndexMap;
@@ -11,6 +13,16 @@ pub struct RawPluginConfigOverride {
   /// The configuration file it's from, so a diagnostic about one of its
   /// properties can say which file to change.
   pub origin: ValueOrigin,
+}
+
+impl From<PluginOverride> for RawPluginConfigOverride {
+  fn from(override_config: PluginOverride) -> Self {
+    RawPluginConfigOverride {
+      files: override_config.files.into(),
+      properties: override_config.plugin.0,
+      origin: Default::default(),
+    }
+  }
 }
 
 /// Where a value is from, for diagnostics. It isn't part of the value: the
@@ -35,11 +47,32 @@ pub struct RawPluginConfig {
   pub properties: ConfigKeyMap,
 }
 
+/// A plugin's table as a configuration file has it, as what's combined with
+/// the tables of the other configuration files.
+impl From<PluginTable> for RawPluginConfig {
+  fn from(table: PluginTable) -> Self {
+    RawPluginConfig {
+      associations: table.associations.map(Into::into),
+      locked: table.locked.unwrap_or(false),
+      overrides: table
+        .overrides
+        .map(Vec::<PluginOverride>::from)
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+      properties: table.plugin,
+    }
+  }
+}
+
+/// A root property of a configuration file as the configuration files are
+/// combined: the global configuration's values (ex. `lineWidth`), and each
+/// plugin's table by its key.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ConfigMapValue {
   KeyValue(ConfigKeyValue),
   PluginConfig(RawPluginConfig),
-  Vec(Vec<String>),
 }
 
 #[cfg(test)]

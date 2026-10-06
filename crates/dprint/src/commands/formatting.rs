@@ -2767,7 +2767,10 @@ text2"
   }
 
   #[test]
-  fn should_not_do_excess_primitive_property_diagnostics_when_plugins_cli_specified() {
+  fn should_error_on_a_root_property_that_is_not_dprints_or_a_plugins_table() {
+    // what a configuration file may hold is the configuration model's to
+    // say, so this is an error reading the file, whether or not the plugins
+    // are specified on the command line
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
       .with_default_config(|c| {
         c.add_config_section("excess-primitive", "true").add_remote_process_plugin();
@@ -2775,21 +2778,21 @@ text2"
       .write_file("/test.txt", "test")
       .build();
 
-    run_test_cli(
+    let expected = concat!(
+      "Error deserializing. excess-primitive: invalid type: boolean `true`, expected a plugin's configuration (an object), ",
+      "as a property that isn't one of dprint's\n    at /dprint.json"
+    );
+    let err = run_test_cli(
       vec!["fmt", "**/*.txt", "--plugins", "https://plugins.dprint.dev/test-plugin.wasm"],
       &environment,
     )
+    .err()
     .unwrap();
-
-    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-
-    // now it errors because no --plugins specified
-    let err = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+    assert_eq!(err.to_string(), expected);
     err.assert_exit_code(11);
-    assert_eq!(
-      err.to_string(),
-      "* Unknown property in configuration (excess-primitive)\n\nHad 1 config diagnostic(s) in /dprint.json"
-    );
+    let err = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+    assert_eq!(err.to_string(), expected);
+    err.assert_exit_code(11);
   }
 
   #[test]
@@ -2798,7 +2801,7 @@ text2"
       .with_default_config(|c| {
         c.add_config_section("extends", r#""./base.json""#);
       })
-      .write_file("/base.json", r#"{ "excess-primitive": true }"#)
+      .write_file("/base.json", r#"{ "excess-object": {} }"#)
       .write_file("/test.txt", "test")
       .build();
 
@@ -2806,7 +2809,7 @@ text2"
     err.assert_exit_code(11);
     assert_eq!(
       err.to_string(),
-      "* Unknown property in configuration (excess-primitive)\n    at /base.json\n\nHad 1 config diagnostic(s) in /dprint.json"
+      "* Unexpected non-string, boolean, or int property (excess-object)\n    at /base.json\n\nHad 1 config diagnostic(s) in /dprint.json"
     );
   }
 

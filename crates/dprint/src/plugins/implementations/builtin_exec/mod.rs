@@ -13,7 +13,7 @@ mod executable;
 #[cfg(windows)]
 pub use executable::find_with_path_ext;
 mod handler;
-pub mod schema;
+pub mod input;
 mod template;
 
 use crate::environment::Environment;
@@ -75,7 +75,7 @@ pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvi
     EXEC_PLUGIN_VERSION,
     reference.display()
   );
-  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, schema::exec_config_schema())))
+  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, input::exec_config_schema())))
 }
 
 /// Whether dprint serves the reference with the built-in exec rather than
@@ -215,30 +215,14 @@ mod test {
 
   #[test]
   fn the_schema_describes_the_configuration() {
-    let schema: serde_json::Value = serde_json::from_str(schema::exec_config_schema()).unwrap();
-    let keys = |value: &serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
-    let command_schema = &schema["properties"]["commands"]["items"];
-    assert_eq!(
-      keys(&schema["properties"]),
-      [
-        "lineWidth",
-        "indentWidth",
-        "useTabs",
-        "cacheKey",
-        "cwd",
-        "timeout",
-        "setupTimeout",
-        "playWithFire",
-        "commands"
-      ]
-    );
-    assert_eq!(
-      keys(&command_schema["properties"]),
-      ["command", "exts", "fileNames", "associations", "stdin", "cwd", "cacheKeyFiles", "setupCommand"]
-    );
+    use crate::test_helpers::validate_with_schema;
 
-    // the configuration accepts all of them. `playWithFire` is read and
-    // removed by dprint before the configuration gets here
+    // the configuration and its schema are read from and generated from the
+    // same types (see `input.rs`), so a configuration with every property
+    // resolves without diagnostics exactly when the schema accepts it.
+    // `playWithFire` is read by dprint before the configuration gets here,
+    // and accepted here too
+    let schema: serde_json::Value = serde_json::from_str(input::exec_config_schema()).unwrap();
     let config = serde_json::json!({
       "lineWidth": 100,
       "indentWidth": 4,
@@ -247,6 +231,7 @@ mod test {
       "cwd": ".",
       "timeout": 60,
       "setupTimeout": 600,
+      "playWithFire": ["tr"],
       "commands": [{
         "command": "tr a-z A-Z",
         "exts": ["txt"],
@@ -258,8 +243,49 @@ mod test {
         "setupCommand": "true",
       }],
     });
+    assert_eq!(validate_with_schema(&schema, &config), Ok(()));
     let result = configuration::Configuration::resolve(serde_json::from_value(config).unwrap(), &Default::default());
     assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(result.config.timeout, 60);
+    assert_eq!(result.config.setup_timeout, 600);
+
+    // what the schema rejects, the configuration does too, saying where
+    for (config, property, message) in [
+      (serde_json::json!({ "timeout": "60" }), "timeout", "invalid type: string \"60\", expected u32"),
+      (
+        serde_json::json!({ "unknown": true }),
+        "unknown",
+        "unknown field `unknown`, expected one of `lineWidth`, `indentWidth`, `useTabs`, `cacheKey`, `cwd`, `timeout`, `setupTimeout`, `playWithFire`, `commands`",
+      ),
+      (
+        serde_json::json!({ "commands": [{ "command": "fmt", "exts": [1] }] }),
+        "commands[0].exts",
+        "Expected a string or an array of strings.",
+      ),
+      (
+        serde_json::json!({ "commands": [{ "command": "fmt", "exts": ["txt"], "unknown": true }] }),
+        "commands[0].unknown",
+        "unknown field `unknown`, expected one of `command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`",
+      ),
+      (
+        serde_json::json!({ "commands": [5] }),
+        "commands[0]",
+        "invalid type: integer `5`, expected a command (an object)",
+      ),
+    ] {
+      assert!(validate_with_schema(&schema, &config).is_err(), "{}", config);
+      let result = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
+      assert_eq!(
+        result.diagnostics,
+        vec![dprint_core::configuration::ConfigurationDiagnostic {
+          property_name: property.to_string(),
+          message: message.to_string(),
+        }],
+        "{}",
+        config
+      );
+      assert!(!result.config.is_valid);
+    }
   }
 
   #[test]
@@ -267,7 +293,7 @@ mod test {
     use crate::test_helpers::validate_with_schema;
     use serde_json::json;
 
-    let schema: serde_json::Value = serde_json::from_str(schema::exec_config_schema()).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(input::exec_config_schema()).unwrap();
     for command in [
       json!({ "command": "fmt", "exts": "txt" }),
       json!({ "command": "fmt", "exts": ["txt"] }),
