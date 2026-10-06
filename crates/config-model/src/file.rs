@@ -136,6 +136,38 @@ pub enum NewLineKind {
   System,
 }
 
+/// What the global configuration resolves to for the plugins: `system` is
+/// this platform's.
+impl From<NewLineKind> for dprint_core::configuration::NewLineKind {
+  fn from(kind: NewLineKind) -> Self {
+    use dprint_core::configuration::NewLineKind as Resolved;
+    match kind {
+      NewLineKind::Auto => Resolved::Auto,
+      NewLineKind::Crlf => Resolved::CarriageReturnLineFeed,
+      NewLineKind::Lf => Resolved::LineFeed,
+      NewLineKind::System => {
+        if cfg!(windows) {
+          Resolved::CarriageReturnLineFeed
+        } else {
+          Resolved::LineFeed
+        }
+      }
+    }
+  }
+}
+
+/// What the global configuration resolves to for the plugins.
+impl From<GlobalSettings> for dprint_core::configuration::GlobalConfiguration {
+  fn from(settings: GlobalSettings) -> Self {
+    dprint_core::configuration::GlobalConfiguration {
+      line_width: settings.line_width,
+      use_tabs: settings.use_tabs,
+      indent_width: settings.indent_width,
+      new_line_kind: settings.new_line_kind.map(Into::into),
+    }
+  }
+}
+
 /// Shebang lines (ex. "#!/usr/bin/env bash") to file extensions.
 ///
 /// Read, a shebang line is trimmed at its end and an extension is lowercased

@@ -44,7 +44,9 @@ pub use file::ShebangExtension;
 pub use file::Shebangs;
 pub use values::ValueError;
 pub use values::from_json;
+pub use values::from_value;
 pub use values::from_values;
+pub use values::property_name;
 pub use values::to_values;
 
 #[cfg(feature = "schema")]

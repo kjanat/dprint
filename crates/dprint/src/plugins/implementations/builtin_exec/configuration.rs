@@ -15,6 +15,9 @@ use std::path::PathBuf;
 use super::input::Associations;
 use super::input::ExecCommandInput;
 use super::input::ExecConfigInput;
+use super::input::default_setup_timeout;
+use super::input::default_stdin;
+use super::input::default_timeout;
 use super::template::validate_template;
 
 #[derive(Clone, Serialize)]
@@ -120,17 +123,18 @@ impl Configuration {
         .indent_width
         .unwrap_or(global_config.indent_width.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.indent_width)),
       commands: Vec::new(),
-      timeout: input.timeout,
-      setup_timeout: input.setup_timeout,
+      timeout: input.timeout.unwrap_or_else(default_timeout),
+      setup_timeout: input.setup_timeout.unwrap_or_else(default_setup_timeout),
     };
 
+    let names = ExecConfigInput::property_names();
     let mut cache_key_file_hashes = Vec::new();
     match input.commands {
       Some(commands) => {
         for (i, command) in commands.into_iter().enumerate() {
           let (command_config, command_diagnostics) = resolve_command(command, input.cwd.as_deref());
           diagnostics.extend(command_diagnostics.into_iter().map(|mut diagnostic| {
-            diagnostic.property_name = format!("commands[{}].{}", i, diagnostic.property_name);
+            diagnostic.property_name = format!("{}[{}].{}", names.commands, i, diagnostic.property_name);
             diagnostic
           }));
           if let Some(mut command_config) = command_config {
@@ -142,8 +146,11 @@ impl Configuration {
         }
       }
       None => diagnostics.push(ConfigurationDiagnostic {
-        property_name: "commands".to_string(),
-        message: "Expected to find a \"commands\" array property (see https://github.com/dprint/dprint-plugin-exec for instructions)".to_string(),
+        property_name: names.commands.clone(),
+        message: format!(
+          "Expected to find a \"{}\" array property (see https://github.com/dprint/dprint-plugin-exec for instructions)",
+          names.commands
+        ),
       }),
     }
 
@@ -162,11 +169,12 @@ impl Configuration {
 
 /// Resolves one command. A diagnostic's property is the command's.
 fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
+  let names = ExecCommandInput::property_names();
   let mut diagnostics = Vec::new();
   let mut parts = split_command(&command.command);
   if parts.is_empty() {
     diagnostics.push(ConfigurationDiagnostic {
-      property_name: "command".to_string(),
+      property_name: names.command.clone(),
       message: "Expected to find a command name.".to_string(),
     });
     return (None, diagnostics);
@@ -175,7 +183,7 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
   for arg in parts.iter().skip(1) {
     if let Err(err) = validate_template(arg) {
       diagnostics.push(ConfigurationDiagnostic {
-        property_name: "command".to_string(),
+        property_name: names.command.clone(),
         message: format!("Invalid template in argument '{}': {}", arg, err),
       });
     }
@@ -197,7 +205,7 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
           Ok(contents) => contents,
           Err(err) => {
             diagnostics.push(ConfigurationDiagnostic {
-              property_name: "cacheKeyFiles".to_string(),
+              property_name: names.cache_key_files.clone(),
               message: format!("Unable to read file '{}': {}.", file.display(), err),
             });
             return (None, diagnostics);
@@ -220,7 +228,7 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
       1 => globs.pop(),
       _ => {
         diagnostics.push(ConfigurationDiagnostic {
-          property_name: "associations".to_string(),
+          property_name: names.associations.clone(),
           message: "Unfortunately multiple globs haven't been implemented yet. Please provide a single glob or consider contributing this feature.".to_string(),
         });
         None
@@ -235,7 +243,7 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
       Err(err) => {
         diagnostics.push(ConfigurationDiagnostic {
           message: format!("Error parsing associations glob: {:#}", err),
-          property_name: "associations".to_string(),
+          property_name: names.associations.clone(),
         });
         None
       }
@@ -248,7 +256,7 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
     setup_command,
     associations,
     cwd,
-    stdin: command.stdin,
+    stdin: command.stdin.unwrap_or_else(default_stdin),
     file_extensions: command
       .exts
       .map(Vec::from)
@@ -262,8 +270,11 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
 
   if diagnostics.is_empty() && config.file_names.is_empty() && config.file_extensions.is_empty() && config.associations.is_none() {
     diagnostics.push(ConfigurationDiagnostic {
-      property_name: "exts".to_string(),
-      message: "You must specify either: exts (recommended), fileNames, or associations".to_string(),
+      property_name: names.exts.clone(),
+      message: format!(
+        "You must specify either: {} (recommended), {}, or {}",
+        names.exts, names.file_names, names.associations
+      ),
     })
   }
 

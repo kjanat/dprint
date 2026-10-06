@@ -9,6 +9,7 @@
 use std::fmt;
 
 use dprint_core::configuration::ConfigKeyMap;
+use dprint_core::configuration::ConfigKeyValue;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -55,9 +56,42 @@ pub fn from_values<T: DeserializeOwned>(values: ConfigKeyMap) -> Result<T, Value
   from_json(value)
 }
 
+/// Reads one configuration value as a type of the model.
+pub fn from_value<T: DeserializeOwned>(value: ConfigKeyValue) -> Result<T, ValueError> {
+  let value = serde_json::to_value(value).map_err(|err| ValueError {
+    path: String::new(),
+    message: err.to_string(),
+  })?;
+  from_json(value)
+}
+
 /// Reads a JSON value as a type of the model.
 pub fn from_json<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, ValueError> {
   serde_path_to_error::deserialize(value).map_err(|err| ValueError::new(err.path(), err.inner()))
+}
+
+/// The name a configuration spells a field of a type with, looked up from
+/// the type: the property whose value `set` changes when the type is
+/// serialized (ex. `property_name::<Settings>(|s| s.line_width = Some(80))`
+/// is `"lineWidth"`). For what works on a configuration's values before
+/// they're read as the type, or names a property in a diagnostic, so that
+/// the type's serde attributes are the one place the name is spelled.
+///
+/// Panics when `set` doesn't change a serialized property, which is a
+/// programming error.
+pub fn property_name<T: Serialize + Default>(set: impl FnOnce(&mut T)) -> String {
+  let to_object = |value: &T| match serde_json::to_value(value) {
+    Ok(serde_json::Value::Object(object)) => object,
+    _ => panic!("property_name is for a type that serializes as an object"),
+  };
+  let before = to_object(&T::default());
+  let mut changed = T::default();
+  set(&mut changed);
+  to_object(&changed)
+    .into_iter()
+    .find(|(key, value)| before.get(key) != Some(value))
+    .map(|(key, _)| key)
+    .expect("`set` must change a property that's serialized")
 }
 
 /// The configuration values of a type of the model (an object), ex. to hand
@@ -82,7 +116,6 @@ pub(crate) fn tracked<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializ
 
 #[cfg(test)]
 mod test {
-  use dprint_core::configuration::ConfigKeyValue;
   use pretty_assertions::assert_eq;
   use serde::Deserialize;
   use serde::Serialize;
@@ -130,5 +163,41 @@ mod test {
     let err = from_values::<Settings>(ConfigKeyMap::new()).unwrap_err();
     assert_eq!(err.path, "");
     assert_eq!(err.to_string(), "missing field `names`");
+  }
+
+  #[test]
+  fn reads_one_value_as_a_type() {
+    assert_eq!(
+      from_value::<Vec<String>>(ConfigKeyValue::Array(vec![ConfigKeyValue::from_str("a")])).unwrap(),
+      vec!["a"]
+    );
+    let err = from_value::<Vec<String>>(ConfigKeyValue::Array(vec![ConfigKeyValue::from_i32(1)])).unwrap_err();
+    assert_eq!(err.to_string(), "[0]: invalid type: integer `1`, expected a string");
+  }
+
+  #[test]
+  fn looks_up_the_name_of_a_property_from_the_type() {
+    #[derive(Default, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Properties {
+      #[serde(skip_serializing_if = "Option::is_none")]
+      line_width: Option<u32>,
+      #[serde(rename = "$schema")]
+      schema: String,
+      always: bool,
+    }
+    assert_eq!(property_name::<Properties>(|p| p.line_width = Some(80)), "lineWidth");
+    assert_eq!(property_name::<Properties>(|p| p.schema = "x".to_string()), "$schema");
+    assert_eq!(property_name::<Properties>(|p| p.always = true), "always");
+  }
+
+  #[test]
+  #[should_panic(expected = "must change a property")]
+  fn a_property_name_lookup_that_changes_nothing_is_a_programming_error() {
+    #[derive(Default, Serialize)]
+    struct Properties {
+      value: bool,
+    }
+    property_name::<Properties>(|p| p.value = false);
   }
 }

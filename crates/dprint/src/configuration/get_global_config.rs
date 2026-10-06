@@ -1,3 +1,5 @@
+use dprint_config_model::GlobalSettings;
+use dprint_config_model::NewLineKind;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::configuration::GlobalConfiguration;
@@ -24,39 +26,59 @@ pub struct GlobalConfigurationResult {
   pub diagnostics: Vec<GlobalConfigDiagnostic>,
 }
 
+/// Resolves the global configuration from the root of the combined
+/// configuration files, which by now should only hold values (the plugins'
+/// tables having been taken out): the global configuration as the model of a
+/// configuration file has it, and whatever else is there, which is unknown.
 pub fn get_global_config(config_map: ConfigMap) -> GlobalConfigurationResult {
   let mut diagnostics = Vec::new();
-
-  // now get and resolve the global config
-  let mut global_config = get_global_config_from_config_map(&mut diagnostics, config_map);
-  let global_config_result = dprint_core::configuration::resolve_global_config(&mut global_config);
-  diagnostics.extend(global_config_result.diagnostics.into_iter().map(GlobalConfigDiagnostic::Other));
-
-  let unknown_property_diagnostics = dprint_core::configuration::get_unknown_property_diagnostics(global_config);
-  diagnostics.extend(unknown_property_diagnostics.into_iter().map(GlobalConfigDiagnostic::UnknownProperty));
-
-  return GlobalConfigurationResult {
-    config: global_config_result.config,
-    diagnostics,
-  };
-
-  fn get_global_config_from_config_map(diagnostics: &mut Vec<GlobalConfigDiagnostic>, config_map: ConfigMap) -> ConfigKeyMap {
-    // at this point, there should only be key values inside the hash map
-    let mut global_config = ConfigKeyMap::new();
-
-    for (key, value) in config_map.into_iter() {
-      if let ConfigMapValue::KeyValue(value) = value {
-        global_config.insert(key, value);
-      } else {
-        diagnostics.push(GlobalConfigDiagnostic::UnknownProperty(ConfigurationDiagnostic {
-          property_name: key,
-          message: "Unexpected non-string, boolean, or int property".to_string(),
-        }));
-      }
+  let values = root_values(&mut diagnostics, config_map);
+  let known = global_property_names();
+  let config = match dprint_config_model::from_values::<GlobalSettings>(values.clone()) {
+    Ok(settings) => settings.into(),
+    Err(err) => {
+      diagnostics.push(GlobalConfigDiagnostic::Other(ConfigurationDiagnostic {
+        property_name: err.path,
+        message: err.message,
+      }));
+      GlobalConfiguration::default()
     }
+  };
+  diagnostics.extend(values.into_keys().filter(|key| !known.contains_key(key)).map(|key| {
+    GlobalConfigDiagnostic::UnknownProperty(ConfigurationDiagnostic {
+      property_name: key,
+      message: "Unknown property in configuration".to_string(),
+    })
+  }));
+  GlobalConfigurationResult { config, diagnostics }
+}
 
-    global_config
+/// The names of the global configuration's properties as a configuration
+/// spells them, from the model: every property set, so that one the model
+/// gains has to be set here too.
+fn global_property_names() -> ConfigKeyMap {
+  dprint_config_model::to_values(&GlobalSettings {
+    line_width: Some(1),
+    indent_width: Some(1),
+    use_tabs: Some(true),
+    new_line_kind: Some(NewLineKind::Auto),
+  })
+  .expect("the model serializes")
+}
+
+fn root_values(diagnostics: &mut Vec<GlobalConfigDiagnostic>, config_map: ConfigMap) -> ConfigKeyMap {
+  let mut values = ConfigKeyMap::new();
+  for (key, value) in config_map.into_iter() {
+    if let ConfigMapValue::KeyValue(value) = value {
+      values.insert(key, value);
+    } else {
+      diagnostics.push(GlobalConfigDiagnostic::UnknownProperty(ConfigurationDiagnostic {
+        property_name: key,
+        message: "Unexpected non-string, boolean, or int property".to_string(),
+      }));
+    }
   }
+  values
 }
 
 #[cfg(test)]
@@ -111,33 +133,34 @@ mod tests {
     config_map.insert(String::from("test"), ConfigMapValue::PluginConfig(Default::default()));
     assert_result(
       config_map,
-      GlobalConfiguration {
-        line_width: None,
-        use_tabs: None,
-        indent_width: None,
-        new_line_kind: None,
-      },
+      GlobalConfiguration::default(),
       &["Unexpected non-string, boolean, or int property (test)"],
     );
   }
 
   #[test]
-  fn should_diagnostic_on_unknown_props_and_values() {
+  fn should_diagnostic_on_unknown_props() {
     let mut config_map = ConfigMap::new();
-    config_map.insert(String::from("lineWidth"), ConfigMapValue::from_str("test"));
+    config_map.insert(String::from("lineWidth"), ConfigMapValue::from_i32(80));
     config_map.insert(String::from("unknownProperty"), ConfigMapValue::from_i32(80));
     assert_result(
       config_map,
       GlobalConfiguration {
-        line_width: None,
-        use_tabs: None,
-        indent_width: None,
-        new_line_kind: None,
+        line_width: Some(80),
+        ..Default::default()
       },
-      &[
-        "invalid digit found in string (lineWidth)",
-        "Unknown property in configuration (unknownProperty)",
-      ],
+      &["Unknown property in configuration (unknownProperty)"],
+    );
+  }
+
+  #[test]
+  fn should_diagnostic_on_a_value_that_isnt_what_it_may_be() {
+    let mut config_map = ConfigMap::new();
+    config_map.insert(String::from("lineWidth"), ConfigMapValue::from_str("test"));
+    assert_result(
+      config_map,
+      GlobalConfiguration::default(),
+      &["invalid type: string \"test\", expected u32 (lineWidth)"],
     );
   }
 
@@ -147,7 +170,7 @@ mod tests {
     assert_eq!(result.config, global_config);
     assert_eq!(
       result.diagnostics.into_iter().map(|d| d.to_string()).collect::<Vec<_>>(),
-      diagnostics.into_iter().map(|d| d.to_string()).collect::<Vec<_>>()
+      diagnostics.iter().map(|d| d.to_string()).collect::<Vec<_>>()
     );
   }
 }

@@ -3536,7 +3536,7 @@ lineWidth = 80
       .err();
       assert_eq!(
         err,
-        Some("Expected \"exec.playWithFire\" to be true, false, or an array of programs.".to_string())
+        Some("exec.playWithFire: Expected true, false or an array of the programs remote commands may run.".to_string())
       );
     }
 
@@ -3874,8 +3874,9 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that have properties ",
-            "the exec plugin 0.7.3 doesn't, which only run with \"playWithFire\": true: shell"
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands ",
+            "the exec plugin 0.7.3 reads, which only run with \"playWithFire\": true: shell: unknown field `shell`, expected one of ",
+            "`command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`"
           )
           .to_string(),
           ignored_property("shell"),
@@ -4081,8 +4082,9 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that read files on this machine ",
-            "to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret, (not a list)"
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
+            "which only run with \"playWithFire\": true: cacheKeyFiles: invalid type: string \"x\", expected a sequence, ",
+            "or that read files on this machine to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret"
           )
           .to_string()
         ]
