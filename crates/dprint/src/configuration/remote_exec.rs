@@ -22,7 +22,10 @@
 //! the commands is that version, and otherwise remote commands only run with
 //! `"playWithFire": true`. A command's own `cwd` decides what a program it
 //! runs by a relative path (ex. `./formatter`) is, so a remote command that
-//! sets both only runs with `"playWithFire": true` as well.
+//! sets both only runs with `"playWithFire": true` as well. So does one with
+//! `cacheKeyFiles`: the exec plugin reads those files on this machine (in its
+//! `cwd`) to key its cache, and a list of programs allows running them, not
+//! reading files.
 //!
 //! A nested configuration that inherits its ancestor's configuration and
 //! specifies `"playWithFire"` itself only runs the remote commands it inherits
@@ -54,6 +57,7 @@ const EXEC_CONFIG_KEY: &str = "exec";
 const COMMANDS_KEY: &str = "commands";
 const PLAY_WITH_FIRE_KEY: &str = "playWithFire";
 const CWD_KEY: &str = "cwd";
+const CACHE_KEY_FILES_KEY: &str = "cacheKeyFiles";
 /// The exec plugin 0.7.3 properties that don't decide what runs, which remote
 /// configuration may specify without `"playWithFire": true`.
 const UNRESTRICTED_KEYS: &[&str] = &["lineWidth", "indentWidth", "useTabs", "cacheKey", "timeout", "setupTimeout"];
@@ -144,6 +148,9 @@ struct IgnoredSourceCommands {
   /// The programs they run by a relative path in a `cwd` of their own,
   /// without duplicates.
   relative_programs: Vec<String>,
+  /// The files they read to key their cache (`cacheKeyFiles`), without
+  /// duplicates.
+  cache_key_files: Vec<String>,
 }
 
 /// The remote properties that may decide what runs a policy ignored, as the
@@ -171,6 +178,7 @@ impl IgnoredCommands {
     programs: impl IntoIterator<Item = String>,
     properties: impl IntoIterator<Item = String>,
     relative_programs: impl IntoIterator<Item = String>,
+    cache_key_files: impl IntoIterator<Item = String>,
   ) {
     let index = match self.0.iter().position(|ignored| ignored.source == source) {
       Some(index) => index,
@@ -181,6 +189,7 @@ impl IgnoredCommands {
           programs: Vec::new(),
           properties: Vec::new(),
           relative_programs: Vec::new(),
+          cache_key_files: Vec::new(),
         });
         self.0.len() - 1
       }
@@ -200,6 +209,11 @@ impl IgnoredCommands {
     for program in relative_programs {
       if !ignored.relative_programs.contains(&program) {
         ignored.relative_programs.push(program);
+      }
+    }
+    for file in cache_key_files {
+      if !ignored.cache_key_files.contains(&file) {
+        ignored.cache_key_files.push(file);
       }
     }
   }
@@ -486,6 +500,14 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
             ignored.relative_programs.join(", ")
           ));
         }
+        if !ignored.cache_key_files.is_empty() {
+          reasons.push(format!(
+            "read files on this machine to key their cache (\"{}\"), which only \"{}\": true allows: {}",
+            CACHE_KEY_FILES_KEY,
+            PLAY_WITH_FIRE_KEY,
+            ignored.cache_key_files.join(", ")
+          ));
+        }
         log_warn!(
           environment,
           "Note: Ignored {} exec command(s) in remote configuration ({}) that {}",
@@ -625,7 +647,7 @@ fn allowed_commands_value(commands: ConfigKeyValue, policy: &Policy, source: &st
       (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
     }
     (_, Policy::None) => {
-      ignored.add(source, 1, [], [], []);
+      ignored.add(source, 1, [], [], [], []);
       None
     }
     (commands, _) => Some(commands),
@@ -637,7 +659,7 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
   match policy {
     Policy::None => {
       if !commands.is_empty() {
-        ignored.add(source, commands.len(), [], [], []);
+        ignored.add(source, commands.len(), [], [], [], []);
       }
       Vec::new()
     }
@@ -651,8 +673,16 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
         .collect::<Vec<_>>();
       let unknown_properties = not_allowed.iter().flat_map(unknown_command_keys).collect::<Vec<_>>();
       let relative_programs = not_allowed.iter().flat_map(programs_relative_to_own_cwd).collect::<Vec<_>>();
+      let cache_key_files = not_allowed.iter().flat_map(command_cache_key_files).collect::<Vec<_>>();
       if !not_allowed.is_empty() {
-        ignored.add(source, not_allowed.len(), not_allowed_programs, unknown_properties, relative_programs);
+        ignored.add(
+          source,
+          not_allowed.len(),
+          not_allowed_programs,
+          unknown_properties,
+          relative_programs,
+          cache_key_files,
+        );
       }
       allowed
     }
@@ -702,11 +732,13 @@ fn command_allowed(command: &ConfigKeyValue, programs: &[String]) -> bool {
     return false;
   };
   // a command must say what it runs to be checked, other properties than
-  // the exec plugin 0.7.3's might change what it runs, and its own working
-  // directory decides what a program it runs by a relative path is
+  // the exec plugin 0.7.3's might change what it runs, its own working
+  // directory decides what a program it runs by a relative path is, and
+  // reading files isn't running a program
   matches!(object.get("command"), Some(ConfigKeyValue::String(_)))
     && unknown_command_keys(command).is_empty()
     && programs_relative_to_own_cwd(command).is_empty()
+    && command_cache_key_files(command).is_empty()
     && command_programs(command).iter().all(|program| is_allowed(program, programs))
 }
 
@@ -729,6 +761,27 @@ fn programs_relative_to_own_cwd(command: &ConfigKeyValue) -> Vec<String> {
     return Vec::new();
   }
   command_programs(command).into_iter().filter(|program| is_relative_path(program)).collect()
+}
+
+/// The files a command has the exec plugin read on this machine (its
+/// `cacheKeyFiles`, in its working directory) to key its cache: that's reading
+/// files, which a list of programs doesn't allow, so any value but none or an
+/// empty list counts.
+fn command_cache_key_files(command: &ConfigKeyValue) -> Vec<String> {
+  let ConfigKeyValue::Object(object) = command else {
+    return Vec::new();
+  };
+  match object.get(CACHE_KEY_FILES_KEY) {
+    None | Some(ConfigKeyValue::Null) => Vec::new(),
+    Some(ConfigKeyValue::Array(files)) => files
+      .iter()
+      .map(|file| match file {
+        ConfigKeyValue::String(file) => file.clone(),
+        _ => "(not a path)".to_string(),
+      })
+      .collect(),
+    Some(_) => vec!["(not a list)".to_string()],
+  }
 }
 
 /// Whether a program is a path relative to the command's working directory,

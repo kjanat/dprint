@@ -3277,6 +3277,46 @@ mod tests {
       );
       assert_eq!(result.messages, Vec::<String>::new());
     }
+
+    #[test]
+    fn doesnt_let_a_remote_command_read_files_under_a_program_list() {
+      // the exec plugin reads a command's cacheKeyFiles on this machine when
+      // the configuration is resolved, before anything runs, so a list of
+      // programs (which allows running them) can't vouch for it
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "cargo fmt", "exts": ["rs"], "cacheKeyFiles": ["/etc/passwd", "../secret"] },
+            { "command": "cargo fmt", "exts": ["toml"], "cacheKeyFiles": [] },
+            { "command": "cargo fmt", "exts": ["md"] },
+            { "command": "cargo fmt", "exts": ["txt"], "cacheKeyFiles": "x" }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          remote,
+        )
+        .unwrap()
+      };
+      // the commands that read files are dropped here, so nothing is read
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(), "cargo fmt".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that read files on this machine ",
+            "to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret, (not a list)"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(); 4]);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
   }
 
   #[test]
