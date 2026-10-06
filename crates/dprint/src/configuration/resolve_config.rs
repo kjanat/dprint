@@ -3915,7 +3915,8 @@ lineWidth = 80
         ("/", "file:///<base>")
       };
       let laundering = format!(r#"{{ "extends": "{}" }}"#, laundered_url);
-      let laundered_path = format!("{}base.json", laundered_dir);
+      // which a note names with forward slashes
+      let laundered_path = if cfg!(windows) { "C:/base.json" } else { "/base.json" };
       let resolve_extending = |extends: &str, remote: &str, base: &str| {
         resolve_in_every_format(
           &[
