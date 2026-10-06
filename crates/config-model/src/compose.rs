@@ -294,16 +294,28 @@ impl Resource {
 /// as a whole doesn't: `minProperties`, `maxProperties`, `propertyNames`,
 /// `const`, `enum`, and `patternProperties` (a pattern may cover dprint's
 /// property names), so a schema with one can't describe the table.
+///
+/// Where a schema is isn't how it applies: the same schema can be applied by
+/// several schemas (two `$ref`s to it), and unconditionally by one and on a
+/// condition by another. What's collected here is about the applications,
+/// so each one counts, however many times the schema is reached.
 struct TableSchemas {
   /// Where the first keyword about the table as a whole is, and which.
   whole_object: Option<(String, &'static str)>,
   /// The schemas that apply to the table unconditionally (the plugin's
-  /// schema, its `$ref` targets and `allOf` items), whose properties every
-  /// override may set.
+  /// schema, its `$ref` targets and `allOf` items, in turn), whose
+  /// properties every override may set.
   unconditional: Vec<String>,
-  /// By each of those, the ones it applies in turn (its `$ref` target and
-  /// `allOf` items): what its `unevaluatedProperties` sees.
+  /// By each schema, the ones it applies unconditionally (its `$ref` target
+  /// and `allOf` items): what its `unevaluatedProperties` sees, together
+  /// with its own properties.
   applied: HashMap<String, Vec<String>>,
+  /// The schemas in `unconditional` that apply, on a condition (ex. in an
+  /// `anyOf` branch), a schema that evaluates properties (`properties`, or
+  /// an `additionalProperties` or `unevaluatedProperties`, whatever it
+  /// says): what their `unevaluatedProperties` has left depends on the
+  /// table.
+  evaluating_on_a_condition: HashSet<String>,
   /// Where the first schema that applies to the table on a condition (ex.
   /// an `anyOf` branch) says which properties it has (what they may be,
   /// or that it has one), and the keyword it's under. An override can't be
@@ -314,95 +326,164 @@ struct TableSchemas {
   not_followed: Option<String>,
 }
 
+/// What a schema applies to the instance it applies to.
+struct Applies {
+  /// Unconditionally: its `$ref` target and its `allOf` items.
+  always: Vec<String>,
+  /// On a condition the instance decides: the branches of its `anyOf`,
+  /// `oneOf`, `if`/`then`/`else` and `not`, and its `dependentSchemas`,
+  /// each with the keyword.
+  on_a_condition: Vec<(String, &'static str)>,
+  /// A `$ref` that couldn't be followed.
+  not_followed: Option<String>,
+}
+
+impl Applies {
+  fn of(resource: &Resource, pointer: &str, object: &Map<String, Value>) -> Self {
+    let mut result = Self {
+      always: Vec::new(),
+      on_a_condition: Vec::new(),
+      not_followed: None,
+    };
+    // (what's next to a `$ref` applies too, in 2020-12)
+    if let Some(reference) = object.get("$ref") {
+      match reference.as_str().and_then(|reference| resource.index.resolve(reference, pointer)) {
+        Some(target) => result.always.push(target),
+        None => result.not_followed = Some(reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string())),
+      }
+    }
+    if let Some(Value::Array(items)) = object.get("allOf") {
+      result.always.extend((0..items.len()).map(|index| format!("{}/allOf/{}", pointer, index)));
+    }
+    for keyword in ["anyOf", "oneOf"] {
+      if let Some(Value::Array(branches)) = object.get(keyword) {
+        result
+          .on_a_condition
+          .extend((0..branches.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), keyword)));
+      }
+    }
+    for keyword in ["if", "then", "else", "not"] {
+      if object.contains_key(keyword) {
+        result.on_a_condition.push((format!("{}/{}", pointer, keyword), keyword));
+      }
+    }
+    if let Some(Value::Object(dependencies)) = object.get("dependentSchemas") {
+      for name in dependencies.keys() {
+        result
+          .on_a_condition
+          .push((pointer::append(&format!("{}/dependentSchemas", pointer), name), "dependentSchemas"));
+      }
+    }
+    result
+  }
+}
+
 impl TableSchemas {
   fn of(resource: &Resource) -> Self {
     const WHOLE_OBJECT_KEYWORDS: &[&str] = &["minProperties", "maxProperties", "propertyNames", "const", "enum", "patternProperties"];
+    const EVALUATES_PROPERTIES: &[&str] = &["properties", "additionalProperties", "unevaluatedProperties"];
     let mut result = Self {
       whole_object: None,
       unconditional: Vec::new(),
       applied: HashMap::new(),
+      evaluating_on_a_condition: HashSet::new(),
       conditional_properties: None,
       not_followed: None,
     };
-    // each schema to visit: where it is, the keyword it applies to the table
-    // on a condition of, if it doesn't apply unconditionally, and the schema
-    // that applies it
-    let mut pending = VecDeque::from([(String::new(), None, None)]);
+    let schema_at = |pointer: &str| resource.schema.pointer(pointer).and_then(Value::as_object);
+    let whole_object_keyword = |object: &Map<String, Value>| WHOLE_OBJECT_KEYWORDS.iter().copied().find(|keyword| object.contains_key(*keyword));
+    // what applies unconditionally: the plugin's schema and what it applies
+    // unconditionally, in turn. Each schema is looked at once, and what it
+    // applies is recorded then, so a schema applied by two is applied by
+    // both. Nearest first, so a warning names the first of what's at a
+    // level.
+    let mut pending = VecDeque::from([String::new()]);
     let mut visited = HashSet::new();
-    // nearest first, so a warning names the first of what's at a level
-    while let Some((pointer, condition, applied_by)) = pending.pop_front() {
+    // what's applied on a condition: where, under which keyword, by which
+    // unconditional schema, and whether what it evaluates counts (not
+    // under a `not`, which evaluates nothing)
+    let mut on_a_condition = VecDeque::new();
+    while let Some(pointer) = pending.pop_front() {
       if !visited.insert(pointer.clone()) {
         continue;
       }
-      let Some(Value::Object(object)) = resource.schema.pointer(&pointer) else {
+      let Some(object) = schema_at(&pointer) else {
         continue;
       };
-      // (what's next to a `$ref` applies too, in 2020-12)
-      if let Some(reference) = object.get("$ref") {
-        match reference.as_str().and_then(|reference| resource.index.resolve(reference, &pointer)) {
-          Some(target) => pending.push_back((target, condition, Some(pointer.clone()))),
-          None => {
-            result
-              .not_followed
-              .get_or_insert_with(|| reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string()));
-          }
-        }
-      }
+      result.unconditional.push(pointer.clone());
       if result.whole_object.is_none()
-        && let Some(keyword) = WHOLE_OBJECT_KEYWORDS.iter().find(|keyword| object.contains_key(**keyword))
+        && let Some(keyword) = whole_object_keyword(object)
       {
         result.whole_object = Some((pointer.clone(), keyword));
       }
-      match condition {
-        None => {
-          result.unconditional.push(pointer.clone());
-          if let Some(applied_by) = applied_by {
-            result.applied.entry(applied_by).or_default().push(pointer.clone());
-          }
-          // a dependency is a condition of its own: the property an
-          // override adds can be the one that requires others
-          if object.contains_key("dependentRequired") && result.conditional_properties.is_none() {
-            result.conditional_properties = Some((pointer.clone(), "dependentRequired"));
-          }
-        }
-        Some(keyword) => {
-          // what an override can change: which properties the table has
-          // (`properties`, and what it says of the others) and whether it
-          // has one (`required`, `dependentRequired`), which decides a
-          // `oneOf`, an `if`, a `not` or a dependency, too
-          let constrains_properties = ["properties", "required", "dependentRequired"]
-            .iter()
-            .any(|keyword| object.contains_key(*keyword))
-            || ["additionalProperties", "unevaluatedProperties"]
-              .iter()
-              .any(|keyword| object.get(*keyword).is_some_and(|allowed| allowed != &Value::Bool(true)));
-          if constrains_properties && result.conditional_properties.is_none() {
-            result.conditional_properties = Some((pointer.clone(), keyword));
-          }
-        }
+      // a dependency is a condition of its own: the property an override
+      // adds can be the one that requires others
+      if object.contains_key("dependentRequired") && result.conditional_properties.is_none() {
+        result.conditional_properties = Some((pointer.clone(), "dependentRequired"));
       }
-      for (keyword, condition) in [("allOf", condition), ("anyOf", Some("anyOf")), ("oneOf", Some("oneOf"))] {
-        if let Some(Value::Array(schemas)) = object.get(keyword) {
-          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), condition, Some(pointer.clone()))));
-        }
+      let applies = Applies::of(resource, &pointer, object);
+      if let Some(reference) = applies.not_followed {
+        result.not_followed.get_or_insert(reference);
       }
-      for keyword in ["if", "then", "else", "not"] {
-        if object.contains_key(keyword) {
-          pending.push_back((format!("{}/{}", pointer, keyword), Some(keyword), Some(pointer.clone())));
-        }
-      }
-      if let Some(Value::Object(dependencies)) = object.get("dependentSchemas") {
-        for name in dependencies.keys() {
-          pending.push_back((
-            pointer::append(&format!("{}/dependentSchemas", pointer), name),
-            Some("dependentSchemas"),
-            Some(pointer.clone()),
-          ));
-        }
-      }
+      on_a_condition.extend(
+        applies
+          .on_a_condition
+          .into_iter()
+          .map(|(target, keyword)| (target, keyword, pointer.clone(), keyword != "not")),
+      );
+      pending.extend(applies.always.iter().cloned());
+      result.applied.insert(pointer, applies.always);
     }
     // the plugin's schema first
     result.unconditional.sort();
+    // what applies on a condition, and everything it applies in turn (the
+    // condition decides all of it), from each unconditional schema that
+    // applies it: the same schema under two conditions is two applications.
+    // One that applies unconditionally too is already counted, and so is
+    // what it applies.
+    let unconditional = result.unconditional.iter().cloned().collect::<HashSet<_>>();
+    let mut visited = HashSet::new();
+    while let Some((pointer, keyword, origin, evaluates)) = on_a_condition.pop_front() {
+      if unconditional.contains(&pointer) || !visited.insert((pointer.clone(), origin.clone(), evaluates)) {
+        continue;
+      }
+      let Some(object) = schema_at(&pointer) else {
+        continue;
+      };
+      if result.whole_object.is_none()
+        && let Some(keyword) = whole_object_keyword(object)
+      {
+        result.whole_object = Some((pointer.clone(), keyword));
+      }
+      // what an override can change: which properties the table has
+      // (`properties`, and what it says of the others, an
+      // `additionalProperties: true` included, as that evaluates them for
+      // an `unevaluatedProperties` outside the branch) and whether it has
+      // one (`required`, `dependentRequired`), which decides a `oneOf`, an
+      // `if`, a `not` or a dependency, too
+      if result.conditional_properties.is_none()
+        && ["required", "dependentRequired"]
+          .iter()
+          .chain(EVALUATES_PROPERTIES)
+          .any(|keyword| object.contains_key(*keyword))
+      {
+        result.conditional_properties = Some((pointer.clone(), keyword));
+      }
+      if evaluates && EVALUATES_PROPERTIES.iter().any(|keyword| object.contains_key(*keyword)) {
+        result.evaluating_on_a_condition.insert(origin.clone());
+      }
+      let applies = Applies::of(resource, &pointer, object);
+      if let Some(reference) = applies.not_followed {
+        result.not_followed.get_or_insert(reference);
+      }
+      on_a_condition.extend(applies.always.into_iter().map(|target| (target, keyword, origin.clone(), evaluates)));
+      on_a_condition.extend(
+        applies
+          .on_a_condition
+          .into_iter()
+          .map(|(target, keyword)| (target, keyword, origin.clone(), evaluates && keyword != "not")),
+      );
+    }
     result
   }
 
@@ -489,10 +570,11 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
     // applies evaluates: the ones none of those schemas declares, as long as
     // none of them evaluates every property (an `additionalProperties` or
     // `unevaluatedProperties` of its own does, whatever it says, as a
-    // validator's annotations go) and nothing applies on a condition (what's
-    // evaluated then depends on the table the override is merged into, see
-    // [`TableSchemas::conditional_properties`]). Otherwise it's left to the
-    // plugin rather than guessed.
+    // validator's annotations go) and none of them applies, on a condition,
+    // a schema that evaluates properties (what's evaluated then depends on
+    // the table the override is merged into, see
+    // [`TableSchemas::evaluating_on_a_condition`]). Otherwise it's left to
+    // the plugin rather than guessed.
     if let Some(others) = others("unevaluatedProperties") {
       let evaluated = table.evaluated_by(pointer);
       let evaluates_every_property = evaluated.iter().any(|applied| {
@@ -502,7 +584,8 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
           .and_then(Value::as_object)
           .is_some_and(|schema| schema.contains_key("additionalProperties") || (applied != pointer && schema.contains_key("unevaluatedProperties")))
       });
-      if !evaluates_every_property && table.conditional_properties.is_none() {
+      let evaluates_on_a_condition = evaluated.iter().any(|applied| table.evaluating_on_a_condition.contains(applied));
+      if !evaluates_every_property && !evaluates_on_a_condition {
         restrictions.push(restriction(&evaluated, others));
       }
     }
@@ -1194,7 +1277,28 @@ mod test {
       "allOf": [{ "additionalProperties": true }],
       "unevaluatedProperties": false,
     });
+    // a schema applied twice: each application is what the
+    // `unevaluatedProperties` next to it sees, as a validator's annotations
+    // go, however many times the schema is applied
+    let shared_twice = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": { "shared": { "properties": { "a": { "type": "string" } } } },
+      "allOf": [{ "$ref": "#/$defs/shared" }, { "$ref": "#/$defs/shared", "unevaluatedProperties": false }],
+    });
+    // a schema reached on a condition before it's reached unconditionally
+    // applies unconditionally all the same
+    let shared_by_a_condition_first = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": { "mid": { "$ref": "#/$defs/shared" }, "shared": { "properties": { "a": { "type": "string" } } } },
+      "anyOf": [{ "$ref": "#/$defs/shared" }, { "type": "object" }],
+      "allOf": [{ "$ref": "#/$defs/mid" }],
+    });
     let cases = [
+      (&shared_twice, json!({}), json!({ "a": "x" }), true),
+      (&shared_twice, json!({}), json!({ "a": 1 }), false),
+      (&shared_twice, json!({}), json!({ "zzz": 1 }), false),
+      (&shared_by_a_condition_first, json!({}), json!({ "a": "x" }), true),
+      (&shared_by_a_condition_first, json!({}), json!({ "a": 1 }), false),
       (&unevaluated_after_typed_others, json!({}), json!({ "b": 1 }), true),
       (&unevaluated_after_typed_others, json!({}), json!({ "b": "x" }), false),
       (&unevaluated_after_typed_others, json!({}), json!({ "a": "x", "b": 2 }), true),
@@ -1439,6 +1543,19 @@ mod test {
         plugin_schema
       );
     }
+    // a branch that evaluates every property (`additionalProperties`, whatever
+    // it says) decides what an `unevaluatedProperties` outside it has left,
+    // so it counts too, and the override isn't closed by that
+    // `unevaluatedProperties`
+    let open_on_a_condition = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": { "a": { "type": "string" } },
+      "unevaluatedProperties": false,
+      "anyOf": [{ "type": "object", "additionalProperties": true }, { "type": "string" }],
+    });
+    assert_eq!(build(open_on_a_condition.clone(), Some(URL)).warnings, vec![warning("anyOf", "/anyOf/0")]);
+    assert!(plugin_accepts(&open_on_a_condition, &json!({ "zzz": 1 })));
+    assert_eq!(validate(&open_on_a_condition, json!({ "overrides": [{ "files": "*.x", "zzz": 1 }] })), Ok(()));
     // a condition that says nothing about the table's properties is fine
     for plugin_schema in [
       json!({ "anyOf": [{ "type": "object" }, { "title": "x" }] }),
