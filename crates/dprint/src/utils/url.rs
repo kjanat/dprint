@@ -811,6 +811,15 @@ mod test {
     assert_eq!(content.len(), 1_000_000);
   }
 
+  /// Whether a download that gave up at `deadline` took that long. Its
+  /// time limit is the socket's, whose timer can fire a few milliseconds
+  /// early on Windows (its timers tick every 15.6 ms), so the lower bound
+  /// has that much slack; the upper bounds don't.
+  fn gave_up_at(elapsed: Duration, deadline: Duration) -> bool {
+    const TIMER_SLACK: Duration = Duration::from_millis(50);
+    elapsed + TIMER_SLACK >= deadline
+  }
+
   /// A lookup that never finishes in time, counting how often it's asked.
   fn stalled_lookup(lookups: &Arc<AtomicUsize>) -> super::Lookup {
     let lookups = lookups.clone();
@@ -869,7 +878,7 @@ mod test {
     let err = result.unwrap_err().to_string();
     assert!(err.starts_with("Error downloading http://stalled.invalid/schema.json"), "{}", err);
     assert!(err.contains("Looking up stalled.invalid:80 timed out."), "{}", err);
-    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(gave_up_at(elapsed, Duration::from_millis(500)), "{:?}", elapsed);
     assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
     // without retrying once the deadline passed
     assert_eq!(lookups.load(Ordering::SeqCst), 1);
@@ -919,7 +928,7 @@ mod test {
     let (result, elapsed) = download_before(&url, Duration::from_millis(500));
     let err = result.unwrap_err().to_string();
     assert!(err.starts_with(&format!("Error downloading {}", url)), "{}", err);
-    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(gave_up_at(elapsed, Duration::from_millis(500)), "{:?}", elapsed);
     assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
     // without retrying once the deadline passed
     assert_eq!(connections.load(Ordering::SeqCst), 1);
@@ -939,7 +948,7 @@ mod test {
     });
     let (result, elapsed) = download_before(&url, Duration::from_millis(500));
     assert!(result.is_err());
-    assert!(elapsed >= Duration::from_millis(500), "{:?}", elapsed);
+    assert!(gave_up_at(elapsed, Duration::from_millis(500)), "{:?}", elapsed);
     assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
   }
 
