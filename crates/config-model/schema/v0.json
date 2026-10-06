@@ -6,91 +6,133 @@
   "type": "object",
   "properties": {
     "$schema": {
-      "type": "string",
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "The JSON schema reference. Normally you shouldn't bother to provide this as the dprint vscode editor extension will handle constructing the schema for you based on the plugins provided."
     },
     "incremental": {
-      "type": "boolean",
+      "type": [
+        "boolean",
+        "null"
+      ],
       "description": "Whether to format files only when they change.",
       "default": true
     },
     "inherit": {
-      "type": "boolean",
+      "type": [
+        "boolean",
+        "null"
+      ],
       "description": "For a nested (directory specific) configuration file, whether to inherit the plugins and configuration of the ancestor configuration file. Has no effect on a root configuration file.",
       "default": false
     },
     "extends": {
-      "description": "Configurations to extend.",
       "anyOf": [
         {
-          "type": "string",
-          "description": "A file path or url to a configuration file to extend."
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "A file path or url to a configuration file to extend."
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "A collection of file paths and/or urls to configuration files to extend."
+            }
+          ],
+          "description": "Configurations to extend."
         },
         {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "A collection of file paths and/or urls to configuration files to extend."
+          "type": "null"
         }
-      ]
+      ],
+      "description": "Configurations to extend."
     },
     "lineWidth": {
-      "type": "integer",
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0,
       "description": "The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases."
     },
     "indentWidth": {
-      "type": "integer",
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0,
       "maximum": 255,
       "description": "The number of characters for an indent."
     },
     "useTabs": {
-      "type": "boolean",
+      "type": [
+        "boolean",
+        "null"
+      ],
       "description": "Whether to use tabs (true) or spaces (false) for indentation."
     },
     "newLineKind": {
-      "description": "The kind of newline to use.",
-      "oneOf": [
+      "anyOf": [
         {
-          "type": "string",
-          "const": "auto",
-          "description": "For each file, uses the newline kind found at the end of the last line."
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "auto",
+              "description": "For each file, uses the newline kind found at the end of the last line."
+            },
+            {
+              "type": "string",
+              "const": "crlf",
+              "description": "Uses carriage return, line feed."
+            },
+            {
+              "type": "string",
+              "const": "lf",
+              "description": "Uses line feed."
+            },
+            {
+              "type": "string",
+              "const": "system",
+              "description": "Uses the system standard (ex. crlf on Windows)."
+            }
+          ]
         },
         {
-          "type": "string",
-          "const": "crlf",
-          "description": "Uses carriage return, line feed."
-        },
-        {
-          "type": "string",
-          "const": "lf",
-          "description": "Uses line feed."
-        },
-        {
-          "type": "string",
-          "const": "system",
-          "description": "Uses the system standard (ex. crlf on Windows)."
+          "type": "null"
         }
-      ]
+      ],
+      "description": "The kind of newline to use."
     },
     "includes": {
-      "type": "array",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "string"
       },
       "description": "Array of patterns (globs) to use to find files to format."
     },
     "excludes": {
-      "type": "array",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "string"
       },
       "description": "Array of patterns (globs) to exclude files or directories to format."
     },
     "shebangs": {
-      "type": "object",
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": {
         "type": "string",
         "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\")."
@@ -101,7 +143,10 @@
       }
     },
     "plugins": {
-      "type": "array",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "type": "string"
       },
@@ -117,36 +162,55 @@
       "type": "object",
       "properties": {
         "locked": {
-          "type": "boolean",
+          "type": [
+            "boolean",
+            "null"
+          ],
           "description": "Whether this plugin configuration is locked against overrides from extending configurations."
         },
         "associations": {
-          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
           "anyOf": [
             {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "File patterns, one or more."
             },
             {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
+              "type": "null"
             }
-          ]
+          ],
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name."
         },
         "overrides": {
-          "description": "Plugin configuration overrides for specific file patterns.",
           "anyOf": [
             {
-              "$ref": "#/$defs/pluginOverride"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/pluginOverride"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/pluginOverride"
+                  }
+                }
+              ],
+              "description": "Overrides of a plugin's configuration, one or more."
             },
             {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/pluginOverride"
-              }
+              "type": "null"
             }
-          ]
+          ],
+          "description": "Plugin configuration overrides for specific file patterns."
         }
       },
       "additionalProperties": true,

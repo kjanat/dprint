@@ -31,40 +31,23 @@ pub fn schema_json_for<T: JsonSchema>() -> String {
   format!("{}\n", serde_json::to_string_pretty(&schema_for::<T>()).expect("a schema serializes"))
 }
 
-/// Makes a generated schema say what a configuration file may hold rather
-/// than what the Rust types do: a property of an `Option` may be left out,
-/// but can't be `null`, and an integer's width is Rust's, not the file's.
+/// Leaves out of a generated schema what is about the Rust types rather than
+/// a configuration file: an integer's width (schemars' `format`, ex.
+/// `uint8`), which isn't a JSON schema format. That's an annotation; what the
+/// schema accepts is what the types do, including `null` for a property of an
+/// `Option`, which reads as the property left out.
 #[derive(Clone, Debug)]
 struct ConfigurationValues;
 
 impl Transform for ConfigurationValues {
   fn transform(&mut self, schema: &mut Schema) {
-    if let Some(object) = schema.as_object_mut() {
-      if let Some(Value::Array(types)) = object.get_mut("type") {
-        types.retain(|kind| kind != "null");
-        if types.len() == 1 {
-          let kind = types.pop().unwrap();
-          object.insert("type".to_string(), kind);
-        }
-      }
-      if let Some(Value::Array(branches)) = object.get_mut("anyOf") {
-        branches.retain(|branch| branch != &serde_json::json!({ "type": "null" }));
-        if branches.len() == 1
-          && let Value::Object(branch) = branches.pop().unwrap()
-        {
-          object.shift_remove("anyOf");
-          for (key, value) in branch {
-            object.entry(key).or_insert(value);
-          }
-        }
-      }
-      if object
+    if let Some(object) = schema.as_object_mut()
+      && object
         .get("format")
         .and_then(Value::as_str)
         .is_some_and(|format| format.starts_with("int") || format.starts_with("uint"))
-      {
-        object.shift_remove("format");
-      }
+    {
+      object.shift_remove("format");
     }
     transform_subschemas(self, schema);
   }
@@ -98,17 +81,24 @@ mod test {
   }
 
   #[test]
-  fn describes_a_configuration_file_rather_than_the_rust_types() {
+  fn describes_what_the_types_accept_without_their_rust_widths() {
     let schema = schema_for::<Example>();
     assert_eq!(schema.as_object().unwrap().keys().take(2).collect::<Vec<_>>(), vec!["$schema", "title"]);
     assert_eq!(schema["$schema"], json!("https://json-schema.org/draft/2020-12/schema"));
-    assert_eq!(schema["properties"]["flag"], json!({ "description": "May be left out.", "type": "boolean" }));
-    assert_eq!(schema["properties"]["count"], json!({ "type": "integer", "minimum": 0, "maximum": 255 }));
+    // an `Option` reads `null` as left out, so the schema allows it
+    assert_eq!(
+      schema["properties"]["flag"],
+      json!({ "description": "May be left out.", "type": ["boolean", "null"] })
+    );
+    assert_eq!(
+      schema["properties"]["count"],
+      json!({ "type": ["integer", "null"], "minimum": 0, "maximum": 255 })
+    );
     assert_eq!(
       schema["properties"]["which"],
       json!({
         "description": "One or more.",
-        "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+        "anyOf": [{ "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] }, { "type": "null" }]
       })
     );
     assert_eq!(schema["properties"]["name"], json!({ "type": "string" }));

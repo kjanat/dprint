@@ -413,6 +413,28 @@ mod test {
   use super::*;
   use crate::from_json;
 
+  /// The properties of each object in a configuration (the file's, the
+  /// plugin tables', the overrides'), as the JSON pointer of the object and
+  /// the property's name.
+  pub(super) fn properties_of(value: &serde_json::Value, pointer: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    match value {
+      serde_json::Value::Object(object) => {
+        for (name, value) in object {
+          result.push((pointer.to_string(), name.clone()));
+          result.extend(properties_of(value, &format!("{}/{}", pointer, name.replace('~', "~0").replace('/', "~1"))));
+        }
+      }
+      serde_json::Value::Array(values) => {
+        for (index, value) in values.iter().enumerate() {
+          result.extend(properties_of(value, &format!("{}/{}", pointer, index)));
+        }
+      }
+      _ => {}
+    }
+    result
+  }
+
   /// A configuration file with every property of dprint's, and a plugin's
   /// table with every property of dprint's.
   pub(super) fn full_config() -> serde_json::Value {
@@ -704,6 +726,58 @@ mod schema_test {
     let written = serde_json::to_value(from_json::<ConfigFile>(full.clone()).unwrap()).unwrap();
     assert_eq!(validate(&schema, &written), Ok(()));
 
+    // each property left out, `null` and as it is, of the file, of a plugin's
+    // table and of an override: the model and the schema agree on every one
+    // (a property of an `Option` reads `null` as left out, and the schema says
+    // so, while one that isn't optional doesn't)
+    let mut agreed = 0;
+    let mut nulls_accepted = 0;
+    let mut nulls_rejected = 0;
+    for (parent_pointer, name) in super::test::properties_of(&full, "") {
+      for variant in ["left out", "null", "as it is"] {
+        let mut config = full.clone();
+        let parent = config.pointer_mut(&parent_pointer).unwrap().as_object_mut().unwrap();
+        match variant {
+          "left out" => {
+            parent.shift_remove(&name);
+          }
+          "null" => {
+            parent[&name] = Value::Null;
+          }
+          _ => {}
+        }
+        let reads = from_json::<ConfigFile>(config.clone());
+        let validates = validate(&schema, &config);
+        assert_eq!(
+          reads.is_ok(),
+          validates.is_ok(),
+          "{}/{} {}: model {:?}, schema {:?}",
+          parent_pointer,
+          name,
+          variant,
+          reads.err(),
+          validates.err()
+        );
+        agreed += 1;
+        if variant == "null" {
+          if reads.is_ok() {
+            nulls_accepted += 1;
+          } else {
+            nulls_rejected += 1;
+          }
+        }
+      }
+    }
+    assert!(agreed > 60, "{}", agreed);
+    // dprint's optional properties, and a plugin's own properties
+    assert!(nulls_accepted > 10, "{}", nulls_accepted);
+    // a plugin's table, an override's `files` and a shebang's extension
+    assert!(nulls_rejected >= 3, "{}", nulls_rejected);
+    assert!(from_json::<ConfigFile>(json!({ "incremental": null, "plugins": null, "extends": null })).is_ok());
+    assert_eq!(validate(&schema, &json!({ "incremental": null, "plugins": null, "extends": null })), Ok(()));
+    assert!(from_json::<ConfigFile>(json!({ "typescript": null })).is_err());
+    assert!(validate(&schema, &json!({ "typescript": null })).is_err());
+
     // what the model rejects, the schema does too (the shape; the schema
     // can't know a shebang's extension is normalized)
     for invalid in [
@@ -740,19 +814,22 @@ mod schema_test {
     assert_eq!(schema["$id"], json!(ROOT_SCHEMA_ID));
     assert_eq!(schema["allowTrailingCommas"], json!(true));
     assert_eq!(schema["properties"]["incremental"]["default"], json!(true));
+    // every property of dprint's may be left out, which `null` reads as
+    assert_eq!(schema["properties"]["incremental"]["type"], json!(["boolean", "null"]));
     assert_eq!(
       schema["properties"]["lineWidth"],
-      json!({ "description": schema["properties"]["lineWidth"]["description"], "type": "integer", "minimum": 0 })
+      json!({ "description": schema["properties"]["lineWidth"]["description"], "type": ["integer", "null"], "minimum": 0 })
     );
     assert_eq!(
-      schema["properties"]["newLineKind"]["oneOf"][1],
+      schema["properties"]["newLineKind"]["anyOf"][0]["oneOf"][1],
       json!({ "description": "Uses carriage return, line feed.", "type": "string", "const": "crlf" })
     );
+    assert_eq!(schema["properties"]["newLineKind"]["anyOf"][1], json!({ "type": "null" }));
     assert_eq!(
       schema["properties"]["shebangs"],
       json!({
         "description": schema["properties"]["shebangs"]["description"],
-        "type": "object",
+        "type": ["object", "null"],
         "additionalProperties": { "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\").", "type": "string" },
         "propertyNames": { "pattern": "^#!" }
       })
@@ -764,8 +841,15 @@ mod schema_test {
     assert_eq!(table["additionalProperties"], json!(true));
     assert_eq!(
       table["properties"]["overrides"]["anyOf"],
-      json!([{ "$ref": "#/$defs/pluginOverride" }, { "type": "array", "items": { "$ref": "#/$defs/pluginOverride" } }])
+      json!([
+        {
+          "anyOf": [{ "$ref": "#/$defs/pluginOverride" }, { "type": "array", "items": { "$ref": "#/$defs/pluginOverride" } }],
+          "description": "Overrides of a plugin's configuration, one or more."
+        },
+        { "type": "null" }
+      ])
     );
+    assert_eq!(table["properties"]["locked"]["type"], json!(["boolean", "null"]));
     let override_schema = &schema["$defs"]["pluginOverride"];
     assert_eq!(override_schema["required"], json!(["files"]));
     assert_eq!(override_schema["minProperties"], json!(2));
@@ -774,11 +858,10 @@ mod schema_test {
       override_schema["properties"]["files"]["anyOf"],
       json!([{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1 }])
     );
-    // nothing is `null`, and no integer has a Rust width
+    // no integer has a Rust width
     fn check(value: &Value) {
       match value {
         Value::Object(object) => {
-          assert_ne!(object.get("type"), Some(&json!("null")), "{}", value);
           assert!(object.get("format").is_none(), "{}", value);
           object.values().for_each(check);
         }

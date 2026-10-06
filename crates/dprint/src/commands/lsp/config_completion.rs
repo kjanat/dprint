@@ -354,18 +354,14 @@ impl<'a> SchemaRef<'a> {
     if let Some(value) = node.get("const") {
       push(&mut options, value, me.description().map(str::to_string));
     }
+    // the options of each alternative, however deep the alternatives go (ex.
+    // an optional property's `anyOf` of its `oneOf` of values and `null`)
     for keyword in ["oneOf", "anyOf"] {
       if let Some(Value::Array(branches)) = node.get(keyword) {
         for index in 0..branches.len() {
-          let branch = me.child(keyword).child(&index.to_string()).deref();
-          let Some(branch_node) = branch.node() else {
-            continue;
-          };
-          if let Some(value) = branch_node.get("const") {
-            push(&mut options, value, branch.description().map(str::to_string));
-          } else if let Some(Value::Array(values)) = branch_node.get("enum") {
-            for value in values {
-              push(&mut options, value, None);
+          for option in me.child(keyword).child(&index.to_string()).value_options() {
+            if !options.iter().any(|o| o.insert_text == option.insert_text) {
+              options.push(option);
             }
           }
         }
@@ -395,8 +391,14 @@ impl<'a> SchemaRef<'a> {
     let node = self.node()?;
     match node.get("type") {
       Some(Value::String(s)) => Some(s.clone()),
+      // (`null` reads as the property left out, so it isn't a type of its value)
       Some(Value::Array(arr)) => {
-        let joined = arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+        let joined = arr
+          .iter()
+          .filter_map(|v| v.as_str())
+          .filter(|kind| *kind != "null")
+          .collect::<Vec<_>>()
+          .join(" | ");
         (!joined.is_empty()).then_some(joined)
       }
       _ => {

@@ -743,7 +743,9 @@ fn display_path(plugin_key: &str, path: &[ConfigChangePathItem]) -> String {
 
 #[cfg(test)]
 mod test {
+  use dprint_config_model::PluginTable;
   use dprint_core::plugins::ConfigChange;
+  use indexmap::IndexMap;
   use pretty_assertions::assert_eq;
 
   use super::*;
@@ -865,6 +867,48 @@ exts = ["rs"]
   fn json_syntax_errors_say_where() {
     let err = ConfigFileFormat::Json.read("{prop}").unwrap_err().to_string();
     assert_eq!(err, "Unexpected token on line 1 column 2");
+  }
+
+  #[test]
+  fn reads_null_as_a_property_left_out_as_the_schema_says() {
+    use crate::test_helpers::validate_with_schema;
+
+    // a property of dprint's that's `null` is as if left out, in the file as
+    // read and in the schema; a plugin's table can't be `null`, nor can an
+    // override's `files`. (TOML has no null, so this is JSON's.)
+    let schema = dprint_config_model::root_schema();
+    let text = r#"{
+      "incremental": null,
+      "extends": null,
+      "lineWidth": null,
+      "newLineKind": null,
+      "plugins": null,
+      "shebangs": null,
+      "typescript": { "locked": null, "associations": null, "overrides": null, "semiColons": null }
+    }"#;
+    let file = ConfigFileFormat::Json.read(text).unwrap();
+    assert_eq!(
+      file,
+      ConfigFile {
+        plugin_tables: IndexMap::from([(
+          "typescript".to_string(),
+          PluginTable {
+            plugin: ConfigKeyMap::from([("semiColons".to_string(), ConfigKeyValue::Null)]),
+            ..Default::default()
+          }
+        )]),
+        ..Default::default()
+      }
+    );
+    assert_eq!(validate_with_schema(&schema, &serde_json::from_str(text).unwrap()), Ok(()));
+    for text in [
+      r##"{ "typescript": null }"##,
+      r##"{ "typescript": { "overrides": [{ "files": null, "semiColons": "always" }] } }"##,
+      r##"{ "shebangs": { "#!/bin/sh": null } }"##,
+    ] {
+      assert!(ConfigFileFormat::Json.read(text).is_err(), "{}", text);
+      assert!(validate_with_schema(&schema, &serde_json::from_str(text).unwrap()).is_err(), "{}", text);
+    }
   }
 
   #[test]

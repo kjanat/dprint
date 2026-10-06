@@ -244,10 +244,69 @@ mod test {
       }],
     });
     assert_eq!(validate_with_schema(&schema, &config), Ok(()));
-    let result = configuration::Configuration::resolve(serde_json::from_value(config).unwrap(), &Default::default());
+    let result = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
     assert_eq!(result.diagnostics, vec![]);
     assert_eq!(result.config.timeout, 60);
     assert_eq!(result.config.setup_timeout, 600);
+
+    // each property left out, `null` and as it is, of the configuration and
+    // of a command: the types and the schema agree on every one (a property
+    // of an `Option` reads `null` as left out, `command` isn't optional)
+    fn properties_of(value: &serde_json::Value, pointer: &str) -> Vec<(String, String)> {
+      let mut result = Vec::new();
+      match value {
+        serde_json::Value::Object(object) => {
+          for (name, value) in object {
+            result.push((pointer.to_string(), name.clone()));
+            result.extend(properties_of(value, &format!("{}/{}", pointer, name)));
+          }
+        }
+        serde_json::Value::Array(values) => {
+          for (index, value) in values.iter().enumerate() {
+            result.extend(properties_of(value, &format!("{}/{}", pointer, index)));
+          }
+        }
+        _ => {}
+      }
+      result
+    }
+    let mut nulls_accepted = 0;
+    let mut nulls_rejected = 0;
+    for (parent_pointer, name) in properties_of(&config, "") {
+      for variant in ["left out", "null", "as it is"] {
+        let mut config = config.clone();
+        let parent = config.pointer_mut(&parent_pointer).unwrap().as_object_mut().unwrap();
+        match variant {
+          "left out" => {
+            parent.shift_remove(&name);
+          }
+          "null" => {
+            parent[&name] = serde_json::Value::Null;
+          }
+          _ => {}
+        }
+        let reads = dprint_config_model::from_json::<input::ExecConfigInput>(config.clone());
+        let validates = validate_with_schema(&schema, &config);
+        assert_eq!(
+          reads.is_ok(),
+          validates.is_ok(),
+          "{}/{} {}: types {:?}, schema {:?}",
+          parent_pointer,
+          name,
+          variant,
+          reads.err(),
+          validates.err()
+        );
+        if variant == "null" {
+          if reads.is_ok() {
+            nulls_accepted += 1;
+          } else {
+            nulls_rejected += 1;
+          }
+        }
+      }
+    }
+    assert_eq!((nulls_accepted, nulls_rejected), (16, 1));
 
     // what the schema rejects, the configuration does too, saying where
     for (config, property, message) in [
