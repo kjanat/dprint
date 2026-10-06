@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dprint.dev/schemas/v0.json",
+  "title": "dprint configuration file",
+  "description": "Schema for a dprint configuration file.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The JSON schema reference. Normally you shouldn't bother to provide this as the dprint vscode editor extension will handle constructing the schema for you based on the plugins provided."
+    },
+    "incremental": {
+      "type": "boolean",
+      "description": "Whether to format files only when they change.",
+      "default": true
+    },
+    "inherit": {
+      "type": "boolean",
+      "description": "For a nested (directory specific) configuration file, whether to inherit the plugins and configuration of the ancestor configuration file. Has no effect on a root configuration file.",
+      "default": false
+    },
+    "extends": {
+      "description": "Configurations to extend.",
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "A file path or url to a configuration file to extend."
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A collection of file paths and/or urls to configuration files to extend."
+        }
+      ]
+    },
+    "lineWidth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases."
+    },
+    "indentWidth": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "The number of characters for an indent."
+    },
+    "useTabs": {
+      "type": "boolean",
+      "description": "Whether to use tabs (true) or spaces (false) for indentation."
+    },
+    "newLineKind": {
+      "description": "The kind of newline to use.",
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "auto",
+          "description": "For each file, uses the newline kind found at the end of the last line."
+        },
+        {
+          "type": "string",
+          "const": "crlf",
+          "description": "Uses carriage return, line feed."
+        },
+        {
+          "type": "string",
+          "const": "lf",
+          "description": "Uses line feed."
+        },
+        {
+          "type": "string",
+          "const": "system",
+          "description": "Uses the system standard (ex. crlf on Windows)."
+        }
+      ]
+    },
+    "includes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Array of patterns (globs) to use to find files to format."
+    },
+    "excludes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Array of patterns (globs) to exclude files or directories to format."
+    },
+    "shebangs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\")."
+      },
+      "description": "Maps a shebang line (ex. \"#!/usr/bin/env bash\") to a file extension so extensionless scripts can be routed to a plugin.",
+      "propertyNames": {
+        "pattern": "^#!"
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Array of plugin URLs to format files."
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/pluginTable"
+  },
+  "allowTrailingCommas": true,
+  "$defs": {
+    "pluginTable": {
+      "type": "object",
+      "properties": {
+        "locked": {
+          "type": "boolean",
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations."
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pluginOverride"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pluginOverride"
+              }
+            }
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "description": "Plugin configuration."
+    },
+    "pluginOverride": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "File patterns this override applies to."
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": true,
+      "description": "An override of a plugin's configuration for some of its files.",
+      "minProperties": 2
+    }
+  }
+}
