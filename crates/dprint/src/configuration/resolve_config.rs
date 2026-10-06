@@ -3200,9 +3200,27 @@ mod tests {
         )
       };
 
-      // the programs a command runs can't be checked when it has others
+      let time_limit = |key: &str| {
+        format!(
+          concat!(
+            "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
+            "as it sets how long a command may run on this machine. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+          key
+        )
+      };
+
+      // the programs a command runs can't be checked when it has others, and
+      // nothing is left of the override without its time limit
       let result = resolve_allowing(r#"["tombi"]"#);
-      assert_eq!(result.exec, exec_with(&["tombi format -"], &["lineWidth", "cacheKey"], &["timeout"]));
+      assert_eq!(
+        result.exec,
+        Exec {
+          overrides: Vec::new(),
+          ..exec_with(&["tombi format -"], &["lineWidth", "cacheKey"], &[])
+        }
+      );
       assert_eq!(
         result.messages,
         vec![
@@ -3212,13 +3230,23 @@ mod tests {
           )
           .to_string(),
           ignored_property("shell"),
+          time_limit("timeout"),
           ignored_property("env"),
         ]
       );
 
       let result = resolve_allowing("false");
-      assert_eq!(result.exec, exec_with(&[], &["lineWidth", "cacheKey"], &["timeout"]));
-      assert_eq!(result.messages[1..], [ignored_property("shell"), ignored_property("env")]);
+      assert_eq!(
+        result.exec,
+        Exec {
+          overrides: Vec::new(),
+          ..exec_with(&[], &["lineWidth", "cacheKey"], &[])
+        }
+      );
+      assert_eq!(
+        result.messages[1..],
+        [ignored_property("shell"), time_limit("timeout"), ignored_property("env")]
+      );
 
       // all of them when any program may run
       let result = resolve_allowing("true");
@@ -3315,6 +3343,53 @@ mod tests {
       );
       let result = resolve_allowing("true");
       assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(); 4]);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+    #[test]
+    fn keeps_how_long_a_remote_command_may_run_local() {
+      // a remote command (ex. an allowed program in a server mode) would
+      // otherwise set how long this machine tolerates it: ~68 years
+      let remote = r#"{
+        "exec": {
+          "commands": [{ "command": "cargo fmt", "exts": ["rs"] }],
+          "timeout": 2147483647,
+          "setupTimeout": 2147483647,
+          "overrides": [{ "files": "**/*.rs", "timeout": 2147483647 }]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(
+            r#"{{ "extends": "{}", "exec": {{ "playWithFire": {}, "timeout": 30 }} }}"#,
+            REMOTE_URL, play_with_fire
+          ),
+          remote,
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string()]);
+      // the local limit, and nothing of the remote override
+      assert_eq!(result.exec.properties.other_keys, vec!["timeout".to_string()]);
+      assert_eq!(result.exec.overrides, Vec::<ExecOverride>::new());
+      let note = |key: &str| {
+        format!(
+          concat!(
+            "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
+            "as it sets how long a command may run on this machine. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+          key
+        )
+      };
+      let mut messages = result.messages;
+      messages.sort();
+      assert_eq!(messages, vec![note("setupTimeout"), note("timeout")]);
+
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.other_keys, vec!["timeout".to_string(), "setupTimeout".to_string()]);
+      assert_eq!(result.exec.overrides.len(), 1);
+      assert_eq!(result.exec.overrides[0].properties.other_keys, vec!["timeout".to_string()]);
       assert_eq!(result.messages, Vec::<String>::new());
     }
   }

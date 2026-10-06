@@ -16,6 +16,9 @@
 //! only the ones 0.7.3 has that don't decide what runs are used without
 //! `"playWithFire": true` (any others might, ex. ones a later version adds),
 //! and a remote command with properties 0.7.3 doesn't have only runs with it.
+//! Nor does remote configuration set how long a command may run (`timeout`,
+//! `setupTimeout`) without it: a remote command runs within the local
+//! configuration's limits.
 //!
 //! Which program a command runs is read the way the exec plugin 0.7.3 reads
 //! it. So a list of programs is only checked when the exec plugin that runs
@@ -58,9 +61,13 @@ const COMMANDS_KEY: &str = "commands";
 const PLAY_WITH_FIRE_KEY: &str = "playWithFire";
 const CWD_KEY: &str = "cwd";
 const CACHE_KEY_FILES_KEY: &str = "cacheKeyFiles";
-/// The exec plugin 0.7.3 properties that don't decide what runs, which remote
-/// configuration may specify without `"playWithFire": true`.
-const UNRESTRICTED_KEYS: &[&str] = &["lineWidth", "indentWidth", "useTabs", "cacheKey", "timeout", "setupTimeout"];
+/// The exec plugin 0.7.3 properties that neither decide what runs nor for how
+/// long, which remote configuration may specify without `"playWithFire": true`.
+const UNRESTRICTED_KEYS: &[&str] = &["lineWidth", "indentWidth", "useTabs", "cacheKey"];
+/// The exec plugin 0.7.3 properties that set how long a command may run (in
+/// seconds): a remote command runs within the local configuration's limits,
+/// so remote configuration only sets them with `"playWithFire": true`.
+const TIME_LIMIT_KEYS: &[&str] = &["timeout", "setupTimeout"];
 /// The properties of an exec plugin 0.7.3 command.
 const COMMAND_KEYS: &[&str] = &["command", "exts", "fileNames", "associations", "stdin", "cwd", "cacheKeyFiles", "setupCommand"];
 
@@ -539,6 +546,8 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
       source,
       if key == CWD_KEY {
         "it decides what commands run"
+      } else if TIME_LIMIT_KEYS.contains(&key.as_str()) {
+        "it sets how long a command may run on this machine"
       } else {
         "the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does"
       },
