@@ -152,7 +152,7 @@ fn compile_timeout(environment: &impl Environment) -> Option<Duration> {
   let seconds = value.to_str().and_then(|value| value.trim().parse::<u64>().ok()).filter(|seconds| *seconds > 0);
   match seconds.map(Duration::from_secs) {
     // which has to make a deadline (see `TimeBudget::start`)
-    Some(timeout) if Instant::now().checked_add(timeout).is_some() => Some(timeout),
+    Some(timeout) if deadline_after(Instant::now(), timeout).is_some() => Some(timeout),
     Some(_) => {
       log_warn!(
         environment,
@@ -172,6 +172,14 @@ fn compile_timeout(environment: &impl Environment) -> Option<Duration> {
       None
     }
   }
+}
+
+/// The deadline a limit from `start` makes, if an instant can be that far
+/// off (how far depends on the platform). A limit it can't be isn't accepted
+/// as a timeout (see [`compile_timeout`]) and is capped as a budget (see
+/// [`TimeBudget::start`]), so that none can overflow later.
+fn deadline_after(start: Instant, limit: Duration) -> Option<Instant> {
+  start.checked_add(limit)
 }
 
 /// The error for a compile that couldn't be supervised, which is never
@@ -235,7 +243,7 @@ impl TimeBudget {
     let start = Instant::now();
     // a limit further off than a time can be (which `compile_timeout` doesn't
     // give) gets the cap, rather than no deadline at all
-    let deadline = start.checked_add(limits.total_wall).unwrap_or_else(|| start + MAX_TOTAL_WALL);
+    let deadline = deadline_after(start, limits.total_wall).unwrap_or_else(|| start + MAX_TOTAL_WALL);
     Self {
       start,
       deadline: control.deadline.map_or(deadline, |caller_deadline| caller_deadline.min(deadline)),
@@ -1783,18 +1791,38 @@ mod test {
       );
     }
     // a number of seconds no deadline can be made from (an instant can't be
-    // that far off; how far depends on the platform) is ignored too, rather
-    // than overflowing later
-    let value = u64::MAX.to_string();
-    environment.set_env_var(TIMEOUT_ENV_VAR, Some(&value));
-    assert_eq!(compile_timeout(&environment), None);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec![format!(
-        "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it's more seconds than can be waited for.",
-        value
-      )]
-    );
+    // that far off) is ignored too, rather than overflowing later. How far
+    // off one can be depends on the platform, so what's accepted is whatever
+    // the deadline operation accepts, which is what it's later used in
+    for seconds in [u64::MAX, u64::MAX / 2, 1 << 40, 3600] {
+      let value = seconds.to_string();
+      let timeout = Duration::from_secs(seconds);
+      environment.set_env_var(TIMEOUT_ENV_VAR, Some(&value));
+      if deadline_after(Instant::now(), timeout).is_some() {
+        assert_eq!(compile_timeout(&environment), Some(timeout), "{}", value);
+        assert_eq!(environment.take_stderr_messages(), Vec::<String>::new(), "{}", value);
+      } else {
+        assert_eq!(compile_timeout(&environment), None, "{}", value);
+        assert_eq!(
+          environment.take_stderr_messages(),
+          vec![format!(
+            "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it's more seconds than can be waited for.",
+            value
+          )],
+          "{}",
+          value
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_deadline_is_made_when_an_instant_can_be_that_far_off() {
+    let now = Instant::now();
+    assert_eq!(deadline_after(now, Duration::ZERO), Some(now));
+    assert_eq!(deadline_after(now, Duration::from_secs(3600)), Some(now + Duration::from_secs(3600)));
+    // and not from the largest duration, on any platform
+    assert_eq!(deadline_after(now, Duration::MAX), None);
   }
 
   #[test]
