@@ -149,8 +149,19 @@ fn compile_mode(environment: &impl Environment) -> CompileMode {
 /// number of seconds.
 fn compile_timeout(environment: &impl Environment) -> Option<Duration> {
   let value = environment.env_var(TIMEOUT_ENV_VAR)?;
-  match value.to_str().and_then(|value| value.trim().parse::<u64>().ok()).filter(|seconds| *seconds > 0) {
-    Some(seconds) => Some(Duration::from_secs(seconds)),
+  let seconds = value.to_str().and_then(|value| value.trim().parse::<u64>().ok()).filter(|seconds| *seconds > 0);
+  match seconds.map(Duration::from_secs) {
+    // which has to make a deadline (see `TimeBudget::start`)
+    Some(timeout) if Instant::now().checked_add(timeout).is_some() => Some(timeout),
+    Some(_) => {
+      log_warn!(
+        environment,
+        "Ignoring {}={}, as it's more seconds than can be waited for.",
+        TIMEOUT_ENV_VAR,
+        value.to_string_lossy()
+      );
+      None
+    }
     None => {
       log_warn!(
         environment,
@@ -222,7 +233,9 @@ impl TimeBudget {
   /// that's sooner than the limit.
   fn start(limits: &Limits, control: &CompileControl) -> Self {
     let start = Instant::now();
-    let deadline = start + limits.total_wall;
+    // a limit further off than a time can be (which `compile_timeout` doesn't
+    // give) gets the cap, rather than no deadline at all
+    let deadline = start.checked_add(limits.total_wall).unwrap_or_else(|| start + MAX_TOTAL_WALL);
     Self {
       start,
       deadline: control.deadline.map_or(deadline, |caller_deadline| caller_deadline.min(deadline)),
@@ -1769,6 +1782,31 @@ mod test {
         )]
       );
     }
+    // a number of seconds no deadline can be made from (an instant can't be
+    // that far off) is ignored too, rather than overflowing later
+    for value in [u64::MAX.to_string(), (u64::MAX / 2).to_string()] {
+      environment.set_env_var(TIMEOUT_ENV_VAR, Some(&value));
+      assert_eq!(compile_timeout(&environment), None, "{}", value);
+      assert_eq!(
+        environment.take_stderr_messages(),
+        vec![format!(
+          "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it's more seconds than can be waited for.",
+          value
+        )]
+      );
+    }
+  }
+
+  #[test]
+  fn caps_a_limit_further_off_than_a_time_can_be() {
+    let mut limits = limits();
+    limits.total_wall = Duration::MAX;
+    let budget = TimeBudget::start(&limits, &CompileControl::default());
+    assert_eq!(budget.total(), MAX_TOTAL_WALL);
+    // and the deadline of what the compile is for still ends it sooner
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let budget = TimeBudget::start(&limits, &CompileControl::new(Some(deadline)));
+    assert_eq!(budget.deadline, deadline);
   }
 
   #[test]

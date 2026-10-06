@@ -3176,7 +3176,13 @@ lineWidth = 80
 
     /// Resolves the file `dprint` of the files (see `resolve_in_every_format`).
     fn resolve_files(files: &[(&str, &str)]) -> Result<Resolved, String> {
+      resolve_files_in(files, |_| {})
+    }
+
+    /// Like `resolve_files`, with each environment set up first (ex. its PATH).
+    fn resolve_files_in(files: &[(&str, &str)], set_up: impl Fn(&TestEnvironment)) -> Result<Resolved, String> {
       resolve_in_every_format(files, async |environment, paths| {
+        set_up(environment);
         let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string())?;
         Ok(Resolved {
           plugins: plugin_names(&result),
@@ -3822,9 +3828,27 @@ lineWidth = 80
         )
       };
 
-      // the programs a command runs can't be checked when it has others
+      let time_limit = |key: &str| {
+        format!(
+          concat!(
+            "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
+            "as it sets how long a command may run on this machine. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+          key
+        )
+      };
+
+      // the programs a command runs can't be checked when it has others, and
+      // nothing is left of the override without its time limit
       let result = resolve_allowing(r#"["tombi"]"#);
-      assert_eq!(result.exec, exec_with(&["tombi format -"], &["lineWidth", "cacheKey"], &["timeout"]));
+      assert_eq!(
+        result.exec,
+        Exec {
+          overrides: Vec::new(),
+          ..exec_with(&["tombi format -"], &["lineWidth", "cacheKey"], &[])
+        }
+      );
       assert_eq!(
         result.messages,
         vec![
@@ -3834,13 +3858,23 @@ lineWidth = 80
           )
           .to_string(),
           ignored_property("shell"),
+          time_limit("timeout"),
           ignored_property("env"),
         ]
       );
 
       let result = resolve_allowing("false");
-      assert_eq!(result.exec, exec_with(&[], &["lineWidth", "cacheKey"], &["timeout"]));
-      assert_eq!(result.messages[1..], [ignored_property("shell"), ignored_property("env")]);
+      assert_eq!(
+        result.exec,
+        Exec {
+          overrides: Vec::new(),
+          ..exec_with(&[], &["lineWidth", "cacheKey"], &[])
+        }
+      );
+      assert_eq!(
+        result.messages[1..],
+        [ignored_property("shell"), time_limit("timeout"), ignored_property("env")]
+      );
 
       // all of them when any program may run
       let result = resolve_allowing("true");
@@ -3995,6 +4029,211 @@ lineWidth = 80
       let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, with_includes).unwrap();
       assert_eq!(includes, None);
       assert_eq!(messages, vec![get_warn_includes_message()]);
+    }
+
+    #[test]
+    fn doesnt_let_a_remote_command_read_files_under_a_program_list() {
+      // the exec plugin reads a command's cacheKeyFiles on this machine when
+      // the configuration is resolved, before anything runs, so a list of
+      // programs (which allows running them) can't vouch for it
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "cargo fmt", "exts": ["rs"], "cacheKeyFiles": ["/etc/passwd", "../secret"] },
+            { "command": "cargo fmt", "exts": ["toml"], "cacheKeyFiles": [] },
+            { "command": "cargo fmt", "exts": ["md"] },
+            { "command": "cargo fmt", "exts": ["txt"], "cacheKeyFiles": "x" }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          remote,
+        )
+        .unwrap()
+      };
+      // the commands that read files are dropped here, so nothing is read
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(), "cargo fmt".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that read files on this machine ",
+            "to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret, (not a list)"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(); 4]);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+    #[test]
+    fn doesnt_let_a_remote_commands_cwd_choose_a_program_by_name_through_a_relative_path_entry() {
+      // a relative entry on the PATH (ex. ".") is searched in the command's
+      // working directory, so a name is no safer than a relative path then
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "tombi format", "cwd": "/remote/chosen", "exts": ["toml"] },
+            { "command": "tombi format", "exts": ["json"] },
+            { "command": "/usr/bin/tombi format", "cwd": "/remote/chosen", "exts": ["yaml"] }
+          ]
+        }
+      }"#;
+      let resolve_with_path = |play_with_fire: &str, path: &str| {
+        resolve_files_in(
+          &[
+            (
+              "dprint",
+              &format!(
+                r#"{{ "extends": "<https://dprint.dev/exec>", "exec": {{ "playWithFire": {} }} }}"#,
+                play_with_fire
+              ),
+            ),
+            ("base", "{}"),
+            ("https://dprint.dev/exec", remote),
+          ],
+          |environment| environment.set_env_var("PATH", Some(path)),
+        )
+        .unwrap()
+      };
+      let (absolute, relative) = if cfg!(windows) {
+        ("C:\\bin;C:\\tools", "C:\\bin;.")
+      } else {
+        ("/usr/bin:/usr/local/bin", "/usr/bin:.")
+      };
+      // with an absolute PATH, a name is found the same wherever a command runs
+      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, absolute);
+      assert_eq!(
+        result.exec.properties.commands,
+        vec!["tombi format".to_string(), "tombi format".to_string(), "/usr/bin/tombi format".to_string()]
+      );
+      assert_eq!(result.messages, Vec::<String>::new());
+      // with a relative entry, only where the command doesn't choose the directory
+      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, relative);
+      assert_eq!(
+        result.exec.properties.commands,
+        vec!["tombi format".to_string(), "/usr/bin/tombi format".to_string()]
+      );
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run a program by name ",
+            "in a \"cwd\" they set, which a relative entry of the PATH (ex. \".\") is searched in, so only with \"playWithFire\": true: tombi"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_with_path("true", relative);
+      assert_eq!(result.exec.properties.commands.len(), 3);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
+    /// An allowed name may be a batch file (ex. an npm shim), which runs
+    /// through cmd.exe, which the remote arguments would reach unsafely.
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::disallowed_methods)] // the program is looked for on the real file system
+    fn doesnt_let_a_remote_command_run_a_batch_file_under_a_program_list() {
+      let dir = tempfile::tempdir().unwrap();
+      let shim = dir.path().join("prettier.cmd");
+      std::fs::write(&shim, "@echo off\r\necho %*\r\n").unwrap();
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "prettier --stdin-filepath \"x\" & calc", "exts": ["js"] },
+            { "command": "prettier.cmd --stdin-filepath {{file_path}}", "exts": ["ts"] },
+            { "command": "tombi format", "exts": ["toml"] }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve_files_in(
+          &[
+            (
+              "dprint",
+              &format!(
+                r#"{{ "extends": "<https://dprint.dev/exec>", "exec": {{ "playWithFire": {} }} }}"#,
+                play_with_fire
+              ),
+            ),
+            ("base", "{}"),
+            ("https://dprint.dev/exec", remote),
+          ],
+          |environment| {
+            environment.set_env_var("PATH", Some(&dir.path().display().to_string()));
+            environment.set_env_var("PATHEXT", Some(".COM;.EXE;.BAT;.CMD"));
+          },
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["prettier", "prettier.cmd", "tombi"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["tombi format".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![format!(
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run a batch file, ",
+            "which runs through cmd.exe, which can't be given arguments safely, so only with \"playWithFire\": true: {}, prettier.cmd"
+          ),
+          shim.display()
+        )]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands.len(), 3);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
+    #[test]
+    fn keeps_how_long_a_remote_command_may_run_local() {
+      // a remote command (ex. an allowed program in a server mode) would
+      // otherwise set how long this machine tolerates it: ~68 years
+      let remote = r#"{
+        "exec": {
+          "commands": [{ "command": "cargo fmt", "exts": ["rs"] }],
+          "timeout": 2147483647,
+          "setupTimeout": 2147483647,
+          "overrides": [{ "files": "**/*.rs", "timeout": 2147483647 }]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(
+            r#"{{ "extends": "{}", "exec": {{ "playWithFire": {}, "timeout": 30 }} }}"#,
+            REMOTE_URL, play_with_fire
+          ),
+          remote,
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string()]);
+      // the local limit, and nothing of the remote override
+      assert_eq!(result.exec.properties.other_keys, vec!["timeout".to_string()]);
+      assert_eq!(result.exec.overrides, Vec::<ExecOverride>::new());
+      let note = |key: &str| {
+        format!(
+          concat!(
+            "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
+            "as it sets how long a command may run on this machine. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+          key
+        )
+      };
+      let mut messages = result.messages;
+      messages.sort();
+      assert_eq!(messages, vec![note("setupTimeout"), note("timeout")]);
+
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.other_keys, vec!["timeout".to_string(), "setupTimeout".to_string()]);
+      assert_eq!(result.exec.overrides.len(), 1);
+      assert_eq!(result.exec.overrides[0].properties.other_keys, vec!["timeout".to_string()]);
+      assert_eq!(result.messages, Vec::<String>::new());
     }
   }
 

@@ -27,6 +27,8 @@ pub use implementations::WasmCompileControl;
 pub use implementations::compile_wasm;
 pub use implementations::compile_wasm_supervised;
 pub use implementations::exec_command_program;
+#[cfg(windows)]
+pub use implementations::find_with_path_ext;
 pub use implementations::is_builtin_exec_reference;
 pub use implementations::is_exec_plugin_reference;
 pub use implementations::knows_exec_plugin_commands;
