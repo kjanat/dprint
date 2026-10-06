@@ -69,8 +69,13 @@ impl Dialect {
 ///
 /// The references stay as they are: they're resolved against the `$id`s,
 /// as in the plugin's own document.
-pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) {
-  translate(schema, dialect, uri, true);
+///
+/// A schema within that declares a dialect dprint doesn't know can't be
+/// translated, nor left as it is (a validator would read it in the root's
+/// dialect), so the whole schema is refused as [`UnknownDialect`], saying
+/// where. The schema is then partly translated and not to be used.
+pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) -> Result<(), UnknownDialect> {
+  translate(schema, dialect, uri, "")?;
   if let Value::Object(object) = schema {
     object.shift_remove("$id");
     let mut root = Map::new();
@@ -78,6 +83,15 @@ pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) {
     root.extend(std::mem::take(object));
     *object = root;
   }
+  Ok(())
+}
+
+/// A `$schema` of a draft dprint doesn't know, and where it is (the JSON
+/// pointer of the schema it's in; empty for the root).
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnknownDialect {
+  pub dialect: String,
+  pub pointer: String,
 }
 
 /// The keywords a draft before 2019-09 ignores next to a `$ref`: all but
@@ -124,15 +138,26 @@ const IGNORED_NEXT_TO_REF: &[&str] = &[
   "contentEncoding",
 ];
 
-fn translate(schema: &mut Value, dialect: Dialect, base: &Url, is_root: bool) {
+fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) -> Result<(), UnknownDialect> {
   let Value::Object(object) = schema else {
-    return;
+    return Ok(());
   };
-  // a `$schema` within switches the dialect for what's under it
-  let dialect = match object.shift_remove("$schema") {
-    Some(Value::String(uri)) if !is_root => Dialect::of(&uri).unwrap_or(dialect),
+  // a `$schema` within switches the dialect for what's under it (the
+  // root's was checked, and is the caller's `dialect`)
+  let dialect = match object.get("$schema") {
+    Some(Value::String(uri)) if !pointer.is_empty() => Dialect::of(uri).ok_or_else(|| UnknownDialect {
+      dialect: uri.clone(),
+      pointer: pointer.to_string(),
+    })?,
+    Some(other) if !pointer.is_empty() => {
+      return Err(UnknownDialect {
+        dialect: other.to_string(),
+        pointer: pointer.to_string(),
+      });
+    }
     _ => dialect,
   };
+  object.shift_remove("$schema");
   if dialect.ignores_next_to_ref() && object.contains_key("$ref") {
     object.retain(|key, _| !IGNORED_NEXT_TO_REF.contains(&key.as_str()));
   }
@@ -199,12 +224,13 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, is_root: bool) {
     }
   }
   for (keyword, value) in object.iter_mut() {
+    let keyword_pointer = pointer::append(pointer, keyword);
     match keyword.as_str() {
       // property names (or patterns, or definition names) to schemas
       "properties" | "patternProperties" | "definitions" | "$defs" | "dependentSchemas" => {
         if let Value::Object(schemas) = value {
-          for schema in schemas.values_mut() {
-            translate(schema, dialect, &base, false);
+          for (name, schema) in schemas.iter_mut() {
+            translate(schema, dialect, &base, &pointer::append(&keyword_pointer, name))?;
           }
         }
       }
@@ -225,17 +251,18 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, is_root: bool) {
       | "oneOf"
       | "not" => match value {
         Value::Array(schemas) => {
-          for schema in schemas {
-            translate(schema, dialect, &base, false);
+          for (index, schema) in schemas.iter_mut().enumerate() {
+            translate(schema, dialect, &base, &format!("{}/{}", keyword_pointer, index))?;
           }
         }
-        value => translate(value, dialect, &base, false),
+        value => translate(value, dialect, &base, &keyword_pointer)?,
       },
       // data (ex. `default`), or a keyword dprint doesn't know, which an
       // extension may use for anything (ex. an `x-tool` with a `$ref`)
       _ => {}
     }
   }
+  Ok(())
 }
 
 /// What a schema's `$id` says.
@@ -409,8 +436,43 @@ mod test {
   }
 
   fn translated(mut schema: Value, dialect: Dialect) -> Value {
-    to_2020_12(&mut schema, dialect, &uri());
+    to_2020_12(&mut schema, dialect, &uri()).unwrap();
     schema
+  }
+
+  #[test]
+  fn refuses_a_schema_within_of_a_draft_it_doesnt_know() {
+    // what its keywords mean can't be known, so it can't be translated, nor
+    // left for a validator to read in the root's dialect
+    let custom = json!({
+      "$id": "https://example.com/custom.json",
+      "$schema": "https://example.com/my-dialect",
+      "items": [{ "type": "string" }],
+      "x-opaque": { "$ref": "whatever" },
+    });
+    let mut schema = json!({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": { "custom": custom },
+      "properties": { "a": { "$ref": "https://example.com/custom.json" } },
+    });
+    assert_eq!(
+      to_2020_12(&mut schema, Dialect::Draft07, &uri()),
+      Err(UnknownDialect {
+        dialect: "https://example.com/my-dialect".to_string(),
+        pointer: "/definitions/custom".to_string(),
+      })
+    );
+    // nothing of it was touched
+    assert_eq!(schema["definitions"]["custom"], custom);
+    // not even for a `$schema` that isn't a string
+    let mut schema = json!({ "properties": { "a": { "$schema": 7 } } });
+    assert_eq!(to_2020_12(&mut schema, Dialect::Draft07, &uri()).unwrap_err().pointer, "/properties/a");
+    // while one of a draft it knows is translated as that draft says
+    let schema = translated(
+      json!({ "$defs": { "old": { "$schema": "http://json-schema.org/draft-04/schema#", "id": "https://example.com/old.json", "minimum": 1, "exclusiveMinimum": true } } }),
+      Dialect::Draft2020_12,
+    );
+    assert_eq!(schema["$defs"]["old"], json!({ "$id": "https://example.com/old.json", "exclusiveMinimum": 1 }));
   }
 
   #[test]

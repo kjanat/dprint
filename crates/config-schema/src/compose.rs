@@ -13,6 +13,7 @@ use url::Url;
 use crate::pointer;
 use crate::translate::Dialect;
 use crate::translate::ResourceIndex;
+use crate::translate::UnknownDialect;
 use crate::translate::to_2020_12;
 
 /// The schema of a plugin's configuration.
@@ -98,15 +99,16 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     let mut table_properties = plugin_table_properties.clone();
     let resource = match Resource::of(plugin.schema, plugin.url.as_ref(), &plugin.config_key) {
       Ok(resource) => resource,
-      Err(UnknownDialect(dialect)) => {
+      Err(UnknownDialect { dialect, pointer }) => {
+        let at = if pointer.is_empty() { String::new() } else { format!(" (at {})", pointer) };
         match &plugin.url {
           Some(url) => {
             warnings.push(format!(
               concat!(
-                "The configuration schema of the {} is for {}, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
+                "The configuration schema of the {} is for {}{}, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
                 "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
               ),
-              plugin_display, dialect
+              plugin_display, dialect, at
             ));
             object_entry(&mut root, "properties").insert(
               plugin.config_key,
@@ -114,8 +116,8 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
             );
           }
           None => warnings.push(format!(
-            "The configuration schema of the {} plugin is for {}, a JSON schema draft dprint doesn't know, so it's left out.",
-            plugin.config_key, dialect
+            "The configuration schema of the {} plugin is for {}{}, a JSON schema draft dprint doesn't know, so it's left out.",
+            plugin.config_key, dialect, at
           )),
         }
         continue;
@@ -226,15 +228,20 @@ struct Resource {
   index: ResourceIndex,
 }
 
-/// A schema of a draft dprint doesn't know.
-struct UnknownDialect(String);
-
 impl Resource {
   fn of(schema: Value, url: Option<&Url>, config_key: &str) -> Result<Self, UnknownDialect> {
     let dialect = match schema.get("$schema") {
       None => Dialect::DEFAULT,
-      Some(Value::String(uri)) => Dialect::of(uri).ok_or_else(|| UnknownDialect(uri.clone()))?,
-      Some(other) => return Err(UnknownDialect(other.to_string())),
+      Some(Value::String(uri)) => Dialect::of(uri).ok_or_else(|| UnknownDialect {
+        dialect: uri.clone(),
+        pointer: String::new(),
+      })?,
+      Some(other) => {
+        return Err(UnknownDialect {
+          dialect: other.to_string(),
+          pointer: String::new(),
+        });
+      }
     };
     // a schema built into dprint has nothing relative references could be to
     let mut from = url
@@ -255,7 +262,7 @@ impl Resource {
       Value::Bool(true) => serde_json::json!({}),
       schema => schema,
     };
-    to_2020_12(&mut schema, dialect, &uri);
+    to_2020_12(&mut schema, dialect, &uri)?;
     let index = ResourceIndex::of(&schema, &uri);
     Ok(Self { schema, uri, index })
   }
@@ -1214,5 +1221,35 @@ mod test {
     let schema = build(json!({ "$schema": "https://example.com/my-dialect" }), None);
     assert!(schema.schema["properties"].get("test").is_none());
     assert_eq!(schema.warnings.len(), 1);
+
+    // a schema within of such a draft refuses the whole schema the same way:
+    // it can't be translated, nor read in the root's dialect
+    let schema = build(
+      json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": { "a": { "$ref": "https://example.com/custom.json" }, "b": { "type": "string" } },
+        "definitions": {
+          "custom": {
+            "$id": "https://example.com/custom.json",
+            "$schema": "https://example.com/my-dialect",
+            "items": [{ "type": "string" }],
+            "x-opaque": { "$ref": "whatever" },
+          },
+        },
+      }),
+      Some(URL),
+    );
+    assert_eq!(schema.schema["properties"]["test"], table_schema("test", URL, false));
+    assert!(schema.schema["$defs"].get("plugin:test").is_none());
+    assert_eq!(
+      schema.warnings,
+      vec![format!(
+        concat!(
+          "The configuration schema of the test plugin ({}) is for https://example.com/my-dialect (at /definitions/custom), a JSON schema draft dprint doesn't know, ",
+          "so it's referred to by its url instead. Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
+        ),
+        URL
+      )]
+    );
   }
 }
