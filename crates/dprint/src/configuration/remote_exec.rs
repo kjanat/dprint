@@ -27,7 +27,9 @@
 //! runs by a relative path (ex. `./formatter`) is, so a remote command that
 //! sets both only runs with `"playWithFire": true` as well. So does one that
 //! sets it and runs a program by name while the PATH has a relative entry
-//! (ex. `.`), which is searched in that directory. So does one with
+//! (ex. `.`), which is searched in that directory. On Windows, so does one
+//! whose program is a batch file (`.cmd`, `.bat`, ex. an npm shim), which runs
+//! through `cmd.exe`, which arguments can't be passed to safely. So does one with
 //! `cacheKeyFiles`: the exec plugin reads those files on this machine (in its
 //! `cwd`) to key its cache, and a list of programs allows running them, not
 //! reading files.
@@ -41,6 +43,7 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -151,19 +154,44 @@ struct IgnoredCommands(Vec<IgnoredSourceCommands>);
 struct IgnoredSourceCommands {
   source: String,
   count: usize,
-  /// The programs they run that aren't allowed, without duplicates.
+  reasons: IgnoredReasons,
+}
+
+/// Why remote commands were ignored under a list of programs, each without
+/// duplicates.
+#[derive(Default)]
+struct IgnoredReasons {
+  /// The programs they run that aren't allowed.
   programs: Vec<String>,
-  /// Their properties the exec plugin 0.7.3 doesn't have, without duplicates.
+  /// Their properties the exec plugin 0.7.3 doesn't have.
   properties: Vec<String>,
-  /// The programs they run by a relative path in a `cwd` of their own,
-  /// without duplicates.
+  /// The programs they run by a relative path in a `cwd` of their own.
   relative_programs: Vec<String>,
   /// The programs they run by name in a `cwd` of their own, which the PATH's
-  /// relative entries would have searched, without duplicates.
+  /// relative entries would have searched.
   named_programs: Vec<String>,
-  /// The files they read to key their cache (`cacheKeyFiles`), without
-  /// duplicates.
+  /// The batch files they run (Windows).
+  batch_files: Vec<String>,
+  /// The files they read to key their cache (`cacheKeyFiles`).
   cache_key_files: Vec<String>,
+}
+
+impl IgnoredReasons {
+  fn merge(&mut self, other: IgnoredReasons) {
+    fn add(into: &mut Vec<String>, from: Vec<String>) {
+      for item in from {
+        if !into.contains(&item) {
+          into.push(item);
+        }
+      }
+    }
+    add(&mut self.programs, other.programs);
+    add(&mut self.properties, other.properties);
+    add(&mut self.relative_programs, other.relative_programs);
+    add(&mut self.named_programs, other.named_programs);
+    add(&mut self.batch_files, other.batch_files);
+    add(&mut self.cache_key_files, other.cache_key_files);
+  }
 }
 
 /// The remote properties that may decide what runs a policy ignored, as the
@@ -184,58 +212,21 @@ impl IgnoredProperties {
 }
 
 impl IgnoredCommands {
-  fn add(
-    &mut self,
-    source: &str,
-    count: usize,
-    programs: impl IntoIterator<Item = String>,
-    properties: impl IntoIterator<Item = String>,
-    relative_programs: impl IntoIterator<Item = String>,
-    named_programs: impl IntoIterator<Item = String>,
-    cache_key_files: impl IntoIterator<Item = String>,
-  ) {
+  fn add(&mut self, source: &str, count: usize, reasons: IgnoredReasons) {
     let index = match self.0.iter().position(|ignored| ignored.source == source) {
       Some(index) => index,
       None => {
         self.0.push(IgnoredSourceCommands {
           source: source.to_string(),
           count: 0,
-          programs: Vec::new(),
-          properties: Vec::new(),
-          relative_programs: Vec::new(),
-          named_programs: Vec::new(),
-          cache_key_files: Vec::new(),
+          reasons: IgnoredReasons::default(),
         });
         self.0.len() - 1
       }
     };
     let ignored = &mut self.0[index];
     ignored.count += count;
-    for program in programs {
-      if !ignored.programs.contains(&program) {
-        ignored.programs.push(program);
-      }
-    }
-    for property in properties {
-      if !ignored.properties.contains(&property) {
-        ignored.properties.push(property);
-      }
-    }
-    for program in relative_programs {
-      if !ignored.relative_programs.contains(&program) {
-        ignored.relative_programs.push(program);
-      }
-    }
-    for program in named_programs {
-      if !ignored.named_programs.contains(&program) {
-        ignored.named_programs.push(program);
-      }
-    }
-    for file in cache_key_files {
-      if !ignored.cache_key_files.contains(&file) {
-        ignored.cache_key_files.push(file);
-      }
-    }
+    ignored.reasons.merge(reasons);
   }
 }
 
@@ -321,7 +312,16 @@ impl RemoteExec {
   fn apply_policy(self, config_map: &mut ConfigMap, policy: &Policy, environment: &impl Environment, notes: bool) -> Option<PluginSourceReference> {
     let mut ignored_commands = IgnoredCommands::default();
     let mut ignored_properties = IgnoredProperties::default();
-    let lookup = ProgramLookup::new(environment);
+    // the working directory commands without one of their own run in: the
+    // local configuration's (a remote one is only used with "playWithFire": true)
+    let root_cwd = match config_map.get(EXEC_CONFIG_KEY) {
+      Some(ConfigMapValue::PluginConfig(exec_config)) => match exec_config.properties.get(CWD_KEY) {
+        Some(ConfigKeyValue::String(cwd)) => Some(cwd.as_str()),
+        _ => None,
+      },
+      _ => None,
+    };
+    let lookup = ProgramLookup::new(environment, root_cwd);
 
     if let Some(remote) = self.commands
       && let Some(commands) = allowed_commands_value(remote.value, policy, &remote.source, &mut ignored_commands, &lookup)
@@ -498,43 +498,47 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
   for ignored in ignored_commands.0 {
     match policy {
       Policy::Programs(_) => {
+        let why = &ignored.reasons;
         let mut reasons = Vec::new();
-        if !ignored.programs.is_empty() {
-          reasons.push(format!(
-            "run programs not listed in \"{}\": {}",
-            PLAY_WITH_FIRE_KEY,
-            ignored.programs.join(", ")
-          ));
+        if !why.programs.is_empty() {
+          reasons.push(format!("run programs not listed in \"{}\": {}", PLAY_WITH_FIRE_KEY, why.programs.join(", ")));
         }
-        if !ignored.properties.is_empty() {
+        if !why.properties.is_empty() {
           reasons.push(format!(
             "have properties the exec plugin 0.7.3 doesn't, which only run with \"{}\": true: {}",
             PLAY_WITH_FIRE_KEY,
-            ignored.properties.join(", ")
+            why.properties.join(", ")
           ));
         }
-        if !ignored.relative_programs.is_empty() {
+        if !why.relative_programs.is_empty() {
           reasons.push(format!(
             "run a program by a relative path in a \"{}\" they set, which decides what that path is, so only with \"{}\": true: {}",
             CWD_KEY,
             PLAY_WITH_FIRE_KEY,
-            ignored.relative_programs.join(", ")
+            why.relative_programs.join(", ")
           ));
         }
-        if !ignored.named_programs.is_empty() {
+        if !why.named_programs.is_empty() {
           reasons.push(format!(
             "run a program by name in a \"{}\" they set, which a relative entry of the PATH (ex. \".\") is searched in, so only with \"{}\": true: {}",
             CWD_KEY,
             PLAY_WITH_FIRE_KEY,
-            ignored.named_programs.join(", ")
+            why.named_programs.join(", ")
           ));
         }
-        if !ignored.cache_key_files.is_empty() {
+        if !why.batch_files.is_empty() {
+          reasons.push(format!(
+            "run a batch file, which runs through cmd.exe, which can't be given arguments safely, so only with \"{}\": true: {}",
+            PLAY_WITH_FIRE_KEY,
+            why.batch_files.join(", ")
+          ));
+        }
+        if !why.cache_key_files.is_empty() {
           reasons.push(format!(
             "read files on this machine to key their cache (\"{}\"), which only \"{}\": true allows: {}",
             CACHE_KEY_FILES_KEY,
             PLAY_WITH_FIRE_KEY,
-            ignored.cache_key_files.join(", ")
+            why.cache_key_files.join(", ")
           ));
         }
         log_warn!(
@@ -685,7 +689,7 @@ fn allowed_commands_value(
       (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
     }
     (_, Policy::None) => {
-      ignored.add(source, 1, [], [], [], [], []);
+      ignored.add(source, 1, IgnoredReasons::default());
       None
     }
     (commands, _) => Some(commands),
@@ -703,7 +707,7 @@ fn allowed_commands(
   match policy {
     Policy::None => {
       if !commands.is_empty() {
-        ignored.add(source, commands.len(), [], [], [], [], []);
+        ignored.add(source, commands.len(), IgnoredReasons::default());
       }
       Vec::new()
     }
@@ -721,16 +725,23 @@ fn allowed_commands(
         .iter()
         .flat_map(|command| programs_named_in_own_cwd(command, lookup))
         .collect::<Vec<_>>();
+      let batch_files = not_allowed
+        .iter()
+        .flat_map(|command| programs_in_batch_files(command, lookup))
+        .collect::<Vec<_>>();
       let cache_key_files = not_allowed.iter().flat_map(command_cache_key_files).collect::<Vec<_>>();
       if !not_allowed.is_empty() {
         ignored.add(
           source,
           not_allowed.len(),
-          not_allowed_programs,
-          unknown_properties,
-          relative_programs,
-          named_programs,
-          cache_key_files,
+          IgnoredReasons {
+            programs: not_allowed_programs,
+            properties: unknown_properties,
+            relative_programs,
+            named_programs,
+            batch_files,
+            cache_key_files,
+          },
         );
       }
       allowed
@@ -789,6 +800,7 @@ fn command_allowed(command: &ConfigKeyValue, programs: &[String], lookup: &Progr
     && unknown_command_keys(command).is_empty()
     && programs_relative_to_own_cwd(command).is_empty()
     && programs_named_in_own_cwd(command, lookup).is_empty()
+    && programs_in_batch_files(command, lookup).is_empty()
     && command_cache_key_files(command).is_empty()
     && command_programs(command).iter().all(|program| is_allowed(program, programs))
 }
@@ -816,23 +828,69 @@ fn programs_relative_to_own_cwd(command: &ConfigKeyValue) -> Vec<String> {
 
 /// How this machine finds the program a command names, as far as that lets a
 /// remote command's own working directory decide what it is.
+#[cfg_attr(not(windows), allow(dead_code))]
 struct ProgramLookup {
   /// Whether a program given by name is searched for in the command's working
   /// directory too: a relative entry of the PATH (ex. `.`, `bin`, or an empty
   /// one) is relative to it.
   names_in_cwd: bool,
+  path: Option<OsString>,
+  path_ext: Option<OsString>,
+  /// The working directory of a command that doesn't set its own.
+  cwd: PathBuf,
 }
 
 impl ProgramLookup {
-  fn new(environment: &impl Environment) -> Self {
-    Self::from_path(environment.env_var("PATH"))
+  fn new(environment: &impl Environment, root_cwd: Option<&str>) -> Self {
+    Self::from_env(
+      environment.env_var("PATH"),
+      environment.env_var("PATHEXT"),
+      environment.cwd().join(root_cwd.unwrap_or("")),
+    )
   }
 
-  fn from_path(path: Option<OsString>) -> Self {
+  fn from_env(path: Option<OsString>, path_ext: Option<OsString>, cwd: PathBuf) -> Self {
     Self {
-      names_in_cwd: path.is_some_and(|path| std::env::split_paths(&path).any(|entry| !entry.is_absolute())),
+      names_in_cwd: path.as_ref().is_some_and(|path| std::env::split_paths(path).any(|entry| !entry.is_absolute())),
+      path,
+      path_ext,
+      cwd,
     }
   }
+
+  /// The batch file (`.cmd` or `.bat`) a program is or is found to be on
+  /// Windows, the way the exec plugin finds it. A batch file runs through
+  /// `cmd.exe`, which arguments can't be passed to safely, so a list of
+  /// programs doesn't vouch for one.
+  fn batch_file(&self, program: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+      let is_batch = |path: &Path| {
+        path
+          .extension()
+          .and_then(|extension| extension.to_str())
+          .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat"))
+      };
+      if is_batch(Path::new(program)) {
+        return Some(program.to_string());
+      }
+      // commands run on the real system, so this looks at the real file system
+      #[allow(clippy::disallowed_methods)]
+      let found = crate::plugins::find_with_path_ext(program, &self.cwd, self.path.as_deref(), self.path_ext.as_deref(), &|path| path.is_file())?;
+      is_batch(&found).then(|| found.display().to_string())
+    }
+    #[cfg(not(windows))]
+    {
+      let _ = program;
+      None
+    }
+  }
+}
+
+/// The programs a command runs that are batch files on Windows (see
+/// [`ProgramLookup::batch_file`]).
+fn programs_in_batch_files(command: &ConfigKeyValue, lookup: &ProgramLookup) -> Vec<String> {
+  command_programs(command).iter().filter_map(|program| lookup.batch_file(program)).collect()
 }
 
 /// The programs a command runs by name (ex. `tombi`) while setting the
@@ -902,7 +960,7 @@ mod test {
 
   #[test]
   fn tells_whether_a_name_is_searched_for_in_the_working_directory() {
-    let names_in_cwd = |path: Option<&str>| ProgramLookup::from_path(path.map(Into::into)).names_in_cwd;
+    let names_in_cwd = |path: Option<&str>| ProgramLookup::from_env(path.map(Into::into), None, std::path::PathBuf::new()).names_in_cwd;
     assert!(!names_in_cwd(None));
     if cfg!(windows) {
       assert!(!names_in_cwd(Some("C:\\bin;C:\\tools")));
@@ -927,6 +985,7 @@ mod test {
   /// directory a command sets decides what program a name runs.
   #[cfg(unix)]
   #[test]
+  #[allow(clippy::disallowed_methods)] // runs a real command against real files
   fn a_relative_path_entry_finds_a_name_in_the_working_directory() {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;

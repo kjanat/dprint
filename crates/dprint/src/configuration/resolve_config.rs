@@ -3410,6 +3410,53 @@ mod tests {
       assert_eq!(result.messages, Vec::<String>::new());
     }
 
+    /// An allowed name may be a batch file (ex. an npm shim), which runs
+    /// through cmd.exe, which the remote arguments would reach unsafely.
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::disallowed_methods)] // the program is looked for on the real file system
+    fn doesnt_let_a_remote_command_run_a_batch_file_under_a_program_list() {
+      let dir = tempfile::tempdir().unwrap();
+      let shim = dir.path().join("prettier.cmd");
+      std::fs::write(&shim, "@echo off\r\necho %*\r\n").unwrap();
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "prettier --stdin-filepath \"x\" & calc", "exts": ["js"] },
+            { "command": "prettier.cmd --stdin-filepath {{file_path}}", "exts": ["ts"] },
+            { "command": "tombi format", "exts": ["toml"] }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        let environment = TestEnvironment::new();
+        environment.set_env_var("PATH", Some(&dir.path().display().to_string()));
+        environment.set_env_var("PATHEXT", Some(".COM;.EXE;.BAT;.CMD"));
+        resolve_with_remote_files_in(
+          environment,
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          &[(REMOTE_URL, remote)],
+          "{}",
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["prettier", "prettier.cmd", "tombi"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["tombi format".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![format!(
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run a batch file, ",
+            "which runs through cmd.exe, which can't be given arguments safely, so only with \"playWithFire\": true: {}, prettier.cmd"
+          ),
+          shim.display()
+        )]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands.len(), 3);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
     #[test]
     fn keeps_how_long_a_remote_command_may_run_local() {
       // a remote command (ex. an allowed program in a server mode) would

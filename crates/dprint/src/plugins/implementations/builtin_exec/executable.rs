@@ -27,8 +27,11 @@ pub fn resolve_executable(executable: &str, cwd: &Path) -> PathBuf {
   PathBuf::from(executable)
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn find_with_path_ext(
+/// Finds the file a command's executable refers to the way the Windows shell
+/// does (see `resolve_executable`), with the PATH, PATHEXT and working
+/// directory given: a name is looked for on the PATH, a path from the working
+/// directory.
+pub fn find_with_path_ext(
   executable: &str,
   cwd: &Path,
   path_var: Option<&OsStr>,
