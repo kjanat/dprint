@@ -25,7 +25,9 @@
 //! the commands is that version, and otherwise remote commands only run with
 //! `"playWithFire": true`. A command's own `cwd` decides what a program it
 //! runs by a relative path (ex. `./formatter`) is, so a remote command that
-//! sets both only runs with `"playWithFire": true` as well. So does one with
+//! sets both only runs with `"playWithFire": true` as well. So does one that
+//! sets it and runs a program by name while the PATH has a relative entry
+//! (ex. `.`), which is searched in that directory. So does one with
 //! `cacheKeyFiles`: the exec plugin reads those files on this machine (in its
 //! `cwd`) to key its cache, and a list of programs allows running them, not
 //! reading files.
@@ -37,6 +39,7 @@
 //! [`RemoteExecProvenance`]), so the inherited exec configuration is made again
 //! with it, rather than what was allowed being looked for in what was merged.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use anyhow::Result;
@@ -155,6 +158,9 @@ struct IgnoredSourceCommands {
   /// The programs they run by a relative path in a `cwd` of their own,
   /// without duplicates.
   relative_programs: Vec<String>,
+  /// The programs they run by name in a `cwd` of their own, which the PATH's
+  /// relative entries would have searched, without duplicates.
+  named_programs: Vec<String>,
   /// The files they read to key their cache (`cacheKeyFiles`), without
   /// duplicates.
   cache_key_files: Vec<String>,
@@ -185,6 +191,7 @@ impl IgnoredCommands {
     programs: impl IntoIterator<Item = String>,
     properties: impl IntoIterator<Item = String>,
     relative_programs: impl IntoIterator<Item = String>,
+    named_programs: impl IntoIterator<Item = String>,
     cache_key_files: impl IntoIterator<Item = String>,
   ) {
     let index = match self.0.iter().position(|ignored| ignored.source == source) {
@@ -196,6 +203,7 @@ impl IgnoredCommands {
           programs: Vec::new(),
           properties: Vec::new(),
           relative_programs: Vec::new(),
+          named_programs: Vec::new(),
           cache_key_files: Vec::new(),
         });
         self.0.len() - 1
@@ -216,6 +224,11 @@ impl IgnoredCommands {
     for program in relative_programs {
       if !ignored.relative_programs.contains(&program) {
         ignored.relative_programs.push(program);
+      }
+    }
+    for program in named_programs {
+      if !ignored.named_programs.contains(&program) {
+        ignored.named_programs.push(program);
       }
     }
     for file in cache_key_files {
@@ -308,9 +321,10 @@ impl RemoteExec {
   fn apply_policy(self, config_map: &mut ConfigMap, policy: &Policy, environment: &impl Environment, notes: bool) -> Option<PluginSourceReference> {
     let mut ignored_commands = IgnoredCommands::default();
     let mut ignored_properties = IgnoredProperties::default();
+    let lookup = ProgramLookup::new(environment);
 
     if let Some(remote) = self.commands
-      && let Some(commands) = allowed_commands_value(remote.value, policy, &remote.source, &mut ignored_commands)
+      && let Some(commands) = allowed_commands_value(remote.value, policy, &remote.source, &mut ignored_commands, &lookup)
       && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
     {
       // these have precedence over any commands of lower precedence local configuration
@@ -331,7 +345,7 @@ impl RemoteExec {
       let overrides = remote
         .overrides
         .into_iter()
-        .filter_map(|override_config| allowed_override(override_config, policy, &remote.source, &mut ignored_commands, &mut ignored_properties))
+        .filter_map(|override_config| allowed_override(override_config, policy, &remote.source, &mut ignored_commands, &mut ignored_properties, &lookup))
         .collect::<Vec<_>>();
       if overrides.is_empty() {
         continue;
@@ -507,6 +521,14 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
             ignored.relative_programs.join(", ")
           ));
         }
+        if !ignored.named_programs.is_empty() {
+          reasons.push(format!(
+            "run a program by name in a \"{}\" they set, which a relative entry of the PATH (ex. \".\") is searched in, so only with \"{}\": true: {}",
+            CWD_KEY,
+            PLAY_WITH_FIRE_KEY,
+            ignored.named_programs.join(", ")
+          ));
+        }
         if !ignored.cache_key_files.is_empty() {
           reasons.push(format!(
             "read files on this machine to key their cache (\"{}\"), which only \"{}\": true allows: {}",
@@ -622,9 +644,10 @@ fn allowed_override(
   source: &str,
   ignored_commands: &mut IgnoredCommands,
   ignored_properties: &mut IgnoredProperties,
+  lookup: &ProgramLookup,
 ) -> Option<RawPluginConfigOverride> {
   if let Some(commands) = override_config.properties.shift_remove(COMMANDS_KEY)
-    && let Some(commands) = allowed_commands_value(commands, policy, source, ignored_commands)
+    && let Some(commands) = allowed_commands_value(commands, policy, source, ignored_commands, lookup)
   {
     override_config.properties.insert(COMMANDS_KEY.to_string(), commands);
   }
@@ -649,14 +672,20 @@ fn is_unrestricted(key: &str) -> bool {
 /// The remote `commands` value the policy allows, if any. A value that isn't
 /// an array runs nothing, so unless remote commands are ignored altogether, it
 /// stays for the exec plugin to report what's wrong with it.
-fn allowed_commands_value(commands: ConfigKeyValue, policy: &Policy, source: &str, ignored: &mut IgnoredCommands) -> Option<ConfigKeyValue> {
+fn allowed_commands_value(
+  commands: ConfigKeyValue,
+  policy: &Policy,
+  source: &str,
+  ignored: &mut IgnoredCommands,
+  lookup: &ProgramLookup,
+) -> Option<ConfigKeyValue> {
   match (commands, policy) {
     (ConfigKeyValue::Array(commands), _) => {
-      let commands = allowed_commands(commands, policy, source, ignored);
+      let commands = allowed_commands(commands, policy, source, ignored, lookup);
       (!commands.is_empty()).then_some(ConfigKeyValue::Array(commands))
     }
     (_, Policy::None) => {
-      ignored.add(source, 1, [], [], [], []);
+      ignored.add(source, 1, [], [], [], [], []);
       None
     }
     (commands, _) => Some(commands),
@@ -664,17 +693,23 @@ fn allowed_commands_value(commands: ConfigKeyValue, policy: &Policy, source: &st
 }
 
 /// The remote commands the policy allows. The others are added to `ignored`.
-fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str, ignored: &mut IgnoredCommands) -> Vec<ConfigKeyValue> {
+fn allowed_commands(
+  commands: Vec<ConfigKeyValue>,
+  policy: &Policy,
+  source: &str,
+  ignored: &mut IgnoredCommands,
+  lookup: &ProgramLookup,
+) -> Vec<ConfigKeyValue> {
   match policy {
     Policy::None => {
       if !commands.is_empty() {
-        ignored.add(source, commands.len(), [], [], [], []);
+        ignored.add(source, commands.len(), [], [], [], [], []);
       }
       Vec::new()
     }
     Policy::AnyProgram => commands,
     Policy::Programs(programs) => {
-      let (allowed, not_allowed): (Vec<_>, Vec<_>) = commands.into_iter().partition(|command| command_allowed(command, programs));
+      let (allowed, not_allowed): (Vec<_>, Vec<_>) = commands.into_iter().partition(|command| command_allowed(command, programs, lookup));
       let not_allowed_programs = not_allowed
         .iter()
         .flat_map(command_programs)
@@ -682,6 +717,10 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
         .collect::<Vec<_>>();
       let unknown_properties = not_allowed.iter().flat_map(unknown_command_keys).collect::<Vec<_>>();
       let relative_programs = not_allowed.iter().flat_map(programs_relative_to_own_cwd).collect::<Vec<_>>();
+      let named_programs = not_allowed
+        .iter()
+        .flat_map(|command| programs_named_in_own_cwd(command, lookup))
+        .collect::<Vec<_>>();
       let cache_key_files = not_allowed.iter().flat_map(command_cache_key_files).collect::<Vec<_>>();
       if !not_allowed.is_empty() {
         ignored.add(
@@ -690,6 +729,7 @@ fn allowed_commands(commands: Vec<ConfigKeyValue>, policy: &Policy, source: &str
           not_allowed_programs,
           unknown_properties,
           relative_programs,
+          named_programs,
           cache_key_files,
         );
       }
@@ -736,17 +776,19 @@ fn command_programs(command: &ConfigKeyValue) -> Vec<String> {
 }
 
 /// Whether a remote command only runs programs the list allows.
-fn command_allowed(command: &ConfigKeyValue, programs: &[String]) -> bool {
+fn command_allowed(command: &ConfigKeyValue, programs: &[String], lookup: &ProgramLookup) -> bool {
   let ConfigKeyValue::Object(object) = command else {
     return false;
   };
   // a command must say what it runs to be checked, other properties than
   // the exec plugin 0.7.3's might change what it runs, its own working
-  // directory decides what a program it runs by a relative path is, and
-  // reading files isn't running a program
+  // directory decides what a program it runs by a relative path (or, with a
+  // relative PATH entry, by name) is, and reading files isn't running a
+  // program
   matches!(object.get("command"), Some(ConfigKeyValue::String(_)))
     && unknown_command_keys(command).is_empty()
     && programs_relative_to_own_cwd(command).is_empty()
+    && programs_named_in_own_cwd(command, lookup).is_empty()
     && command_cache_key_files(command).is_empty()
     && command_programs(command).iter().all(|program| is_allowed(program, programs))
 }
@@ -770,6 +812,47 @@ fn programs_relative_to_own_cwd(command: &ConfigKeyValue) -> Vec<String> {
     return Vec::new();
   }
   command_programs(command).into_iter().filter(|program| is_relative_path(program)).collect()
+}
+
+/// How this machine finds the program a command names, as far as that lets a
+/// remote command's own working directory decide what it is.
+struct ProgramLookup {
+  /// Whether a program given by name is searched for in the command's working
+  /// directory too: a relative entry of the PATH (ex. `.`, `bin`, or an empty
+  /// one) is relative to it.
+  names_in_cwd: bool,
+}
+
+impl ProgramLookup {
+  fn new(environment: &impl Environment) -> Self {
+    Self::from_path(environment.env_var("PATH"))
+  }
+
+  fn from_path(path: Option<OsString>) -> Self {
+    Self {
+      names_in_cwd: path.is_some_and(|path| std::env::split_paths(&path).any(|entry| !entry.is_absolute())),
+    }
+  }
+}
+
+/// The programs a command runs by name (ex. `tombi`) while setting the
+/// working directory (`cwd`), when the PATH has a relative entry, which is
+/// searched in that directory: then the command would decide what file it is.
+fn programs_named_in_own_cwd(command: &ConfigKeyValue, lookup: &ProgramLookup) -> Vec<String> {
+  let ConfigKeyValue::Object(object) = command else {
+    return Vec::new();
+  };
+  if !lookup.names_in_cwd || !object.contains_key(CWD_KEY) {
+    return Vec::new();
+  }
+  command_programs(command).into_iter().filter(|program| is_name(program)).collect()
+}
+
+/// Whether a program is a name (ex. `tombi`), found on the PATH, rather than
+/// a path.
+fn is_name(program: &str) -> bool {
+  let path = Path::new(program);
+  !path.is_absolute() && path.components().count() == 1
 }
 
 /// The files a command has the exec plugin read on this machine (its
@@ -813,7 +896,58 @@ fn is_allowed(program: &str, programs: &[String]) -> bool {
 
 #[cfg(test)]
 mod test {
+  use super::ProgramLookup;
+  use super::is_name;
   use super::is_relative_path;
+
+  #[test]
+  fn tells_whether_a_name_is_searched_for_in_the_working_directory() {
+    let names_in_cwd = |path: Option<&str>| ProgramLookup::from_path(path.map(Into::into)).names_in_cwd;
+    assert!(!names_in_cwd(None));
+    if cfg!(windows) {
+      assert!(!names_in_cwd(Some("C:\\bin;C:\\tools")));
+      assert!(names_in_cwd(Some("C:\\bin;.")));
+      assert!(names_in_cwd(Some("C:\\bin;bin")));
+      assert!(names_in_cwd(Some("C:\\bin;")));
+    } else {
+      assert!(!names_in_cwd(Some("/usr/bin:/usr/local/bin")));
+      assert!(names_in_cwd(Some("/usr/bin:.")));
+      assert!(names_in_cwd(Some("/usr/bin:bin")));
+      // an empty entry is the working directory too
+      assert!(names_in_cwd(Some("/usr/bin:")));
+      assert!(names_in_cwd(Some(":/usr/bin")));
+    }
+    assert!(is_name("tombi"));
+    assert!(is_name("tombi.cmd"));
+    assert!(!is_name("./tombi"));
+    assert!(!is_name("/usr/bin/tombi"));
+  }
+
+  /// What the policy is for: with a relative entry on the PATH, the working
+  /// directory a command sets decides what program a name runs.
+  #[cfg(unix)]
+  #[test]
+  fn a_relative_path_entry_finds_a_name_in_the_working_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["installed", "chosen"] {
+      let bin = dir.path().join(name);
+      std::fs::create_dir(&bin).unwrap();
+      let script = bin.join("tombi");
+      std::fs::write(&script, format!("#!/bin/sh\necho {}\n", name)).unwrap();
+      std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let run_with_path = |path: String| {
+      let output = Command::new("tombi").env("PATH", path).current_dir(dir.path().join("chosen")).output().unwrap();
+      String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let installed = dir.path().join("installed").display().to_string();
+    assert_eq!(run_with_path(installed.clone()), "installed");
+    assert_eq!(run_with_path(format!(".:{}", installed)), "chosen");
+    assert_eq!(run_with_path(format!(":{}", installed)), "chosen");
+  }
 
   #[test]
   fn tells_a_relative_path_from_a_name_and_an_absolute_path() {

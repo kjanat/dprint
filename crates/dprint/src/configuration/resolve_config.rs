@@ -2597,7 +2597,15 @@ mod tests {
     }
 
     fn resolve_with_remote_files(local_config: &str, remote_files: &[(&str, &str)], base_config: &str) -> Result<Resolved, String> {
-      let environment = TestEnvironment::new();
+      resolve_with_remote_files_in(TestEnvironment::new(), local_config, remote_files, base_config)
+    }
+
+    fn resolve_with_remote_files_in(
+      environment: TestEnvironment,
+      local_config: &str,
+      remote_files: &[(&str, &str)],
+      base_config: &str,
+    ) -> Result<Resolved, String> {
       environment.write_file("/dprint.json", local_config).unwrap();
       environment.write_file("/base.json", base_config).unwrap();
       for (url, text) in remote_files {
@@ -3345,6 +3353,63 @@ mod tests {
       assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(); 4]);
       assert_eq!(result.messages, Vec::<String>::new());
     }
+    #[test]
+    fn doesnt_let_a_remote_commands_cwd_choose_a_program_by_name_through_a_relative_path_entry() {
+      // a relative entry on the PATH (ex. ".") is searched in the command's
+      // working directory, so a name is no safer than a relative path then
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "tombi format", "cwd": "/remote/chosen", "exts": ["toml"] },
+            { "command": "tombi format", "exts": ["json"] },
+            { "command": "/usr/bin/tombi format", "cwd": "/remote/chosen", "exts": ["yaml"] }
+          ]
+        }
+      }"#;
+      let resolve_with_path = |play_with_fire: &str, path: &str| {
+        let environment = TestEnvironment::new();
+        environment.set_env_var("PATH", Some(path));
+        resolve_with_remote_files_in(
+          environment,
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          &[(REMOTE_URL, remote)],
+          "{}",
+        )
+        .unwrap()
+      };
+      let (absolute, relative) = if cfg!(windows) {
+        ("C:\\bin;C:\\tools", "C:\\bin;.")
+      } else {
+        ("/usr/bin:/usr/local/bin", "/usr/bin:.")
+      };
+      // with an absolute PATH, a name is found the same wherever a command runs
+      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, absolute);
+      assert_eq!(
+        result.exec.properties.commands,
+        vec!["tombi format".to_string(), "tombi format".to_string(), "/usr/bin/tombi format".to_string()]
+      );
+      assert_eq!(result.messages, Vec::<String>::new());
+      // with a relative entry, only where the command doesn't choose the directory
+      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, relative);
+      assert_eq!(
+        result.exec.properties.commands,
+        vec!["tombi format".to_string(), "/usr/bin/tombi format".to_string()]
+      );
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run a program by name ",
+            "in a \"cwd\" they set, which a relative entry of the PATH (ex. \".\") is searched in, so only with \"playWithFire\": true: tombi"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_with_path("true", relative);
+      assert_eq!(result.exec.properties.commands.len(), 3);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
     #[test]
     fn keeps_how_long_a_remote_command_may_run_local() {
       // a remote command (ex. an allowed program in a server mode) would
