@@ -13,6 +13,7 @@ mod executable;
 #[cfg(windows)]
 pub use executable::find_with_path_ext;
 mod handler;
+pub mod schema;
 mod template;
 
 use crate::environment::Environment;
@@ -25,10 +26,6 @@ use super::in_process::InProcessPlugin;
 pub const EXEC_PLUGIN_NAME: &str = "dprint-plugin-exec";
 /// The dprint-plugin-exec release this was built from.
 pub const EXEC_PLUGIN_VERSION: &str = "0.7.3";
-/// The schema of the built-in exec's configuration. It describes what this
-/// version accepts (ex. `playWithFire` and `setupTimeout`), which the schema
-/// published with the exec plugin doesn't.
-const EXEC_CONFIG_SCHEMA: &str = include_str!("schema.json");
 /// The exec plugin releases the built-in exec serves references to. A config
 /// that asks for another version (or no specific one) gets that version, run
 /// as the process plugin, since the built-in exec only behaves like the
@@ -78,7 +75,7 @@ pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvi
     EXEC_PLUGIN_VERSION,
     reference.display()
   );
-  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, EXEC_CONFIG_SCHEMA)))
+  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, schema::exec_config_schema())))
 }
 
 /// Whether dprint serves the reference with the built-in exec rather than
@@ -218,7 +215,7 @@ mod test {
 
   #[test]
   fn the_schema_describes_the_configuration() {
-    let schema: serde_json::Value = serde_json::from_str(EXEC_CONFIG_SCHEMA).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(schema::exec_config_schema()).unwrap();
     let keys = |value: &serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
     let command_schema = &schema["properties"]["commands"]["items"];
     assert_eq!(
@@ -270,7 +267,7 @@ mod test {
     use crate::test_helpers::validate_with_schema;
     use serde_json::json;
 
-    let schema: serde_json::Value = serde_json::from_str(EXEC_CONFIG_SCHEMA).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(schema::exec_config_schema()).unwrap();
     for command in [
       json!({ "command": "fmt", "exts": "txt" }),
       json!({ "command": "fmt", "exts": ["txt"] }),
