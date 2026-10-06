@@ -6,6 +6,8 @@ mod wasm;
 
 pub use builtin_exec::create_builtin_exec_plugin;
 pub use builtin_exec::exec_command_program;
+#[cfg(windows)]
+pub use builtin_exec::find_with_path_ext;
 pub use builtin_exec::is_builtin_exec_reference;
 pub use builtin_exec::is_exec_plugin_reference;
 pub use builtin_exec::knows_exec_plugin_commands;
