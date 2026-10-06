@@ -120,6 +120,16 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
         let override_definition_name = format!("{}:override", definition_name);
         let override_reference = fragment_reference(&format!("/definitions/{}", escape_pointer_segment(&override_definition_name)));
         let override_schema = override_schema(&schema, &location, &table_schemas.unconditional, &table_properties, &root);
+        if let Some((pointer, keyword)) = &table_schemas.conditional_properties {
+          warnings.push(format!(
+            concat!(
+              "The configuration schema of the {} says what properties its table may have on a condition too (`{}` at {}), which an override ",
+              "can't be checked on by itself, as the table it's merged into decides it, so editors check an override's properties only as far ",
+              "as the schema says unconditionally."
+            ),
+            plugin_display, keyword, pointer
+          ));
+        }
         if let Some(overrides) = table_properties.get_mut("overrides") {
           *overrides = override_table_property(overrides, &override_reference);
         }
@@ -207,6 +217,11 @@ struct TableSchemas {
   /// schema, its `$ref` targets and `allOf` items), whose properties every
   /// override may set.
   unconditional: Vec<String>,
+  /// Where the first schema that applies to the table on a condition (ex.
+  /// an `anyOf` branch) says what properties it may have, and the keyword
+  /// it's under. An override can't be checked against it on its own, as
+  /// the table it's merged into decides the condition.
+  conditional_properties: Option<(String, &'static str)>,
   /// A reference to another document that couldn't be followed.
   not_followed: Option<String>,
 }
@@ -217,11 +232,15 @@ impl TableSchemas {
     let mut result = Self {
       whole_object: None,
       unconditional: Vec::new(),
+      conditional_properties: None,
       not_followed: None,
     };
-    let mut pending = vec![(String::new(), true)];
+    // each schema to visit: where it is, and the keyword it applies to the
+    // table on a condition of, if it doesn't apply unconditionally
+    let mut pending = std::collections::VecDeque::from([(String::new(), None)]);
     let mut visited = HashSet::new();
-    while let Some((pointer, unconditional)) = pending.pop() {
+    // nearest first, so a warning names the first of what's at a level
+    while let Some((pointer, condition)) = pending.pop_front() {
       if !visited.insert(pointer.clone()) {
         continue;
       }
@@ -230,7 +249,7 @@ impl TableSchemas {
       };
       if let Some(reference) = object.get("$ref") {
         match reference.as_str().and_then(|reference| bundled_pointer(reference, location)) {
-          Some(target) => pending.push((target, unconditional)),
+          Some(target) => pending.push_back((target, condition)),
           None => {
             result
               .not_followed
@@ -244,23 +263,30 @@ impl TableSchemas {
       {
         result.whole_object = Some((pointer.clone(), keyword));
       }
-      if unconditional {
-        result.unconditional.push(pointer.clone());
+      match condition {
+        None => result.unconditional.push(pointer.clone()),
+        Some(keyword) => {
+          let constrains_properties =
+            object.contains_key("properties") || object.get("additionalProperties").is_some_and(|allowed| allowed != &Value::Bool(true));
+          if constrains_properties && result.conditional_properties.is_none() {
+            result.conditional_properties = Some((pointer.clone(), keyword));
+          }
+        }
       }
-      for (keyword, unconditional) in [("allOf", unconditional), ("anyOf", false), ("oneOf", false)] {
+      for (keyword, condition) in [("allOf", condition), ("anyOf", Some("anyOf")), ("oneOf", Some("oneOf"))] {
         if let Some(Value::Array(schemas)) = object.get(keyword) {
-          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), unconditional)));
+          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), condition)));
         }
       }
       for keyword in ["if", "then", "else", "not"] {
         if object.contains_key(keyword) {
-          pending.push((format!("{}/{}", pointer, keyword), false));
+          pending.push_back((format!("{}/{}", pointer, keyword), Some(keyword)));
         }
       }
       if let Some(Value::Object(dependencies)) = object.get("dependencies") {
         for (name, dependency) in dependencies {
           if dependency.is_object() {
-            pending.push((format!("{}/dependencies/{}", pointer, escape_pointer_segment(name)), false));
+            pending.push_back((format!("{}/dependencies/{}", pointer, escape_pointer_segment(name)), Some("dependencies")));
           }
         }
       }
@@ -276,6 +302,9 @@ impl TableSchemas {
 /// nothing is required): each property as the plugin's schema, copied in at
 /// `location`, has it in the schemas that apply to the table unconditionally
 /// (`unconditional`, see [`TableSchemas`]), other properties as those allow.
+/// What a schema says on a condition (ex. an `anyOf` branch) isn't in it, as
+/// the table an override is merged into decides the condition, which is
+/// warned about (see [`TableSchemas::conditional_properties`]).
 fn override_schema(schema: &Value, location: &str, unconditional: &[String], table_properties: &Map<String, Value>, root: &Map<String, Value>) -> Value {
   let mut properties = Map::new();
   let mut additional = Vec::new();
@@ -899,7 +928,13 @@ mod test {
       }),
       Some(URL),
     );
-    assert_eq!(schema.warnings, Vec::<String>::new());
+    // (the `anyOf` branch's properties can't be checked in an override)
+    assert_eq!(schema.warnings.len(), 1, "{:?}", schema.warnings);
+    assert!(
+      schema.warnings[0].contains("on a condition too (`anyOf` at /anyOf/0)"),
+      "{}",
+      schema.warnings[0]
+    );
     assert_eq!(validate_with_schema(&schema.schema, &config), Ok(()));
     // a schema that doesn't say what properties the table has stays as is
     assert_eq!(schema.schema["definitions"]["plugin:test"]["anyOf"][1], json!({ "required": ["b"] }));
@@ -1264,11 +1299,83 @@ mod test {
     assert_eq!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": "yy" }] })), Ok(()));
     assert!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y" }] })).is_err());
     assert!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": 22 }] })).is_err());
-    // not of one that applies conditionally, whose condition the merged table decides
-    let conditional = json!({ "anyOf": [{ "properties": { "a": { "type": "string" } }, "required": ["a"] }, { "properties": { "b": { "type": "number" } }, "required": ["b"] }] });
-    let schema = build(conditional, Some(URL));
-    assert_eq!(schema.warnings, Vec::<String>::new());
+  }
+
+  #[test]
+  fn warns_that_an_override_isnt_checked_against_what_a_schema_says_on_a_condition() {
+    // the table an override is merged into decides the condition, so what
+    // the schema says then isn't in the override's schema: an override
+    // the plugin would reject once merged validates
+    let validate = |plugin_schema: &Value, table: Value| validate_with_schema(&build(plugin_schema.clone(), Some(URL)).schema, &json!({ "test": table }));
+    let warning = |keyword: &str, at: &str| {
+      format!(
+        concat!(
+          "The configuration schema of the test plugin (https://plugins.dprint.dev/test/schema.json) says what properties its table may have on a condition too ",
+          "(`{}` at {}), which an override can't be checked on by itself, as the table it's merged into decides it, so editors check an override's ",
+          "properties only as far as the schema says unconditionally."
+        ),
+        keyword, at
+      )
+    };
+    let either = json!({ "anyOf": [{ "properties": { "a": { "type": "string" } }, "required": ["a"] }, { "properties": { "b": { "type": "number" } }, "required": ["b"] }] });
+    let schema = build(either.clone(), Some(URL));
+    assert_eq!(schema.warnings, vec![warning("anyOf", "/anyOf/0")]);
     assert_eq!(schema.schema["definitions"]["plugin:test:override"]["properties"].as_object().unwrap().len(), 1);
+    // the table itself is checked in full
+    assert_eq!(validate(&either, json!({ "a": "x" })), Ok(()));
+    assert!(validate(&either, json!({ "a": 1 })).is_err());
+    // the override isn't: the plugin would reject `a: 1` once it's merged in
+    assert_eq!(validate(&either, json!({ "a": "x", "overrides": [{ "files": "*.x", "a": 1 }] })), Ok(()));
+
+    for (plugin_schema, keyword, at) in [
+      (
+        json!({ "oneOf": [{ "required": ["a"] }, { "properties": { "b": { "type": "number" } } }] }),
+        "oneOf",
+        "/oneOf/1",
+      ),
+      (
+        json!({ "if": { "required": ["a"] }, "then": { "properties": { "b": { "type": "number" } } } }),
+        "then",
+        "/then",
+      ),
+      (
+        json!({ "if": { "required": ["a"] }, "else": { "additionalProperties": false } }),
+        "else",
+        "/else",
+      ),
+      (json!({ "not": { "properties": { "a": { "const": "no" } } } }), "not", "/not"),
+      (
+        json!({ "dependencies": { "a": { "properties": { "b": { "type": "number" } } } } }),
+        "dependencies",
+        "/dependencies/a",
+      ),
+      // through what a branch refers to, or combines
+      (
+        json!({ "anyOf": [{ "$ref": "#/definitions/x" }], "definitions": { "x": { "properties": { "a": { "type": "string" } } } } }),
+        "anyOf",
+        "/definitions/x",
+      ),
+      (
+        json!({ "anyOf": [{ "allOf": [{ "properties": { "a": { "type": "string" } } }] }] }),
+        "anyOf",
+        "/anyOf/0/allOf/0",
+      ),
+    ] {
+      assert_eq!(
+        build(plugin_schema.clone(), Some(URL)).warnings,
+        vec![warning(keyword, at)],
+        "{}",
+        plugin_schema
+      );
+    }
+    // a condition that says nothing about the properties' values is fine
+    for plugin_schema in [
+      json!({ "anyOf": [{ "required": ["a"] }, { "required": ["b"] }] }),
+      json!({ "if": { "required": ["a"] }, "then": { "required": ["b"] }, "else": { "additionalProperties": true } }),
+      json!({ "properties": { "a": { "anyOf": [{ "properties": { "x": { "type": "string" } } }, { "type": "string" }] } } }),
+    ] {
+      assert_eq!(build(plugin_schema.clone(), Some(URL)).warnings, Vec::<String>::new(), "{}", plugin_schema);
+    }
   }
 
   #[test]
