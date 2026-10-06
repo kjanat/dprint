@@ -2556,6 +2556,7 @@ mod test {
     definitions
       .keys()
       .filter_map(|key| key.strip_prefix("plugin:"))
+      .filter(|key| !key.ends_with(":override"))
       .map(ToOwned::to_owned)
       .collect()
   }

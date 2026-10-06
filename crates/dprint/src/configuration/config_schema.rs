@@ -52,6 +52,14 @@ pub struct ConfigSchema {
 /// properties a schema doesn't have (ex. tombi's strict mode), which would
 /// otherwise flag a plugin's `associations`.
 ///
+/// What the plugin's schema describes is the plugin's own properties: dprint
+/// hands the plugin its table without `associations`, `locked` and
+/// `overrides`, and each override without `files`. Its properties mean the
+/// same of the table as of that (see [`TableSchemas`]), and each override
+/// gets a schema of them too (see [`override_schema`]). A plugin schema that
+/// describes its table as a whole (ex. with `maxProperties`) can't describe
+/// that, so it isn't applied, with a warning.
+///
 /// dprint's schema is draft-07, so only draft-06 and draft-07 plugin schemas
 /// can be copied in, as other drafts mean something else by some keywords. A
 /// plugin table's schema in another draft is referred to by its url.
@@ -74,6 +82,14 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
   for plugin in plugins {
     let definition_name = format!("plugin:{}", plugin.config_key);
     let location = format!("/definitions/{}", escape_pointer_segment(&definition_name));
+    let plugin_display = format!(
+      "{} plugin{}",
+      plugin.config_key,
+      plugin.url.as_ref().map(|url| format!(" ({})", url)).unwrap_or_default()
+    );
+    // dprint's properties of this plugin's table, with its overrides checked
+    // against the plugin's properties
+    let mut table_properties = plugin_table_properties.clone();
     let reference = match embed_plugin_schema(plugin.schema, plugin.url.as_ref(), &location) {
       Ok(mut schema) => {
         // a plugin whose schema is `false` takes no configuration of its own,
@@ -81,27 +97,48 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
         if schema == Value::Bool(false) {
           schema = serde_json::json!({ "additionalProperties": false });
         }
-        if let Some(reference) = add_table_properties(&mut schema, &location, &plugin_table_properties) {
+        let table_schemas = TableSchemas::of(&schema, &location);
+        if let Some((pointer, keyword)) = table_schemas.whole_object {
           warnings.push(format!(
-            "The configuration schema of the {} plugin{} refers to {} for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
-            plugin.config_key,
-            plugin.url.as_ref().map(|url| format!(" ({})", url)).unwrap_or_default(),
-            reference
+            concat!(
+              "The configuration schema of the {} describes its table as a whole (`{}`{}), which can't say what it does of the table dprint ",
+              "hands the plugin (without `associations`, `locked` and `overrides`), so it isn't applied and editors don't check the plugin's options."
+            ),
+            plugin_display,
+            keyword,
+            if pointer.is_empty() { String::new() } else { format!(" at {}", pointer) }
+          ));
+          object_entry(&mut root, "properties").insert(plugin.config_key, serde_json::json!({ "type": "object", "properties": table_properties }));
+          continue;
+        }
+        if let Some(reference) = table_schemas.not_followed {
+          warnings.push(format!(
+            "The configuration schema of the {} refers to {} for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
+            plugin_display, reference
           ));
         }
-        object_entry(&mut root, "definitions").insert(definition_name, schema);
+        let override_definition_name = format!("{}:override", definition_name);
+        let override_reference = fragment_reference(&format!("/definitions/{}", escape_pointer_segment(&override_definition_name)));
+        let override_schema = override_schema(&schema, &location, &table_schemas.unconditional, &table_properties, &root);
+        if let Some(overrides) = table_properties.get_mut("overrides") {
+          *overrides = override_table_property(overrides, &override_reference);
+        }
+        add_table_properties(&mut schema, &location, &table_properties);
+        let definitions = object_entry(&mut root, "definitions");
+        definitions.insert(definition_name, schema);
+        definitions.insert(override_definition_name, override_schema);
         fragment_reference(&location)
       }
       Err(NotEmbeddable { dialect }) => match &plugin.url {
-        Some(url) => {
+        Some(_) => {
           warnings.push(format!(
             concat!(
-              "The configuration schema of the {} plugin ({}) is for {}, which isn't copied into dprint's draft-07 schema, so it's referred to instead. ",
+              "The configuration schema of the {} is for {}, which isn't copied into dprint's draft-07 schema, so it's referred to instead. ",
               "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
             ),
-            plugin.config_key, url, dialect
+            plugin_display, dialect
           ));
-          url.to_string()
+          plugin.url.as_ref().unwrap().to_string()
         }
         None => {
           warnings.push(format!(
@@ -117,7 +154,7 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
       plugin.config_key,
       serde_json::json!({
         "type": "object",
-        "properties": plugin_table_properties,
+        "properties": table_properties,
         "allOf": [{ "$ref": reference }],
       }),
     );
@@ -150,20 +187,180 @@ fn object_entry<'a>(object: &'a mut Map<String, Value>, key: &str) -> &'a mut Ma
   value.as_object_mut().unwrap()
 }
 
+/// The schemas in a plugin's schema, copied in at `location`, that apply to
+/// its table: the plugin's schema, what a `$ref` of one points to (draft-07
+/// ignores what's next to a `$ref`), and what its `allOf`, `anyOf`, `oneOf`,
+/// `if`, `then`, `else`, `not` and `dependencies` apply to the table.
+///
+/// Their keywords about properties (`properties`, `additionalProperties`,
+/// `required`, `dependencies` on properties) mean the same of the table as
+/// of the plugin's own properties of it, once dprint's properties are listed
+/// with the plugin's (see [`add_table_properties`]). A keyword about the
+/// object as a whole doesn't: `minProperties`, `maxProperties`,
+/// `propertyNames`, `const`, `enum`, and `patternProperties` (a pattern may
+/// cover dprint's property names), so a schema with one can't describe the
+/// table.
+struct TableSchemas {
+  /// Where the first keyword about the table as a whole is, and which.
+  whole_object: Option<(String, &'static str)>,
+  /// The schemas that apply to the table unconditionally (the plugin's
+  /// schema, its `$ref` targets and `allOf` items), whose properties every
+  /// override may set.
+  unconditional: Vec<String>,
+  /// A reference to another document that couldn't be followed.
+  not_followed: Option<String>,
+}
+
+impl TableSchemas {
+  fn of(schema: &Value, location: &str) -> Self {
+    const WHOLE_OBJECT_KEYWORDS: &[&str] = &["minProperties", "maxProperties", "propertyNames", "const", "enum", "patternProperties"];
+    let mut result = Self {
+      whole_object: None,
+      unconditional: Vec::new(),
+      not_followed: None,
+    };
+    let mut pending = vec![(String::new(), true)];
+    let mut visited = HashSet::new();
+    while let Some((pointer, unconditional)) = pending.pop() {
+      if !visited.insert(pointer.clone()) {
+        continue;
+      }
+      let Some(Value::Object(object)) = schema.pointer(&pointer) else {
+        continue;
+      };
+      if let Some(reference) = object.get("$ref") {
+        match reference.as_str().and_then(|reference| bundled_pointer(reference, location)) {
+          Some(target) => pending.push((target, unconditional)),
+          None => {
+            result
+              .not_followed
+              .get_or_insert_with(|| reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string()));
+          }
+        }
+        continue;
+      }
+      if result.whole_object.is_none()
+        && let Some(keyword) = WHOLE_OBJECT_KEYWORDS.iter().find(|keyword| object.contains_key(**keyword))
+      {
+        result.whole_object = Some((pointer.clone(), keyword));
+      }
+      if unconditional {
+        result.unconditional.push(pointer.clone());
+      }
+      for (keyword, unconditional) in [("allOf", unconditional), ("anyOf", false), ("oneOf", false)] {
+        if let Some(Value::Array(schemas)) = object.get(keyword) {
+          pending.extend((0..schemas.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), unconditional)));
+        }
+      }
+      for keyword in ["if", "then", "else", "not"] {
+        if object.contains_key(keyword) {
+          pending.push((format!("{}/{}", pointer, keyword), false));
+        }
+      }
+      if let Some(Value::Object(dependencies)) = object.get("dependencies") {
+        for (name, dependency) in dependencies {
+          if dependency.is_object() {
+            pending.push((format!("{}/dependencies/{}", pointer, escape_pointer_segment(name)), false));
+          }
+        }
+      }
+    }
+    // the plugin's schema first
+    result.unconditional.sort();
+    result
+  }
+}
+
+/// The schema of an override of a plugin's table, which is `files` and the
+/// plugin's own properties (what dprint hands the plugin for the files, so
+/// nothing is required): each property as the plugin's schema, copied in at
+/// `location`, has it in the schemas that apply to the table unconditionally
+/// (`unconditional`, see [`TableSchemas`]), other properties as those allow.
+fn override_schema(schema: &Value, location: &str, unconditional: &[String], table_properties: &Map<String, Value>, root: &Map<String, Value>) -> Value {
+  let mut properties = Map::new();
+  let mut additional = Vec::new();
+  let mut closed = false;
+  for pointer in unconditional {
+    let Some(Value::Object(object)) = schema.pointer(pointer) else {
+      continue;
+    };
+    if let Some(Value::Object(declared)) = object.get("properties") {
+      for name in declared.keys().filter(|name| !table_properties.contains_key(*name)) {
+        let reference = serde_json::json!({ "$ref": fragment_reference(&format!("{}{}/properties/{}", location, pointer, escape_pointer_segment(name))) });
+        match properties.get_mut(name) {
+          None => {
+            properties.insert(name.clone(), reference);
+          }
+          // declared more than once: all of them apply
+          Some(Value::Object(existing)) => match existing.get_mut("allOf") {
+            Some(Value::Array(all)) => all.push(reference),
+            _ => {
+              let first = Value::Object(std::mem::take(existing));
+              existing.insert("allOf".to_string(), Value::Array(vec![first, reference]));
+            }
+          },
+          Some(_) => {}
+        }
+      }
+    }
+    match object.get("additionalProperties") {
+      Some(Value::Bool(false)) => closed = true,
+      Some(Value::Object(_)) => additional.push(serde_json::json!({ "$ref": fragment_reference(&format!("{}{}/additionalProperties", location, pointer)) })),
+      _ => {}
+    }
+  }
+  // `files`, as dprint describes it for every override
+  let files = root
+    .get("definitions")
+    .and_then(|definitions| definitions.get("pluginConfigOverride"))
+    .and_then(|schema| schema.get("properties"))
+    .and_then(|properties| properties.get("files"))
+    .cloned()
+    .unwrap_or(Value::Bool(true));
+  let mut all_properties = Map::new();
+  all_properties.insert("files".to_string(), files);
+  all_properties.extend(properties);
+  let mut result = Map::new();
+  result.insert("type".to_string(), Value::String("object".to_string()));
+  result.insert("required".to_string(), serde_json::json!(["files"]));
+  result.insert("minProperties".to_string(), serde_json::json!(2));
+  result.insert("properties".to_string(), Value::Object(all_properties));
+  if closed {
+    result.insert("additionalProperties".to_string(), Value::Bool(false));
+  } else if additional.len() == 1 {
+    result.insert("additionalProperties".to_string(), additional.pop().unwrap());
+  } else if !additional.is_empty() {
+    result.insert("additionalProperties".to_string(), serde_json::json!({ "allOf": additional }));
+  }
+  Value::Object(result)
+}
+
+/// dprint's `overrides` property of a plugin's table, with each override
+/// checked by the schema at `reference` rather than the one for any plugin.
+fn override_table_property(generic: &Value, reference: &str) -> Value {
+  let mut property = Map::new();
+  if let Some(description) = generic.get("description") {
+    property.insert("description".to_string(), description.clone());
+  }
+  property.insert(
+    "anyOf".to_string(),
+    serde_json::json!([{ "$ref": reference }, { "type": "array", "items": { "$ref": reference } }]),
+  );
+  Value::Object(property)
+}
+
 /// Adds what every plugin table may have (`properties`) to the schemas in a
 /// plugin's schema, copied in at `location`, that say what properties its
-/// table may have. Returns a reference to another document it couldn't
-/// follow to one of them.
+/// table may have.
 ///
 /// Those are the plugin's schema, or what its `$ref` points to (draft-07
 /// ignores what's next to a `$ref`), and the schemas its `allOf`, `anyOf`,
 /// `oneOf`, `then` and `else` apply to the table that list properties (ex.
 /// with `additionalProperties: false`).
-fn add_table_properties(schema: &mut Value, location: &str, properties: &Map<String, Value>) -> Option<String> {
+fn add_table_properties(schema: &mut Value, location: &str, properties: &Map<String, Value>) {
   let mut pending = vec![(String::new(), true)];
   let mut visited = HashSet::new();
   let mut targets = Vec::new();
-  let mut not_followed = None;
   while let Some((pointer, is_table_schema)) = pending.pop() {
     if !visited.insert(pointer.clone()) {
       continue;
@@ -172,11 +369,8 @@ fn add_table_properties(schema: &mut Value, location: &str, properties: &Map<Str
       continue;
     };
     if let Some(reference) = object.get("$ref") {
-      match reference.as_str().and_then(|reference| bundled_pointer(reference, location)) {
-        Some(target) => pending.push((target, is_table_schema)),
-        None => {
-          not_followed.get_or_insert_with(|| reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string()));
-        }
+      if let Some(target) = reference.as_str().and_then(|reference| bundled_pointer(reference, location)) {
+        pending.push((target, is_table_schema));
       }
       continue;
     }
@@ -206,7 +400,6 @@ fn add_table_properties(schema: &mut Value, location: &str, properties: &Map<Str
       }
     }
   }
-  not_followed
 }
 
 /// The JSON pointer within a plugin's schema, copied in at `location`, of a
@@ -495,12 +688,21 @@ mod test {
   }
 
   /// What dprint says a plugin's table is, with the plugin's schema at
-  /// `reference` applying to it as well.
+  /// `reference` applying to it as well. A copied in plugin's overrides are
+  /// checked by its own override schema.
   fn table_schema(reference: &str) -> Value {
     let base: Value = serde_json::from_str(DPRINT_CONFIG_SCHEMA).unwrap();
+    let mut properties = base["additionalProperties"]["properties"].clone();
+    if reference.starts_with("#/definitions/plugin:") {
+      let override_reference = format!("{}:override", reference);
+      properties["overrides"] = json!({
+        "description": properties["overrides"]["description"],
+        "anyOf": [{ "$ref": override_reference }, { "type": "array", "items": { "$ref": override_reference } }],
+      });
+    }
     json!({
       "type": "object",
-      "properties": base["additionalProperties"]["properties"],
+      "properties": properties,
       "allOf": [{ "$ref": reference }],
     })
   }
@@ -545,9 +747,27 @@ mod test {
       json!({ "$ref": "https://example.com/schema.json#/definitions/x" })
     );
     // dprint's properties of every plugin table were added
-    for key in ["associations", "locked", "overrides"] {
+    for key in ["associations", "locked"] {
       assert_eq!(plugin["properties"][key], schema["additionalProperties"]["properties"][key], "{}", key);
     }
+    // with its overrides checked by the plugin's own properties
+    assert_eq!(
+      plugin["properties"]["overrides"],
+      table_schema("#/definitions/plugin:typescript")["properties"]["overrides"]
+    );
+    assert_eq!(
+      schema["definitions"]["plugin:typescript:override"],
+      json!({
+        "type": "object",
+        "required": ["files"],
+        "minProperties": 2,
+        "properties": {
+          "files": schema["definitions"]["pluginConfigOverride"]["properties"]["files"],
+          "quoteStyle": { "$ref": "#/definitions/plugin:typescript/properties/quoteStyle" },
+          "external": { "$ref": "#/definitions/plugin:typescript/properties/external" },
+        },
+      })
+    );
     // dprint's own definitions are still there for those
     assert!(schema["definitions"]["pluginConfigOverride"].is_object());
   }
@@ -702,8 +922,14 @@ mod test {
         assert!(validate(not_a_table.clone()).is_err(), "{} {}", plugin_schema, not_a_table);
       }
       assert_eq!(validate(json!({})), Ok(()), "{}", plugin_schema);
-      // with dprint's own properties, as dprint describes them
-      assert_eq!(validate(dprints_properties.clone()), Ok(()), "{}", plugin_schema);
+      // with dprint's own properties, as dprint describes them (an override
+      // sets a property of the plugin's, which `false` has none of)
+      if plugin_schema == json!(false) {
+        assert_eq!(validate(json!({ "associations": "**/*.x", "locked": true })), Ok(()));
+        assert!(validate(dprints_properties.clone()).is_err());
+      } else {
+        assert_eq!(validate(dprints_properties.clone()), Ok(()), "{}", plugin_schema);
+      }
       assert!(validate(json!({ "locked": "yes" })).is_err(), "{}", plugin_schema);
       assert!(validate(json!({ "associations": 5 })).is_err(), "{}", plugin_schema);
       assert!(validate(json!({ "overrides": [{ "a": "b" }] })).is_err(), "{}", plugin_schema);
@@ -873,7 +1099,6 @@ mod test {
         "additionalItems": reference,
         "contains": reference,
         "additionalProperties": reference,
-        "propertyNames": reference,
         "if": reference,
         "then": reference,
         "else": reference,
@@ -883,9 +1108,10 @@ mod test {
         "oneOf": [reference],
         "dependencies": { "x": reference, "y": ["z"] },
         "dependentSchemas": { "x": reference },
-        "patternProperties": { "^x": reference },
         "$defs": { "b": reference },
-        "properties": { "x": { "items": reference } },
+        // (what's about an object as a whole in a property's schema, where
+        // the table's isn't about the table)
+        "properties": { "x": { "items": reference, "propertyNames": reference, "patternProperties": { "^x": reference } } },
       }),
       Some(URL),
     );
@@ -895,6 +1121,154 @@ mod test {
     for (pointer, reference) in references {
       assert_eq!(reference, "#/definitions/plugin:test/definitions/a", "{}", pointer);
     }
+  }
+
+  #[test]
+  fn doesnt_apply_a_schema_that_describes_the_table_as_a_whole() {
+    // what the plugin gets is its table without dprint's properties, which
+    // a keyword about the object as a whole can't tell
+    let host_only = json!({ "associations": "**/*.x" });
+    let warning = |keyword: &str, at: &str| {
+      format!(
+        concat!(
+          "The configuration schema of the test plugin (https://plugins.dprint.dev/test/schema.json) describes its table as a whole (`{}`{}), ",
+          "which can't say what it does of the table dprint hands the plugin (without `associations`, `locked` and `overrides`), ",
+          "so it isn't applied and editors don't check the plugin's options."
+        ),
+        keyword, at
+      )
+    };
+    for (plugin_schema, keyword, at) in [
+      (json!({ "type": "object", "maxProperties": 0 }), "maxProperties", ""),
+      (json!({ "type": "object", "minProperties": 1 }), "minProperties", ""),
+      (json!({ "propertyNames": { "pattern": "^[a-z]+$" } }), "propertyNames", ""),
+      (json!({ "patternProperties": { "^a": { "type": "string" } } }), "patternProperties", ""),
+      (json!({ "enum": [{ "a": "x" }] }), "enum", ""),
+      (json!({ "const": {} }), "const", ""),
+      // wherever it's applied to the table
+      (
+        json!({ "allOf": [{ "type": "object" }, { "maxProperties": 3 }] }),
+        "maxProperties",
+        " at /allOf/1",
+      ),
+      (
+        json!({ "$ref": "#/definitions/x", "definitions": { "x": { "minProperties": 1 } } }),
+        "minProperties",
+        " at /definitions/x",
+      ),
+      (
+        json!({ "if": { "minProperties": 1 }, "then": { "required": ["a"] } }),
+        "minProperties",
+        " at /if",
+      ),
+      (
+        json!({ "dependencies": { "a": { "maxProperties": 2 } } }),
+        "maxProperties",
+        " at /dependencies/a",
+      ),
+      (json!({ "not": { "propertyNames": { "const": "a" } } }), "propertyNames", " at /not"),
+    ] {
+      let schema = build(plugin_schema.clone(), Some(URL));
+      assert_eq!(schema.warnings, vec![warning(keyword, at)], "{}", plugin_schema);
+      // the table is dprint's, which the plugin's schema doesn't describe
+      assert_eq!(
+        schema.schema["properties"]["test"],
+        json!({ "type": "object", "properties": schema.schema["additionalProperties"]["properties"] }),
+        "{}",
+        plugin_schema
+      );
+      assert!(schema.schema["definitions"].get("plugin:test").is_none(), "{}", plugin_schema);
+      let validate = |table: &Value| validate_with_schema(&schema.schema, &json!({ "test": table }));
+      // `maxProperties: 0` accepts it, as the plugin gets `{}`, and `minProperties: 1`
+      // would reject it, which this can't tell: neither is applied
+      assert_eq!(validate(&host_only), Ok(()), "{}", plugin_schema);
+      assert_eq!(validate(&json!({ "a": 1 })), Ok(()), "{}", plugin_schema);
+      assert!(validate(&json!({ "locked": "yes" })).is_err(), "{}", plugin_schema);
+    }
+    // in a property's schema, it's about that property's value, not the table
+    let schema = build(json!({ "properties": { "a": { "type": "object", "maxProperties": 0 } } }), Some(URL));
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert!(validate_with_schema(&schema.schema, &json!({ "test": { "a": { "b": 1 } } })).is_err());
+  }
+
+  #[test]
+  fn checks_a_plugins_properties_in_its_overrides() {
+    let validate = |plugin_schema: Value, table: Value| validate_with_schema(&build(plugin_schema, Some(URL)).schema, &json!({ "test": table }));
+    let closed = json!({
+      "type": "object",
+      "properties": { "a": { "type": "string" }, "b": { "type": "number" } },
+      "required": ["a"],
+      "additionalProperties": false,
+    });
+    assert_eq!(
+      validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": "*.x", "a": "y", "b": 1 }] })),
+      Ok(())
+    );
+    // a property as the plugin's schema has it
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": "*.x", "a": 1 }] })).is_err());
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": { "files": "*.x", "b": "one" } })).is_err());
+    // and no others, when the plugin's schema allows none
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": "*.x", "zzz": true }] })).is_err());
+    // nothing is required of an override, as it's merged into the table
+    assert_eq!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": "*.x", "b": 2 }] })), Ok(()));
+    // while the table still has to have it
+    assert!(validate(closed.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y" }] })).is_err());
+    // `files` is dprint's, and an override sets something
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "a": "y" }] })).is_err());
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": "*.x" }] })).is_err());
+    assert!(validate(closed.clone(), json!({ "a": "x", "overrides": [{ "files": 1, "a": "y" }] })).is_err());
+
+    // what the plugin's schema allows of other properties applies too
+    let typed_others = json!({ "properties": { "a": { "type": "string" } }, "additionalProperties": { "type": "boolean" } });
+    assert_eq!(
+      validate(typed_others.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y", "zzz": true }] })),
+      Ok(())
+    );
+    assert!(validate(typed_others.clone(), json!({ "overrides": [{ "files": "*.x", "zzz": 1 }] })).is_err());
+    // or anything, when it says nothing
+    for open in [json!(true), json!({}), json!({ "type": "object" })] {
+      assert_eq!(
+        validate(open.clone(), json!({ "overrides": [{ "files": "*.x", "zzz": 1 }] })),
+        Ok(()),
+        "{}",
+        open
+      );
+    }
+
+    // the properties of every schema the plugin's applies to the table unconditionally
+    let combined = json!({
+      "$ref": "#/definitions/root",
+      "definitions": {
+        "root": { "allOf": [{ "$ref": "#/definitions/one" }, { "properties": { "b": { "type": "number" } }, "additionalProperties": false }] },
+        "one": { "properties": { "a": { "type": "string" } } },
+      },
+    });
+    let schema = build(combined.clone(), Some(URL));
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert_eq!(
+      schema.schema["definitions"]["plugin:test:override"]["properties"]["a"],
+      json!({ "$ref": "#/definitions/plugin:test/definitions/one/properties/a" })
+    );
+    assert_eq!(
+      schema.schema["definitions"]["plugin:test:override"]["properties"]["b"],
+      json!({ "$ref": "#/definitions/plugin:test/definitions/root/allOf/1/properties/b" })
+    );
+    assert_eq!(schema.schema["definitions"]["plugin:test:override"]["additionalProperties"], json!(false));
+    assert_eq!(
+      validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y", "b": 1 }] })),
+      Ok(())
+    );
+    assert!(validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "a": 1 }] })).is_err());
+    // (a property declared twice is what both say)
+    let twice = json!({ "allOf": [{ "properties": { "a": { "type": "string" } } }, { "properties": { "a": { "minLength": 2 } } }] });
+    assert_eq!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": "yy" }] })), Ok(()));
+    assert!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": "y" }] })).is_err());
+    assert!(validate(twice.clone(), json!({ "overrides": [{ "files": "*.x", "a": 22 }] })).is_err());
+    // not of one that applies conditionally, whose condition the merged table decides
+    let conditional = json!({ "anyOf": [{ "properties": { "a": { "type": "string" } }, "required": ["a"] }, { "properties": { "b": { "type": "number" } }, "required": ["b"] }] });
+    let schema = build(conditional, Some(URL));
+    assert_eq!(schema.warnings, Vec::<String>::new());
+    assert_eq!(schema.schema["definitions"]["plugin:test:override"]["properties"].as_object().unwrap().len(), 1);
   }
 
   #[test]
