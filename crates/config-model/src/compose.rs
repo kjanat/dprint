@@ -440,24 +440,46 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
         Some(_) => {}
       }
     }
-    // what this schema says of the properties it doesn't declare
-    // (`additionalProperties`), or that nothing it applies declares
-    // (`unevaluatedProperties`); `files` is dprint's, so it's exempt
-    for (keyword, evaluated) in [
-      ("additionalProperties", vec![pointer.clone()]),
-      ("unevaluatedProperties", table.evaluated_by(pointer)),
-    ] {
-      let others = match object.get(keyword) {
-        Some(Value::Bool(false)) => Value::Bool(false),
-        Some(Value::Object(_)) => serde_json::json!({ "$ref": resource.index.reference_to(&format!("{}/{}", pointer, keyword)) }),
-        _ => continue,
-      };
+    // what this schema says of the properties the schemas in `evaluated`
+    // don't declare; `files` is dprint's, so it's exempt
+    let others = |keyword: &str| match object.get(keyword) {
+      Some(Value::Bool(false)) => Some(Value::Bool(false)),
+      Some(Value::Object(_)) => Some(serde_json::json!({ "$ref": resource.index.reference_to(&format!("{}/{}", pointer, keyword)) })),
+      _ => None,
+    };
+    let restriction = |evaluated: &[String], others: Value| {
       let mut allowed = Map::new();
       allowed.insert("files".to_string(), Value::Bool(true));
       for name in evaluated.iter().flat_map(|pointer| declared(pointer)) {
         allowed.insert(name, Value::Bool(true));
       }
-      restrictions.push(serde_json::json!({ "properties": allowed, "additionalProperties": others }));
+      serde_json::json!({ "properties": allowed, "additionalProperties": others })
+    };
+    // `additionalProperties` is about the properties the schema itself
+    // doesn't declare
+    if let Some(others) = others("additionalProperties") {
+      restrictions.push(restriction(std::slice::from_ref(pointer), others));
+    }
+    // `unevaluatedProperties` is about the properties nothing the schema
+    // applies evaluates: the ones none of those schemas declares, as long as
+    // none of them evaluates every property (an `additionalProperties` or
+    // `unevaluatedProperties` of its own does, whatever it says, as a
+    // validator's annotations go) and nothing applies on a condition (what's
+    // evaluated then depends on the table the override is merged into, see
+    // [`TableSchemas::conditional_properties`]). Otherwise it's left to the
+    // plugin rather than guessed.
+    if let Some(others) = others("unevaluatedProperties") {
+      let evaluated = table.evaluated_by(pointer);
+      let evaluates_every_property = evaluated.iter().any(|applied| {
+        resource
+          .schema
+          .pointer(applied)
+          .and_then(Value::as_object)
+          .is_some_and(|schema| schema.contains_key("additionalProperties") || (applied != pointer && schema.contains_key("unevaluatedProperties")))
+      });
+      if !evaluates_every_property && table.conditional_properties.is_none() {
+        restrictions.push(restriction(&evaluated, others));
+      }
     }
   }
   // `files`, as dprint describes it for every override
@@ -1133,7 +1155,25 @@ mod test {
       "allOf": [{ "properties": { "b": { "type": "number" } } }],
       "unevaluatedProperties": false,
     });
+    // `additionalProperties` evaluates every property it applies to, so
+    // `unevaluatedProperties` has nothing left, whatever `properties` declare
+    let unevaluated_after_typed_others = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": { "a": { "type": "string" } },
+      "additionalProperties": { "type": "number" },
+      "unevaluatedProperties": false,
+    });
+    let unevaluated_after_an_open_item = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": { "a": { "type": "string" } },
+      "allOf": [{ "additionalProperties": true }],
+      "unevaluatedProperties": false,
+    });
     let cases = [
+      (&unevaluated_after_typed_others, json!({}), json!({ "b": 1 }), true),
+      (&unevaluated_after_typed_others, json!({}), json!({ "b": "x" }), false),
+      (&unevaluated_after_typed_others, json!({}), json!({ "a": "x", "b": 2 }), true),
+      (&unevaluated_after_an_open_item, json!({}), json!({ "b": "anything" }), true),
       (&closed_branch, json!({}), json!({ "b": 1 }), true),
       (&closed_branch, json!({}), json!({ "a": "x" }), false),
       (&closed_branch, json!({}), json!({ "a": "x", "b": 1 }), false),
