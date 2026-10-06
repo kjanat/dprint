@@ -1783,18 +1783,18 @@ mod test {
       );
     }
     // a number of seconds no deadline can be made from (an instant can't be
-    // that far off) is ignored too, rather than overflowing later
-    for value in [u64::MAX.to_string(), (u64::MAX / 2).to_string()] {
-      environment.set_env_var(TIMEOUT_ENV_VAR, Some(&value));
-      assert_eq!(compile_timeout(&environment), None, "{}", value);
-      assert_eq!(
-        environment.take_stderr_messages(),
-        vec![format!(
-          "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it's more seconds than can be waited for.",
-          value
-        )]
-      );
-    }
+    // that far off; how far depends on the platform) is ignored too, rather
+    // than overflowing later
+    let value = u64::MAX.to_string();
+    environment.set_env_var(TIMEOUT_ENV_VAR, Some(&value));
+    assert_eq!(compile_timeout(&environment), None);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![format!(
+        "Ignoring DPRINT_WASM_COMPILE_TIMEOUT={}, as it's more seconds than can be waited for.",
+        value
+      )]
+    );
   }
 
   #[test]
