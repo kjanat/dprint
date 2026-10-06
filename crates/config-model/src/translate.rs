@@ -15,8 +15,9 @@ use url::Url;
 
 use crate::pointer;
 
-/// A JSON schema dialect (draft) dprint can make a 2020-12 resource of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A JSON schema dialect (draft) dprint can make a 2020-12 resource of, in
+/// order of publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Dialect {
   Draft04,
   Draft06,
@@ -48,6 +49,50 @@ impl Dialect {
   fn ignores_next_to_ref(self) -> bool {
     matches!(self, Self::Draft04 | Self::Draft06 | Self::Draft07)
   }
+
+  /// Whether a keyword that 2020-12 applies (an applicator, a validation
+  /// keyword, or a core keyword that changes what a reference means) is the
+  /// draft's too. One that isn't is ignored by the draft, so a 2020-12
+  /// resource mustn't have it (see [`to_2020_12`]). Any other keyword is
+  /// `true`: an annotation, a container of definitions, or one of no draft,
+  /// which means nothing to a validator in any of them. (What a draft says
+  /// differently from 2020-12, ex. draft-04's `id`, is translated by name.)
+  fn knows(self, keyword: &str) -> bool {
+    let since = match keyword {
+      "$ref"
+      | "$schema"
+      | "type"
+      | "enum"
+      | "multipleOf"
+      | "maximum"
+      | "exclusiveMaximum"
+      | "minimum"
+      | "exclusiveMinimum"
+      | "maxLength"
+      | "minLength"
+      | "pattern"
+      | "items"
+      | "maxItems"
+      | "minItems"
+      | "uniqueItems"
+      | "maxProperties"
+      | "minProperties"
+      | "required"
+      | "properties"
+      | "patternProperties"
+      | "additionalProperties"
+      | "allOf"
+      | "anyOf"
+      | "oneOf"
+      | "not" => Self::Draft04,
+      "$id" | "const" | "contains" | "propertyNames" => Self::Draft06,
+      "if" | "then" | "else" => Self::Draft07,
+      "$anchor" | "dependentRequired" | "dependentSchemas" | "unevaluatedItems" | "unevaluatedProperties" | "maxContains" | "minContains" => Self::Draft2019_09,
+      "prefixItems" | "$dynamicRef" | "$dynamicAnchor" => Self::Draft2020_12,
+      _ => return true,
+    };
+    self >= since
+  }
 }
 
 /// Makes a schema of `dialect`, the resource at `uri`, a 2020-12 resource:
@@ -65,7 +110,10 @@ impl Dialect {
 /// - 2019-09's `$recursiveRef` and `$recursiveAnchor` become `$dynamicRef`
 ///   and `$dynamicAnchor`;
 /// - what's next to a `$ref` other than annotations, which the drafts
-///   before 2019-09 ignore, is dropped, as 2020-12 would apply it.
+///   before 2019-09 ignore, is dropped, as 2020-12 would apply it;
+/// - so is a keyword the draft doesn't know but 2020-12 applies (ex.
+///   draft-04's `if`, or draft-07's `unevaluatedProperties`), which the
+///   draft ignores (see [`Dialect::knows`]).
 ///
 /// The references stay as they are: they're resolved against the `$id`s,
 /// as in the plugin's own document. Except that a reference by JSON pointer
@@ -76,13 +124,16 @@ impl Dialect {
 ///
 /// A schema within that declares a dialect dprint doesn't know can't be
 /// translated, nor left as it is (a validator would read it in the root's
-/// dialect), so the whole schema is refused as [`UnknownDialect`], saying
-/// where. The schema is then partly translated and not to be used.
-pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) -> Result<(), UnknownDialect> {
+/// dialect), so the whole schema is refused as
+/// [`Untranslatable::UnknownDialect`], saying where. So is one with a
+/// reference by JSON pointer into what the translation drops
+/// ([`Untranslatable::ReferenceIntoDropped`]), which can't be kept. The
+/// schema is then partly translated and not to be used.
+pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) -> Result<(), Untranslatable> {
   let mut moves = Vec::new();
   translate(schema, dialect, uri, "", &mut moves)?;
   if !moves.is_empty() {
-    rewrite_references_into_moved_schemas(schema, uri, &moves);
+    rewrite_references_into_moved_schemas(schema, uri, &moves)?;
   }
   if let Value::Object(object) = schema {
     object.shift_remove("$id");
@@ -94,12 +145,16 @@ pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) -> Result<(),
   Ok(())
 }
 
-/// A `$schema` of a draft dprint doesn't know, and where it is (the JSON
-/// pointer of the schema it's in; empty for the root).
+/// Why a schema can't be made a 2020-12 resource.
 #[derive(Debug, PartialEq, Eq)]
-pub struct UnknownDialect {
-  pub dialect: String,
-  pub pointer: String,
+pub enum Untranslatable {
+  /// A `$schema` of a draft dprint doesn't know, and where it is (the JSON
+  /// pointer of the schema it's in; empty for the root).
+  UnknownDialect { dialect: String, pointer: String },
+  /// A `$ref` by JSON pointer into what the translation drops (a keyword
+  /// the schema's draft ignores, which 2020-12 would apply), and where the
+  /// reference and the dropped keyword are (JSON pointers).
+  ReferenceIntoDropped { reference: String, pointer: String, dropped: String },
 }
 
 /// The keywords a draft before 2019-09 ignores next to a `$ref`: all but
@@ -147,23 +202,24 @@ const IGNORED_NEXT_TO_REF: &[&str] = &[
 ];
 
 /// Where the translation moves a schema from and to, as JSON pointers from
-/// the document's root. Each is in the coordinates after the moves before
-/// it (a parent's before its children's), so they apply in order.
-type Move = (String, String);
+/// the document's root (`None` for one that's dropped). Each is in the
+/// coordinates after the moves before it (a parent's before its children's),
+/// so they apply in order.
+type Move = (String, Option<String>);
 
-fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, moves: &mut Vec<Move>) -> Result<(), UnknownDialect> {
+fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, moves: &mut Vec<Move>) -> Result<(), Untranslatable> {
   let Value::Object(object) = schema else {
     return Ok(());
   };
   // a `$schema` within switches the dialect for what's under it (the
   // root's was checked, and is the caller's `dialect`)
   let dialect = match object.get("$schema") {
-    Some(Value::String(uri)) if !pointer.is_empty() => Dialect::of(uri).ok_or_else(|| UnknownDialect {
+    Some(Value::String(uri)) if !pointer.is_empty() => Dialect::of(uri).ok_or_else(|| Untranslatable::UnknownDialect {
       dialect: uri.clone(),
       pointer: pointer.to_string(),
     })?,
     Some(other) if !pointer.is_empty() => {
-      return Err(UnknownDialect {
+      return Err(Untranslatable::UnknownDialect {
         dialect: other.to_string(),
         pointer: pointer.to_string(),
       });
@@ -171,8 +227,19 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, mo
     _ => dialect,
   };
   object.shift_remove("$schema");
+  // what the draft ignores, 2020-12 would apply: a keyword the draft doesn't
+  // know, and what's next to a `$ref` in the drafts before 2019-09
+  let unknown = object.keys().filter(|keyword| !dialect.knows(keyword)).cloned().collect::<Vec<_>>();
+  for keyword in unknown {
+    object.shift_remove(&keyword);
+    moves.push((pointer::append(pointer, &keyword), None));
+  }
   if dialect.ignores_next_to_ref() && object.contains_key("$ref") {
-    object.retain(|key, _| !IGNORED_NEXT_TO_REF.contains(&key.as_str()));
+    for keyword in IGNORED_NEXT_TO_REF {
+      if object.shift_remove(*keyword).is_some() {
+        moves.push((pointer::append(pointer, keyword), None));
+      }
+    }
   }
   if dialect == Dialect::Draft04 {
     if let Some(id) = object.shift_remove("id") {
@@ -209,10 +276,10 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, mo
     if let Some(Value::Array(_)) = object.get("items") {
       let items = object.shift_remove("items").unwrap();
       object.insert("prefixItems".to_string(), items);
-      moves.push((format!("{}/items", pointer), format!("{}/prefixItems", pointer)));
+      moves.push((format!("{}/items", pointer), Some(format!("{}/prefixItems", pointer))));
       if let Some(additional) = object.shift_remove("additionalItems") {
         object.insert("items".to_string(), additional);
-        moves.push((format!("{}/additionalItems", pointer), format!("{}/items", pointer)));
+        moves.push((format!("{}/additionalItems", pointer), Some(format!("{}/items", pointer))));
       }
     } else {
       object.shift_remove("additionalItems");
@@ -230,7 +297,7 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, mo
         entry.insert(dependency);
         moves.push((
           pointer::append(&format!("{}/dependencies", pointer), &name),
-          pointer::append(&format!("{}/{}", pointer, keyword), &name),
+          Some(pointer::append(&format!("{}/{}", pointer, keyword), &name)),
         ));
       }
     }
@@ -290,11 +357,16 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, mo
 /// to where that schema is now. A reference is resolved the way a validator
 /// resolves it (against the `$id` of the resource it's in), its pointer
 /// taken through the moves in order, and written back in the form it had: a
-/// fragment of its resource, or a uri.
-fn rewrite_references_into_moved_schemas(schema: &mut Value, uri: &Url, moves: &[Move]) {
+/// fragment of its resource, or a uri. One into what the translation
+/// dropped can't be kept, which refuses the schema.
+fn rewrite_references_into_moved_schemas(schema: &mut Value, uri: &Url, moves: &[Move]) -> Result<(), Untranslatable> {
   let index = ResourceIndex::of(schema, uri);
   let mut rewrites = Vec::new();
+  let mut refused = None;
   walk(schema, &mut |object, pointer| {
+    if refused.is_some() {
+      return;
+    }
     let Some(Value::String(reference)) = object.get("$ref") else {
       return;
     };
@@ -305,7 +377,17 @@ fn rewrite_references_into_moved_schemas(schema: &mut Value, uri: &Url, moves: &
     let mut after = before.clone();
     for (from, to) in moves {
       if after == *from || after.starts_with(&format!("{}/", from)) {
-        after = format!("{}{}", to, &after[from.len()..]);
+        match to {
+          Some(to) => after = format!("{}{}", to, &after[from.len()..]),
+          None => {
+            refused = Some(Untranslatable::ReferenceIntoDropped {
+              reference: reference.clone(),
+              pointer: pointer.to_string(),
+              dropped: from.clone(),
+            });
+            return;
+          }
+        }
       }
     }
     if after != before {
@@ -318,11 +400,15 @@ fn rewrite_references_into_moved_schemas(schema: &mut Value, uri: &Url, moves: &
       rewrites.push((pointer.to_string(), rewritten));
     }
   });
+  if let Some(refused) = refused {
+    return Err(refused);
+  }
   for (pointer, reference) in rewrites {
     if let Some(Value::Object(object)) = schema.pointer_mut(&pointer) {
       object.insert("$ref".to_string(), Value::String(reference));
     }
   }
+  Ok(())
 }
 
 /// What a schema's `$id` says.
@@ -533,7 +619,7 @@ mod test {
     });
     assert_eq!(
       to_2020_12(&mut schema, Dialect::Draft07, &uri()),
-      Err(UnknownDialect {
+      Err(Untranslatable::UnknownDialect {
         dialect: "https://example.com/my-dialect".to_string(),
         pointer: "/definitions/custom".to_string(),
       })
@@ -542,7 +628,13 @@ mod test {
     assert_eq!(schema["definitions"]["custom"], custom);
     // not even for a `$schema` that isn't a string
     let mut schema = json!({ "properties": { "a": { "$schema": 7 } } });
-    assert_eq!(to_2020_12(&mut schema, Dialect::Draft07, &uri()).unwrap_err().pointer, "/properties/a");
+    assert_eq!(
+      to_2020_12(&mut schema, Dialect::Draft07, &uri()),
+      Err(Untranslatable::UnknownDialect {
+        dialect: "7".to_string(),
+        pointer: "/properties/a".to_string(),
+      })
+    );
     // while one of a draft it knows is translated as that draft says
     let schema = translated(
       json!({ "$defs": { "old": { "$schema": "http://json-schema.org/draft-04/schema#", "id": "https://example.com/old.json", "minimum": 1, "exclusiveMinimum": true } } }),
@@ -611,6 +703,7 @@ mod test {
           "nested": { "$schema": "https://json-schema.org/draft/2020-12/schema", "prefixItems": [{ "type": "string" }] },
         },
         "dependencies": { "a": ["b"], "c": { "required": ["d"] } },
+        // (not a draft-07 keyword, so ignored by it and dropped)
         "dependentRequired": { "e": ["f"] },
       }),
       Dialect::Draft07,
@@ -622,7 +715,7 @@ mod test {
     assert_eq!(schema["properties"]["list"], json!({ "type": "array", "items": { "type": "string" } }));
     assert_eq!(schema["properties"]["nested"], json!({ "prefixItems": [{ "type": "string" }] }));
     assert!(schema.get("dependencies").is_none());
-    assert_eq!(schema["dependentRequired"], json!({ "e": ["f"], "a": ["b"] }));
+    assert_eq!(schema["dependentRequired"], json!({ "a": ["b"] }));
     assert_eq!(schema["dependentSchemas"], json!({ "c": { "required": ["d"] } }));
 
     let schema = translated(
@@ -649,6 +742,84 @@ mod test {
     );
     assert_eq!(schema["$dynamicAnchor"], json!("meta"));
     assert_eq!(schema["properties"]["child"], json!({ "$dynamicRef": "#meta" }));
+  }
+
+  #[test]
+  fn drops_what_the_draft_ignores_and_2020_12_would_apply() {
+    let schema = translated(
+      json!({
+        "$schema": "http://json-schema.org/draft-04/schema#",
+        "$id": "https://example.com/not-a-draft-04-keyword.json",
+        "if": {},
+        "then": { "not": {} },
+        "else": {},
+        "const": 1,
+        "contains": {},
+        "propertyNames": {},
+        "$anchor": "x",
+        "unevaluatedProperties": false,
+        "prefixItems": [{}],
+        "dependentSchemas": {},
+        "description": "kept",
+        "format": "kept",
+        "x-tool": "kept",
+        "properties": { "a": { "if": {}, "then": {} } },
+      }),
+      Dialect::Draft04,
+    );
+    assert_eq!(
+      schema,
+      json!({ "$id": uri().as_str(), "description": "kept", "format": "kept", "x-tool": "kept", "properties": { "a": {} } })
+    );
+    // a draft knows what came with it or before it
+    let schema = translated(
+      json!({ "if": {}, "then": {}, "const": 1, "$anchor": "x", "unevaluatedProperties": false, "prefixItems": [{}] }),
+      Dialect::Draft07,
+    );
+    assert_eq!(schema, json!({ "$id": uri().as_str(), "if": {}, "then": {}, "const": 1 }));
+    let schema = translated(
+      json!({ "unevaluatedProperties": false, "prefixItems": [{}], "$dynamicRef": "#meta" }),
+      Dialect::Draft2019_09,
+    );
+    assert_eq!(schema, json!({ "$id": uri().as_str(), "unevaluatedProperties": false }));
+    let schema = translated(json!({ "prefixItems": [{}], "$dynamicRef": "#meta" }), Dialect::Draft2020_12);
+    assert_eq!(schema, json!({ "$id": uri().as_str(), "prefixItems": [{}], "$dynamicRef": "#meta" }));
+  }
+
+  #[test]
+  fn refuses_a_reference_into_what_it_drops() {
+    let mut schema = json!({
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "definitions": { "x": { "if": { "properties": { "b": { "type": "string" } } } } },
+      "properties": { "a": { "$ref": "#/definitions/x/if/properties/b" } },
+    });
+    assert_eq!(
+      to_2020_12(&mut schema, Dialect::Draft04, &uri()),
+      Err(Untranslatable::ReferenceIntoDropped {
+        reference: "#/definitions/x/if/properties/b".to_string(),
+        pointer: "/properties/a".to_string(),
+        dropped: "/definitions/x/if".to_string(),
+      })
+    );
+    // what a draft before 2019-09 ignores next to a `$ref` is dropped too
+    let mut schema = json!({
+      "definitions": { "x": { "$ref": "#/definitions/y", "properties": { "b": {} } }, "y": {} },
+      "properties": { "a": { "$ref": "#/definitions/x/properties/b" } },
+    });
+    assert_eq!(
+      to_2020_12(&mut schema, Dialect::Draft07, &uri()),
+      Err(Untranslatable::ReferenceIntoDropped {
+        reference: "#/definitions/x/properties/b".to_string(),
+        pointer: "/properties/a".to_string(),
+        dropped: "/definitions/x/properties".to_string(),
+      })
+    );
+    // while a reference to what stays is fine
+    let mut schema = json!({
+      "definitions": { "x": { "$ref": "#/definitions/y", "description": "kept" }, "y": {} },
+      "properties": { "a": { "$ref": "#/definitions/x/description" } },
+    });
+    assert_eq!(to_2020_12(&mut schema, Dialect::Draft07, &uri()), Ok(()));
   }
 
   #[test]

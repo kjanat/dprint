@@ -14,7 +14,7 @@ use url::Url;
 use crate::pointer;
 use crate::translate::Dialect;
 use crate::translate::ResourceIndex;
-use crate::translate::UnknownDialect;
+use crate::translate::Untranslatable;
 use crate::translate::to_2020_12;
 
 /// The schema of a plugin's configuration.
@@ -62,7 +62,9 @@ const BUILT_IN_URI_PREFIX: &str = "dprint-built-in:/";
 /// describes its table as a whole (ex. with `maxProperties`) can't describe
 /// that, so it isn't applied, with a warning.
 ///
-/// A plugin schema of a draft dprint doesn't know is referred to by its url.
+/// A plugin schema that can't be made a 2020-12 resource (of a draft dprint
+/// doesn't know, or with a reference into what its draft ignores, see
+/// [`Untranslatable`]) is referred to by its url.
 pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
   let Value::Object(mut root) = crate::root_schema() else {
     bail!("Expected dprint's configuration schema to be an object.");
@@ -100,16 +102,25 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     let mut table_properties = plugin_table_properties.clone();
     let resource = match Resource::of(plugin.schema, plugin.url.as_ref(), &plugin.config_key) {
       Ok(resource) => resource,
-      Err(UnknownDialect { dialect, pointer }) => {
-        let at = if pointer.is_empty() { String::new() } else { format!(" (at {})", pointer) };
+      Err(why) => {
+        let why = match why {
+          Untranslatable::UnknownDialect { dialect, pointer } => {
+            let at = if pointer.is_empty() { String::new() } else { format!(" (at {})", pointer) };
+            format!("is for {}{}, a JSON schema draft dprint doesn't know", dialect, at)
+          }
+          Untranslatable::ReferenceIntoDropped { reference, pointer, dropped } => format!(
+            "refers to {} (at {}) into what its JSON schema draft ignores ({}) and 2020-12 would apply, which can't be translated",
+            reference, pointer, dropped
+          ),
+        };
         match &plugin.url {
           Some(url) => {
             warnings.push(format!(
               concat!(
-                "The configuration schema of the {} is for {}{}, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
+                "The configuration schema of the {} {}, so it's referred to by its url instead. ",
                 "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
               ),
-              plugin_display, dialect, at
+              plugin_display, why
             ));
             object_entry(&mut root, "properties").insert(
               plugin.config_key,
@@ -117,8 +128,8 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
             );
           }
           None => warnings.push(format!(
-            "The configuration schema of the {} plugin is for {}{}, a JSON schema draft dprint doesn't know, so it's left out.",
-            plugin.config_key, dialect, at
+            "The configuration schema of the {} plugin {}, so it's left out.",
+            plugin.config_key, why
           )),
         }
         continue;
@@ -230,15 +241,15 @@ struct Resource {
 }
 
 impl Resource {
-  fn of(schema: Value, url: Option<&Url>, config_key: &str) -> Result<Self, UnknownDialect> {
+  fn of(schema: Value, url: Option<&Url>, config_key: &str) -> Result<Self, Untranslatable> {
     let dialect = match schema.get("$schema") {
       None => Dialect::DEFAULT,
-      Some(Value::String(uri)) => Dialect::of(uri).ok_or_else(|| UnknownDialect {
+      Some(Value::String(uri)) => Dialect::of(uri).ok_or_else(|| Untranslatable::UnknownDialect {
         dialect: uri.clone(),
         pointer: String::new(),
       })?,
       Some(other) => {
-        return Err(UnknownDialect {
+        return Err(Untranslatable::UnknownDialect {
           dialect: other.to_string(),
           pointer: String::new(),
         });
@@ -1217,6 +1228,58 @@ mod test {
         override_properties
       );
     }
+  }
+
+  #[test]
+  fn applies_only_what_the_plugins_draft_does() {
+    // a keyword a draft doesn't know is ignored by it, while 2020-12 would
+    // apply it: the composed schema accepts exactly what the plugin's does
+    let of_draft = |draft: &str, mut schema: Value| {
+      schema["$schema"] = json!(format!("http://json-schema.org/{}/schema#", draft));
+      schema
+    };
+    let conditional = json!({ "if": {}, "then": { "not": {} } });
+    let constant = json!({ "properties": { "a": { "const": 1 } } });
+    for (plugin_schema, table, expected) in [
+      (of_draft("draft-04", conditional.clone()), json!({ "a": 1 }), true),
+      (of_draft("draft-07", conditional.clone()), json!({ "a": 1 }), false),
+      (of_draft("draft-04", constant.clone()), json!({ "a": 2 }), true),
+      (of_draft("draft-07", constant.clone()), json!({ "a": 2 }), false),
+      (of_draft("draft-07", constant.clone()), json!({ "a": 1 }), true),
+    ] {
+      assert_eq!(plugin_accepts(&plugin_schema, &table), expected, "{} {}", plugin_schema, table);
+      let schema = build(plugin_schema.clone(), Some(URL));
+      assert_eq!(schema.warnings, Vec::<String>::new(), "{}", plugin_schema);
+      assert_eq!(
+        validate_with_schema(&schema.schema, &json!({ "test": table })).is_ok(),
+        expected,
+        "{} {}",
+        plugin_schema,
+        table
+      );
+    }
+    // a reference into what the draft ignores can't be kept, so the schema
+    // is referred to by its url
+    let schema = build(
+      of_draft(
+        "draft-04",
+        json!({
+          "definitions": { "x": { "if": { "properties": { "b": { "type": "string" } } } } },
+          "properties": { "a": { "$ref": "#/definitions/x/if/properties/b" } },
+        }),
+      ),
+      Some(URL),
+    );
+    assert_eq!(
+      schema.warnings,
+      vec![concat!(
+        "The configuration schema of the test plugin (https://plugins.dprint.dev/test/schema.json) refers to #/definitions/x/if/properties/b ",
+        "(at /properties/a) into what its JSON schema draft ignores (/definitions/x/if) and 2020-12 would apply, which can't be translated, ",
+        "so it's referred to by its url instead. Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
+      )]
+    );
+    assert_eq!(schema.schema["properties"]["test"]["allOf"], json!([{ "$ref": URL }]));
+    assert!(schema.schema["$defs"].get("plugin:test").is_none());
   }
 
   #[test]
