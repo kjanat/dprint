@@ -3846,6 +3846,15 @@ lineWidth = 80
         "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "./test-process-plugin.json@checksum"],
         "exec": { "cwd": "/chosen", "commands": [{ "command": "evil", "exts": ["txt"] }] }
       }"#;
+      // the url a remote file reaches the local file by, which on windows
+      // needs a drive, which the virtual file system's root has none of
+      let (laundered_dir, laundered_url) = if cfg!(windows) {
+        ("C:\\", "file:///C:/<base>")
+      } else {
+        ("/", "file:///<base>")
+      };
+      let laundering = format!(r#"{{ "extends": "{}" }}"#, laundered_url);
+      let laundered_path = format!("{}base.json", laundered_dir);
       let resolve_extending = |extends: &str, remote: &str, base: &str| {
         resolve_in_every_format(
           &[
@@ -3854,6 +3863,11 @@ lineWidth = 80
             ("https://dprint.dev/exec", remote),
           ],
           async |environment, paths| {
+            // the local file where that url points (the same file on unix)
+            let base_path = paths.get("base");
+            environment
+              .write_file(&format!("{}{}", laundered_dir, &base_path[1..]), &environment.read_file(base_path).unwrap())
+              .unwrap();
             let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string());
             let messages = environment.take_stderr_messages();
             result.map(|result| (result.files.includes.clone(), plugin_names(&result), exec_of(&result), messages))
@@ -3881,7 +3895,7 @@ lineWidth = 80
 
       // but not one a remote configuration file chose to extend: that's the
       // remote configuration's say, however local the file is
-      let (includes, plugins, exec, messages) = resolve_extending("<https://dprint.dev/exec>", r#"{ "extends": "file:///<base>" }"#, base).unwrap();
+      let (includes, plugins, exec, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, base).unwrap();
       assert_eq!(includes, None);
       assert_eq!(plugins, vec!["https://plugins.dprint.dev/test-plugin.wasm".to_string()]);
       assert_eq!(exec, Exec::default());
@@ -3889,17 +3903,21 @@ lineWidth = 80
         messages,
         vec![
           get_warn_non_wasm_plugins_message(),
-          concat!(
-            "Note: The exec commands in remote configuration (/base.json) are ignored for security reasons. ",
-            "To run them, specify \"playWithFire\" in the exec configuration of a local configuration file ",
-            "(`true` or the programs they may run)."
-          )
-          .to_string(),
-          concat!(
-            "Note: The exec \"cwd\" in remote configuration (/base.json) is ignored for security reasons, as it decides what commands run. ",
-            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
-          )
-          .to_string(),
+          format!(
+            concat!(
+              "Note: The exec commands in remote configuration ({}) are ignored for security reasons. ",
+              "To run them, specify \"playWithFire\" in the exec configuration of a local configuration file ",
+              "(`true` or the programs they may run)."
+            ),
+            laundered_path
+          ),
+          format!(
+            concat!(
+              "Note: The exec \"cwd\" in remote configuration ({}) is ignored for security reasons, as it decides what commands run. ",
+              "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+            ),
+            laundered_path
+          ),
         ]
       );
       // and its includes are ignored with a note, like a remote file's, rather
@@ -3911,7 +3929,7 @@ lineWidth = 80
         "{}",
         err
       );
-      let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", r#"{ "extends": "file:///<base>" }"#, with_includes).unwrap();
+      let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, with_includes).unwrap();
       assert_eq!(includes, None);
       assert_eq!(messages, vec![get_warn_includes_message()]);
     }
