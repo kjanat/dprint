@@ -370,13 +370,16 @@ impl RealUrlDownloader {
     for retry_count in 0..(MAX_RETRIES + 1) {
       match self.inner_download(url, auth, retry_count, deadline, max_len, agent) {
         Ok(result) => return Ok(result),
-        Err(err) => {
+        Err(attempt) => {
           if retry_count < MAX_RETRIES {
-            log_debug!(self.logger, "Error downloading {} ({}/{}): {:#}", url, retry_count, MAX_RETRIES, err);
+            log_debug!(self.logger, "Error downloading {} ({}/{}): {:#}", url, retry_count, MAX_RETRIES, attempt.error);
           }
-          last_error = Some(err);
-          // retrying doesn't extend the deadline
-          if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+          // retrying doesn't extend the deadline: an attempt that timed out
+          // had what was left to it, so the deadline is reached, whatever
+          // the timers say of the last few milliseconds
+          let deadline_reached = deadline.is_some_and(|deadline| attempt.timed_out || Instant::now() >= deadline);
+          last_error = Some(attempt.error);
+          if deadline_reached {
             break;
           }
         }
@@ -389,7 +392,12 @@ impl RealUrlDownloader {
   pub fn download_no_retries_for_testing(&self, url: &str) -> Result<Option<Vec<u8>>> {
     let url = Url::parse(url)?;
     let agent = self.get_agent(&url)?;
-    Ok(self.inner_download(&url, None, 0, None, None, &agent)?.map(|r| r.content))
+    Ok(
+      self
+        .inner_download(&url, None, 0, None, None, &agent)
+        .map_err(|attempt| attempt.error)?
+        .map(|r| r.content),
+    )
   }
 
   fn get_agent(&self, url: &Url) -> Result<ureq::Agent> {
@@ -410,14 +418,14 @@ impl RealUrlDownloader {
     deadline: Option<Instant>,
     max_len: Option<usize>,
     agent: &ureq::Agent,
-  ) -> Result<Option<DownloadedFile>> {
+  ) -> Result<Option<DownloadedFile>, AttemptError> {
     let mut request = agent.request_url("GET", url);
     if let Some(deadline) = deadline {
       // the whole request, reading the response included, gives up at the
       // deadline, and so does looking up the host (see `BoundedResolver`)
       match deadline.checked_duration_since(Instant::now()) {
         Some(remaining) if !remaining.is_zero() => request = request.timeout(remaining),
-        _ => bail!("Error downloading {} - Timed out.", url),
+        _ => return Err(AttemptError::timed_out(anyhow::anyhow!("Error downloading {} - Timed out.", url))),
       }
     }
     if let Some(auth) = auth {
@@ -429,7 +437,9 @@ impl RealUrlDownloader {
         return Ok(None);
       }
       Err(err) => {
-        bail!("Error downloading {} - Error: {:#}", url, err)
+        let timed_out = is_timeout(&err);
+        let error = anyhow::anyhow!("Error downloading {} - Error: {:#}", url, err);
+        return Err(AttemptError { error, timed_out });
       }
     };
 
@@ -450,7 +460,7 @@ impl RealUrlDownloader {
       && let Some(len) = content_length
       && len > max_len
     {
-      return Err(response_too_large_error(url, Some(len), max_len));
+      return Err(response_too_large_error(url, Some(len), max_len).into());
     }
     let mut reader = resp.into_reader();
     let content = match read_response(
@@ -462,14 +472,18 @@ impl RealUrlDownloader {
       self.progress_bars.as_deref(),
     ) {
       Ok(content) => content,
-      Err(err) => bail!("Error downloading {} - {:#}", url, err),
+      Err(err) => {
+        let timed_out = err.downcast_ref::<std::io::Error>().is_some_and(is_io_timeout);
+        let error = anyhow::anyhow!("Error downloading {} - {:#}", url, err);
+        return Err(AttemptError { error, timed_out });
+      }
     };
     // or by how much of it there turns out to be, of which only a byte over
     // the limit was read
     if let Some(max_len) = max_len
       && content.len() > max_len
     {
-      return Err(response_too_large_error(url, None, max_len));
+      return Err(response_too_large_error(url, None, max_len).into());
     }
     Ok(Some(DownloadedFile { headers, content }))
   }
@@ -477,6 +491,46 @@ impl RealUrlDownloader {
 
 /// Reads the response, and at most a byte more than `max_len` when that's
 /// given, so the caller can tell it's over the limit.
+/// A failed attempt to download, and whether it timed out, which with a
+/// deadline means the deadline is reached (the attempt's time limit is
+/// what was left to it), so another attempt would only time out too.
+struct AttemptError {
+  error: anyhow::Error,
+  timed_out: bool,
+}
+
+impl AttemptError {
+  fn timed_out(error: anyhow::Error) -> Self {
+    Self { error, timed_out: true }
+  }
+}
+
+impl From<anyhow::Error> for AttemptError {
+  fn from(error: anyhow::Error) -> Self {
+    Self { error, timed_out: false }
+  }
+}
+
+/// Whether a request failed by timing out: by the request's time limit, or
+/// by the host lookup's (see [`BoundedResolver`]).
+fn is_timeout(err: &ureq::Error) -> bool {
+  let ureq::Error::Transport(transport) = err else {
+    return false;
+  };
+  let mut source = std::error::Error::source(transport);
+  while let Some(err) = source {
+    if err.downcast_ref::<std::io::Error>().is_some_and(is_io_timeout) {
+      return true;
+    }
+    source = err.source();
+  }
+  transport.kind() == ureq::ErrorKind::Io && transport.to_string().contains("timed out")
+}
+
+fn is_io_timeout(err: &std::io::Error) -> bool {
+  matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+}
+
 fn read_response(
   url: &Url,
   retry_count: u8,
@@ -819,6 +873,39 @@ mod test {
     assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
     // without retrying once the deadline passed
     assert_eq!(lookups.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn doesnt_retry_an_attempt_that_timed_out_under_a_deadline() {
+    // an attempt's time is what's left to the deadline, so once it times
+    // out the deadline is reached, whatever the timers say of the last few
+    // milliseconds (which once had a retry connect a second time)
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let downloader = create_silent_downloader().with_lookup({
+      let lookups = lookups.clone();
+      Arc::new(move |netloc: &str| {
+        lookups.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("Looking up {} timed out.", netloc)))
+      })
+    });
+    let (result, elapsed) = download_before_with(downloader, "http://timing-out.invalid/schema.json", Duration::from_secs(10));
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("Looking up timing-out.invalid:80 timed out."), "{}", err);
+    assert!(elapsed < Duration::from_secs(3), "{:?}", elapsed);
+    assert_eq!(lookups.load(Ordering::SeqCst), 1);
+
+    // without a deadline, a timed out attempt is retried like any other
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let downloader = create_silent_downloader().with_lookup({
+      let lookups = lookups.clone();
+      Arc::new(move |_: &str| {
+        lookups.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"))
+      })
+    });
+    let url = super::Url::parse("http://timing-out.invalid/schema.json").unwrap();
+    assert!(downloader.download_with_auth(&url, None, None, None).is_err());
+    assert_eq!(lookups.load(Ordering::SeqCst), usize::from(super::MAX_RETRIES) + 1);
   }
 
   #[test]
