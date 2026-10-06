@@ -68,14 +68,22 @@ impl Dialect {
 ///   before 2019-09 ignore, is dropped, as 2020-12 would apply it.
 ///
 /// The references stay as they are: they're resolved against the `$id`s,
-/// as in the plugin's own document.
+/// as in the plugin's own document. Except that a reference by JSON pointer
+/// into a schema the translation moved (ex. `#/definitions/pair/items/0`,
+/// a tuple's item that is now under `prefixItems`) is rewritten to where
+/// that schema is now, as the pointer would otherwise point at nothing or
+/// at something else.
 ///
 /// A schema within that declares a dialect dprint doesn't know can't be
 /// translated, nor left as it is (a validator would read it in the root's
 /// dialect), so the whole schema is refused as [`UnknownDialect`], saying
 /// where. The schema is then partly translated and not to be used.
 pub fn to_2020_12(schema: &mut Value, dialect: Dialect, uri: &Url) -> Result<(), UnknownDialect> {
-  translate(schema, dialect, uri, "")?;
+  let mut moves = Vec::new();
+  translate(schema, dialect, uri, "", &mut moves)?;
+  if !moves.is_empty() {
+    rewrite_references_into_moved_schemas(schema, uri, &moves);
+  }
   if let Value::Object(object) = schema {
     object.shift_remove("$id");
     let mut root = Map::new();
@@ -138,7 +146,12 @@ const IGNORED_NEXT_TO_REF: &[&str] = &[
   "contentEncoding",
 ];
 
-fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) -> Result<(), UnknownDialect> {
+/// Where the translation moves a schema from and to, as JSON pointers from
+/// the document's root. Each is in the coordinates after the moves before
+/// it (a parent's before its children's), so they apply in order.
+type Move = (String, String);
+
+fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str, moves: &mut Vec<Move>) -> Result<(), UnknownDialect> {
   let Value::Object(object) = schema else {
     return Ok(());
   };
@@ -196,8 +209,10 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) ->
     if let Some(Value::Array(_)) = object.get("items") {
       let items = object.shift_remove("items").unwrap();
       object.insert("prefixItems".to_string(), items);
+      moves.push((format!("{}/items", pointer), format!("{}/prefixItems", pointer)));
       if let Some(additional) = object.shift_remove("additionalItems") {
         object.insert("items".to_string(), additional);
+        moves.push((format!("{}/additionalItems", pointer), format!("{}/items", pointer)));
       }
     } else {
       object.shift_remove("additionalItems");
@@ -211,7 +226,13 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) ->
       let Value::Object(entries) = object.entry(keyword).or_insert_with(|| Value::Object(Map::new())) else {
         continue;
       };
-      entries.entry(name).or_insert(dependency);
+      if let serde_json::map::Entry::Vacant(entry) = entries.entry(name.clone()) {
+        entry.insert(dependency);
+        moves.push((
+          pointer::append(&format!("{}/dependencies", pointer), &name),
+          pointer::append(&format!("{}/{}", pointer, keyword), &name),
+        ));
+      }
     }
   }
   if dialect == Dialect::Draft2019_09 {
@@ -230,7 +251,7 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) ->
       "properties" | "patternProperties" | "definitions" | "$defs" | "dependentSchemas" => {
         if let Value::Object(schemas) = value {
           for (name, schema) in schemas.iter_mut() {
-            translate(schema, dialect, &base, &pointer::append(&keyword_pointer, name))?;
+            translate(schema, dialect, &base, &pointer::append(&keyword_pointer, name), moves)?;
           }
         }
       }
@@ -252,10 +273,10 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) ->
       | "not" => match value {
         Value::Array(schemas) => {
           for (index, schema) in schemas.iter_mut().enumerate() {
-            translate(schema, dialect, &base, &format!("{}/{}", keyword_pointer, index))?;
+            translate(schema, dialect, &base, &format!("{}/{}", keyword_pointer, index), moves)?;
           }
         }
-        value => translate(value, dialect, &base, &keyword_pointer)?,
+        value => translate(value, dialect, &base, &keyword_pointer, moves)?,
       },
       // data (ex. `default`), or a keyword dprint doesn't know, which an
       // extension may use for anything (ex. an `x-tool` with a `$ref`)
@@ -263,6 +284,45 @@ fn translate(schema: &mut Value, dialect: Dialect, base: &Url, pointer: &str) ->
     }
   }
   Ok(())
+}
+
+/// Rewrites each `$ref` by JSON pointer into a schema the translation moved
+/// to where that schema is now. A reference is resolved the way a validator
+/// resolves it (against the `$id` of the resource it's in), its pointer
+/// taken through the moves in order, and written back in the form it had: a
+/// fragment of its resource, or a uri.
+fn rewrite_references_into_moved_schemas(schema: &mut Value, uri: &Url, moves: &[Move]) {
+  let index = ResourceIndex::of(schema, uri);
+  let mut rewrites = Vec::new();
+  walk(schema, &mut |object, pointer| {
+    let Some(Value::String(reference)) = object.get("$ref") else {
+      return;
+    };
+    let Some((resource_uri, resource_pointer, fragment)) = index.resolve_pointer(reference, pointer) else {
+      return;
+    };
+    let before = format!("{}{}", resource_pointer, fragment);
+    let mut after = before.clone();
+    for (from, to) in moves {
+      if after == *from || after.starts_with(&format!("{}/", from)) {
+        after = format!("{}{}", to, &after[from.len()..]);
+      }
+    }
+    if after != before {
+      let fragment = &after[resource_pointer.len()..];
+      let rewritten = if reference.starts_with('#') {
+        pointer::fragment_reference(fragment)
+      } else {
+        pointer::resource_reference(resource_uri.as_str(), fragment)
+      };
+      rewrites.push((pointer.to_string(), rewritten));
+    }
+  });
+  for (pointer, reference) in rewrites {
+    if let Some(Value::Object(object)) = schema.pointer_mut(&pointer) {
+      object.insert("$ref".to_string(), Value::String(reference));
+    }
+  }
 }
 
 /// What a schema's `$id` says.
@@ -362,6 +422,22 @@ impl ResourceIndex {
       return Some(format!("{}{}", resource_pointer, fragment));
     }
     self.anchors.get(&(resource, fragment)).cloned()
+  }
+
+  /// What a `$ref` at `pointer` by JSON pointer refers to: the uri of the
+  /// resource, the resource's JSON pointer in the document, and the pointer
+  /// within the resource. `None` for a reference to another document, to a
+  /// resource as a whole or to an anchor.
+  fn resolve_pointer(&self, reference: &str, pointer: &str) -> Option<(Url, &str, String)> {
+    let target = self.base_of(pointer).join(reference).ok()?;
+    let fragment = target.fragment().map(pointer::decode_fragment).unwrap_or_default();
+    if !fragment.starts_with('/') {
+      return None;
+    }
+    let mut resource = target;
+    resource.set_fragment(None);
+    let resource_pointer = self.resources.get(&resource)?;
+    Some((resource.clone(), resource_pointer.as_str(), fragment))
   }
 
   /// A reference to the schema at `pointer` from anywhere: the uri of the
@@ -573,6 +649,74 @@ mod test {
     );
     assert_eq!(schema["$dynamicAnchor"], json!("meta"));
     assert_eq!(schema["properties"]["child"], json!({ "$dynamicRef": "#meta" }));
+  }
+
+  #[test]
+  fn rewrites_references_into_what_it_moved() {
+    let schema = translated(
+      json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "pair": { "type": "array", "items": [{ "type": "string" }, { "type": "integer" }], "additionalItems": false },
+          "nested": { "items": [{ "items": [{ "type": "boolean" }], "additionalItems": { "type": "null" } }] },
+          "inner": {
+            "$id": "inner/schema.json",
+            "definitions": { "t": { "items": [{ "type": "string" }] } },
+            "properties": { "p": { "$ref": "#/definitions/t/items/0" } },
+          },
+        },
+        "properties": {
+          "label": { "$ref": "#/definitions/pair/items/0" },
+          "count": { "$ref": "https://plugins.dprint.dev/test/schema.json#/definitions/pair/items/1" },
+          "rest": { "$ref": "#/definitions/pair/additionalItems" },
+          "deep": { "$ref": "#/definitions/nested/items/0/items/0" },
+          "deeper": { "$ref": "#/definitions/nested/items/0/additionalItems" },
+          "dependent": { "$ref": "#/dependencies/a/properties/b" },
+          "pair": { "$ref": "#/definitions/pair" },
+          "into_inner": { "$ref": "inner/schema.json#/definitions/t/items/0" },
+          "elsewhere": { "$ref": "https://example.com/other.json#/definitions/pair/items/0" },
+        },
+        "dependencies": { "a": { "properties": { "b": { "type": "number" } } } },
+      }),
+      Dialect::Draft07,
+    );
+    let reference = |name: &str| schema["properties"][name]["$ref"].as_str().unwrap().to_string();
+    assert_eq!(reference("label"), "#/definitions/pair/prefixItems/0");
+    assert_eq!(
+      reference("count"),
+      "https://plugins.dprint.dev/test/schema.json#/definitions/pair/prefixItems/1"
+    );
+    assert_eq!(reference("rest"), "#/definitions/pair/items");
+    assert_eq!(reference("deep"), "#/definitions/nested/prefixItems/0/prefixItems/0");
+    assert_eq!(reference("deeper"), "#/definitions/nested/prefixItems/0/items");
+    assert_eq!(reference("dependent"), "#/dependentSchemas/a/properties/b");
+    // what wasn't moved, or is in another document, stays as it is
+    assert_eq!(reference("pair"), "#/definitions/pair");
+    assert_eq!(reference("elsewhere"), "https://example.com/other.json#/definitions/pair/items/0");
+    // a reference within a nested resource is relative to it, and one into
+    // it from outside is written as its uri
+    assert_eq!(
+      schema["definitions"]["inner"]["properties"]["p"]["$ref"],
+      json!("#/definitions/t/prefixItems/0")
+    );
+    assert_eq!(
+      reference("into_inner"),
+      "https://plugins.dprint.dev/test/inner/schema.json#/definitions/t/prefixItems/0"
+    );
+    // each refers to the schema it did
+    let index = ResourceIndex::of(&schema, &uri());
+    let target = |reference: &str, from: &str| schema.pointer(&index.resolve(reference, from).unwrap()).cloned().unwrap();
+    assert_eq!(target(&reference("label"), "/properties/label"), json!({ "type": "string" }));
+    assert_eq!(target(&reference("count"), "/properties/count"), json!({ "type": "integer" }));
+    assert_eq!(target(&reference("rest"), "/properties/rest"), json!(false));
+    assert_eq!(target(&reference("deep"), "/properties/deep"), json!({ "type": "boolean" }));
+    assert_eq!(target(&reference("deeper"), "/properties/deeper"), json!({ "type": "null" }));
+    assert_eq!(target(&reference("dependent"), "/properties/dependent"), json!({ "type": "number" }));
+    assert_eq!(target(&reference("into_inner"), "/properties/into_inner"), json!({ "type": "string" }));
+    assert_eq!(
+      target("#/definitions/t/prefixItems/0", "/definitions/inner/properties/p"),
+      json!({ "type": "string" })
+    );
   }
 
   #[test]
