@@ -4013,15 +4013,21 @@ lineWidth = 80
     fn doesnt_let_a_remote_commands_cwd_choose_a_program_by_name_through_a_relative_path_entry() {
       // a relative entry on the PATH (ex. ".") is searched in the command's
       // working directory, so a name is no safer than a relative path then
-      let remote = r#"{
-        "exec": {
+      // (an absolute path on this platform, which Windows wants a drive for)
+      let absolute_tombi = if cfg!(windows) { "C:/tools/tombi" } else { "/usr/bin/tombi" };
+      let remote = format!(
+        r#"{{
+        "exec": {{
           "commands": [
-            { "command": "tombi format", "cwd": "/remote/chosen", "exts": ["toml"] },
-            { "command": "tombi format", "exts": ["json"] },
-            { "command": "/usr/bin/tombi format", "cwd": "/remote/chosen", "exts": ["yaml"] }
+            {{ "command": "tombi format", "cwd": "/remote/chosen", "exts": ["toml"] }},
+            {{ "command": "tombi format", "exts": ["json"] }},
+            {{ "command": "{} format", "cwd": "/remote/chosen", "exts": ["yaml"] }}
           ]
-        }
-      }"#;
+        }}
+      }}"#,
+        absolute_tombi
+      );
+      let remote = remote.as_str();
       let resolve_with_path = |play_with_fire: &str, path: &str| {
         resolve_files_in(
           &[
@@ -4045,18 +4051,17 @@ lineWidth = 80
         ("/usr/bin:/usr/local/bin", "/usr/bin:.")
       };
       // with an absolute PATH, a name is found the same wherever a command runs
-      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, absolute);
+      let allowed = format!(r#"["tombi", "{}"]"#, absolute_tombi);
+      let absolute_command = format!("{} format", absolute_tombi);
+      let result = resolve_with_path(&allowed, absolute);
       assert_eq!(
         result.exec.properties.commands,
-        vec!["tombi format".to_string(), "tombi format".to_string(), "/usr/bin/tombi format".to_string()]
+        vec!["tombi format".to_string(), "tombi format".to_string(), absolute_command.clone()]
       );
       assert_eq!(result.messages, Vec::<String>::new());
       // with a relative entry, only where the command doesn't choose the directory
-      let result = resolve_with_path(r#"["tombi", "/usr/bin/tombi"]"#, relative);
-      assert_eq!(
-        result.exec.properties.commands,
-        vec!["tombi format".to_string(), "/usr/bin/tombi format".to_string()]
-      );
+      let result = resolve_with_path(&allowed, relative);
+      assert_eq!(result.exec.properties.commands, vec!["tombi format".to_string(), absolute_command]);
       assert_eq!(
         result.messages,
         vec![
