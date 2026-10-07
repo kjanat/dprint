@@ -1,11 +1,12 @@
 /* a11y-dark theme -- https://github.com/ericwbailey/a11y-syntax-highlighting (MIT) */
 /* Based on the Tomorrow Night Eighties theme: https://github.com/isagalaev/highlight.js/blob/master/src/styles/tomorrow-night-eighties.css */
 /* @author: ericwbailey */
+/* Colors adapted to the shared light and dark palettes in theme.css. */
 
 /* Comment */
 .hljs-comment,
 .hljs-quote {
-  color: #d4d0ab;
+  color: var(--syntax-comment);
 }
 
 /* Red */
@@ -17,7 +18,7 @@
 .hljs-selector-class,
 .hljs-regexp,
 .hljs-deletion {
-  color: #ffa07a;
+  color: var(--syntax-red);
 }
 
 /* Orange */
@@ -29,12 +30,12 @@
 .hljs-params,
 .hljs-meta,
 .hljs-link {
-  color: #f5ab35;
+  color: var(--syntax-orange);
 }
 
 /* Yellow */
 .hljs-attribute {
-  color: #ffd700;
+  color: var(--syntax-yellow);
 }
 
 /* Green */
@@ -42,26 +43,26 @@
 .hljs-symbol,
 .hljs-bullet,
 .hljs-addition {
-  color: #abe338;
+  color: var(--syntax-green);
 }
 
 /* Blue */
 .hljs-title,
 .hljs-section {
-  color: #00e0e0;
+  color: var(--syntax-blue);
 }
 
 /* Purple */
 .hljs-keyword,
 .hljs-selector-tag {
-  color: #dcc6e0;
+  color: var(--syntax-purple);
 }
 
 .hljs {
   display: block;
   overflow-x: auto;
-  background: #2b2b2b;
-  color: #f8f8f2;
+  background: var(--code-bg);
+  color: var(--text);
   padding: 0.5em;
 }
 

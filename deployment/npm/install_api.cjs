@@ -1,11 +1,11 @@
 // @ts-check
 "use strict";
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 /** @type {boolean | undefined} */
-let cachedIsMusl = undefined;
+let cachedIsMusl;
 
 module.exports = {
   replaceBinEntry,
@@ -76,7 +76,7 @@ module.exports = {
 function resolveSourceExecutablePath(target, dprintFileName) {
   let sourcePackagePath;
   try {
-    sourcePackagePath = path.dirname(require.resolve("@dprint/" + target + "/package.json"));
+    sourcePackagePath = path.dirname(require.resolve(`@dprint/${target}/package.json`));
   } catch {
     // the optional dependency wasn't installed
     return undefined;
@@ -93,16 +93,17 @@ function resolveSourceExecutablePath(target, dprintFileName) {
  * @param destinationPath {string}
  */
 function downloadExecutable(target, dprintFileName, destinationPath) {
+  // @ts-ignore
   const version = require("./package.json").version;
   const registry = (process.env.npm_config_registry || "https://registry.npmjs.org")
     .replace(/\/+$/, "");
   // npm tarball urls drop the scope from the file name (e.g.
   // https://registry.npmjs.org/@dprint/win32-x64/-/win32-x64-1.0.0.tgz)
-  const tarballUrl = registry + "/@dprint/" + target + "/-/" + target + "-" + version + ".tgz";
-  console.error("[dprint] Optional dependency @dprint/" + target + " was not installed. Downloading from " + tarballUrl);
+  const tarballUrl = `${registry}/@dprint/${target}/-/${target}-${version}.tgz`;
+  console.error(`[dprint] Optional dependency @dprint/${target} was not installed. Downloading from ${tarballUrl}`);
   const tarballBuffer = downloadBufferSync(tarballUrl);
   // files inside an npm tarball live under the "package/" directory
-  const executableBuffer = extractFileFromTarGzip(tarballBuffer, "package/" + dprintFileName);
+  const executableBuffer = extractFileFromTarGzip(tarballBuffer, `package/${dprintFileName}`);
   verifyExecutableHash(target, executableBuffer);
   atomicWriteFile(destinationPath, executableBuffer);
 }
@@ -116,15 +117,16 @@ function downloadExecutable(target, dprintFileName, destinationPath) {
 function verifyExecutableHash(target, buffer) {
   let hashes;
   try {
+    // @ts-ignore
     hashes = require("./hashes.json");
   } catch (err) {
-    throw new Error("Could not load hashes.json to verify the downloaded binary: " + (err && err.message || err));
+    throw new Error(`Could not load hashes.json to verify the downloaded binary: ${err instanceof Error ? err.message : err}`);
   }
   const expected = hashes[target];
   if (typeof expected !== "string") {
-    throw new Error("No known hash for @dprint/" + target + " to verify the download against.");
+    throw new Error(`No known hash for @dprint/${target} to verify the download against.`);
   }
-  const actual = require("crypto").createHash("sha256").update(buffer).digest("hex");
+  const actual = require("node:crypto").createHash("sha256").update(buffer).digest("hex");
   if (actual !== expected) {
     throw new Error(
       "Integrity check failed for the downloaded @dprint/" + target + " binary.\n"
@@ -166,9 +168,9 @@ function downloadBufferWithCurl(url) {
   }
   args.push("-o", "-", url);
   try {
-    return require("child_process").execFileSync("curl", args, { maxBuffer: 512 * 1024 * 1024 });
+    return require("node:child_process").execFileSync("curl", args, { maxBuffer: 512 * 1024 * 1024 });
   } catch (err) {
-    if (err && err.code === "ENOENT") {
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
       // curl isn't installed, fall back to node
       return undefined;
     }
@@ -191,7 +193,7 @@ function downloadBufferWithNode(url) {
     + "r.pipe(process.stdout);"
     + "}).on('error',e=>{console.error(String(e&&e.message||e));process.exit(1);});}"
     + "f(process.argv[1]);";
-  return require("child_process").execFileSync(
+  return require("node:child_process").execFileSync(
     process.execPath,
     ["-e", script, url],
     { maxBuffer: 512 * 1024 * 1024 },
@@ -205,27 +207,25 @@ function downloadBufferWithNode(url) {
  * @returns {Buffer}
  */
 function extractFileFromTarGzip(buffer, subpath) {
-  const zlib = require("zlib");
+  const zlib = require("node:zlib");
   let tar;
   try {
     tar = zlib.gunzipSync(buffer);
   } catch (err) {
-    throw new Error("Invalid gzip data in downloaded tarball: " + (err && err.message || err));
+    throw new Error(`Invalid gzip data in downloaded tarball: ${err instanceof Error ? err.message : err}`);
   }
   let offset = 0;
   while (offset < tar.length) {
     const name = readTarString(tar, offset, 100);
     const size = parseInt(readTarString(tar, offset + 124, 12).trim(), 8);
     offset += 512;
-    if (!isNaN(size)) {
-      if (name === subpath) {
-        return tar.subarray(offset, offset + size);
-      }
+    if (!Number.isNaN(size)) {
+      if (name === subpath) return tar.subarray(offset, offset + size);
       // entries are padded to 512 byte boundaries
       offset += (size + 511) & ~511;
     }
   }
-  throw new Error("Could not find " + JSON.stringify(subpath) + " in downloaded tarball");
+  throw new Error(`Could not find ${JSON.stringify(subpath)} in downloaded tarball`);
 }
 
 /**
@@ -242,9 +242,9 @@ function readTarString(buffer, offset, length) {
  * @param buffer {Buffer}
  */
 function atomicWriteFile(destinationPath, buffer) {
-  const crypto = require("crypto");
+  const crypto = require("node:crypto");
   const rand = crypto.randomBytes(4).toString("hex");
-  const tempFilePath = destinationPath + "." + rand;
+  const tempFilePath = `${destinationPath}.${rand}`;
   fs.writeFileSync(tempFilePath, buffer);
   try {
     fs.renameSync(tempFilePath, destinationPath);
@@ -260,7 +260,7 @@ function atomicWriteFile(destinationPath, buffer) {
   }
 }
 
-/** @filePath {string} */
+/** @param filePath {string} */
 function chmodX(filePath) {
   const fd = fs.openSync(filePath, "r");
   try {
@@ -274,16 +274,16 @@ function chmodX(filePath) {
 function getTarget() {
   const platform = os.platform();
   if (platform === "linux") {
-    return platform + "-" + getArch() + "-" + getLinuxFamily();
+    return `${platform}-${getArch()}-${getLinuxFamily()}`;
   } else {
-    return platform + "-" + getArch();
+    return `${platform}-${getArch()}`;
   }
 }
 
 function getArch() {
   const arch = os.arch();
   if (arch !== "arm64" && arch !== "x64" && arch !== "riscv64" && arch !== "loong64" && arch !== "ppc64") {
-    throw new Error("Unsupported architecture " + os.arch() + ". Only x64, arm64, riscv64, loong64 and ppc64 binaries are available.");
+    throw new Error(`Unsupported architecture ${os.arch()}. Only x64, arm64, riscv64, loong64 and ppc64 binaries are available.`);
   }
   return arch;
 }
@@ -333,19 +333,21 @@ function getLinuxFamily() {
       }
       // excludeNetwork avoids a slow reverse DNS lookup while generating the
       // report, but it's a global flag so restore it once we're done
-      const originalExcludeNetwork = process.report.excludeNetwork;
+      // Older Node typings do not include this optional runtime property.
+      const processReport = /** @type {NodeJS.ProcessReport & { excludeNetwork?: boolean }} */ (process.report);
+      const originalExcludeNetwork = processReport.excludeNetwork;
       let rawReport;
       try {
-        process.report.excludeNetwork = true;
-        rawReport = process.report.getReport();
+        processReport.excludeNetwork = true;
+        rawReport = processReport.getReport();
       } finally {
-        process.report.excludeNetwork = originalExcludeNetwork;
+        processReport.excludeNetwork = originalExcludeNetwork;
       }
       const report = typeof rawReport === "string" ? JSON.parse(rawReport) : rawReport;
       if (!report) {
         return null;
       }
-      if (report.header && report.header.glibcVersionRuntime) {
+      if (report.header?.glibcVersionRuntime) {
         return false;
       }
       if (Array.isArray(report.sharedObjects)) {
@@ -356,12 +358,17 @@ function getLinuxFamily() {
 
     function isMuslFromChildProcess() {
       try {
-        return require("child_process").execSync("ldd --version", { encoding: "utf8" }).includes("musl");
+        return require("node:child_process").execSync("ldd --version", { encoding: "utf8" }).includes("musl");
       } catch {
         return false;
       }
     }
 
+    /**
+     * Checks if a file is using musl libc.
+     * @param f {string} The file path to check.
+     * @returns {boolean} True if the file is using musl libc, false otherwise.
+     */
     function isFileMusl(f) {
       return f.includes("libc.musl-") || f.includes("ld-musl-");
     }
@@ -382,12 +389,11 @@ function replaceBinEntry(exePath) {
     // rewrite .cmd and .ps1 wrappers to invoke the native binary directly
     fs.writeFileSync(
       path.join(binDir, "dprint.cmd"),
-      "@\"%~dp0" + relative + "\" %*\r\n",
+      `@"%~dp0${relative}" %*\r\n`,
     );
     fs.writeFileSync(
       path.join(binDir, "dprint.ps1"),
-      "& \"$PSScriptRoot/" + relative.replace(/\\/g, "/")
-        + "\" $args\r\nexit $LASTEXITCODE\r\n",
+      `& (Join-Path $PSScriptRoot "${relative.replace(/\\/g, "/")}") $args\r\nexit $LASTEXITCODE\r\n`,
     );
   } else {
     // replace symlink to point directly at the native binary
@@ -404,12 +410,8 @@ function findBinDir() {
   if (process.env.npm_config_global === "true") {
     const prefix = process.env.npm_config_prefix;
     if (prefix) {
-      const binDir = os.platform() === "win32"
-        ? prefix
-        : path.join(prefix, "bin");
-      if (isBinDirForThisPackage(binDir)) {
-        return binDir;
-      }
+      const binDir = os.platform() === "win32" ? prefix : path.join(prefix, "bin");
+      if (isBinDirForThisPackage(binDir)) return binDir;
     }
   }
 
@@ -431,6 +433,10 @@ function findBinDir() {
   return undefined;
 }
 
+/**
+ * @param binDir {string}
+ * @returns {boolean}
+ */
 function isBinDirForThisPackage(binDir) {
   try {
     if (os.platform() === "win32") {
@@ -468,9 +474,9 @@ function hardLinkOrCopy(sourcePath, destinationPath) {
  * @param destinationPath {string}
  */
 function atomicCopyFile(sourcePath, destinationPath) {
-  const crypto = require("crypto");
+  const crypto = require("node:crypto");
   const rand = crypto.randomBytes(4).toString("hex");
-  const tempFilePath = destinationPath + "." + rand;
+  const tempFilePath = `${destinationPath}.${rand}`;
   fs.copyFileSync(sourcePath, tempFilePath);
   try {
     fs.renameSync(tempFilePath, destinationPath);

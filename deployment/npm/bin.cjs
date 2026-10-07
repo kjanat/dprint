@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // @ts-check
-const path = require("path");
-const child_process = require("child_process");
-const os = require("os");
-const fs = require("fs");
+const path = require("node:path");
+const child_process = require("node:child_process");
+const os = require("node:os");
+const fs = require("node:fs");
 
 const exePath = path.join(__dirname, os.platform() === "win32" ? "dprint.exe" : "dprint");
 

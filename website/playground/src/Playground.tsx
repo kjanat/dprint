@@ -1,15 +1,14 @@
 import type { FileMatchingInfo, PluginInfo } from "@dprint/formatter";
 import JSON5 from "json5";
-import React, { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "./components";
 import { Spinner } from "./components";
 import * as formatterWorker from "./FormatterWorker";
 import { getLanguageFromPluginUrl, getPluginShortNameFromPluginUrl } from "./plugins";
+import { setupTheme } from "../../src/scripts/theme.js";
 
 import "./Playground.css";
-
-// default accent (Slate) from the design; kept as a variable so it's easy to retheme.
-const ACCENT = "#8b93a1";
 
 export interface PlaygroundProps {
   configText: string;
@@ -43,6 +42,7 @@ export function Playground({
   isLoading,
 }: PlaygroundProps) {
   const [scrollTop, setScrollTop] = useState(0);
+  useEffect(setupTheme, []);
 
   useEffect(() => {
     if (fileMatchingInfo.fileExtensions.length > 0) {
@@ -119,7 +119,7 @@ export function Playground({
   }, [pluginUrls, onSelectPluginUrl]);
 
   return (
-    <div id="App" style={{ "--accent": ACCENT } as React.CSSProperties}>
+    <div id="App">
       <nav id="AppNav">
         <div className="navInner">
           <a className="brand" href="/">dprint</a>
@@ -130,6 +130,13 @@ export function Playground({
             <a className="ghButton" href="https://github.com/kjanat/dprint" rel="noopener noreferrer">
               GitHub <span className="ghArrow">↗</span>
             </a>
+            <button className="theme-toggle" type="button" data-theme-toggle hidden>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M10 3a7 7 0 0 1 0 14Z" fill="currentColor" />
+              </svg>
+              <span data-theme-label>Theme</span>
+            </button>
           </div>
         </div>
       </nav>
@@ -213,12 +220,12 @@ export function Playground({
           <section className="pane outputPane">
             <div className="paneHeader">
               <span className="paneLabel">Output</span>
-              <span className="paneMeta" style={{ color: isLoading ? "#5b626d" : "#98c379" }}>
+              <span className="paneMeta" style={{ color: isLoading ? "var(--text-muted)" : "var(--success)" }}>
                 {isLoading ? "loading…" : "formatted ✓"}
               </span>
             </div>
             <div className="paneBody">
-              {isLoading ? <Spinner backgroundColor="#181a1e" /> : (
+              {isLoading ? <Spinner backgroundColor="var(--code-bg)" /> : (
                 <CodeEditor
                   language={editorLanguage}
                   text={formattedText}

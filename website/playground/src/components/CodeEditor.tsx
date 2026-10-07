@@ -2,6 +2,7 @@ import type * as monacoEditorForTypes from "monaco-editor";
 import React from "react";
 import type ReactMonacoEditorForTypes from "react-monaco-editor";
 import { Spinner } from "./Spinner";
+import { getTheme } from "../../../src/scripts/theme.js";
 
 export interface CodeEditorProps {
   onChange?: (text: string) => void;
@@ -16,6 +17,7 @@ export interface CodeEditorProps {
 
 export interface CodeEditorState {
   editorComponent: (typeof ReactMonacoEditorForTypes) | undefined | false;
+  theme: "light" | "dark";
 }
 
 export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState> {
@@ -28,6 +30,7 @@ export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState
     super(props);
     this.state = {
       editorComponent: undefined,
+      theme: getTheme(),
     };
     this.editorDidMount = this.editorDidMount.bind(this);
 
@@ -46,13 +49,26 @@ export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState
         });
       }
 
-      monacoEditor.editor.defineTheme("dprint-theme", {
+      monacoEditor.editor.defineTheme("dprint-dark", {
         base: "vs-dark",
         inherit: true,
         rules: [],
         colors: {
-          "editor.background": "#181a1e",
-          "editorRuler.foreground": "#283430",
+          "editor.background": "#282f39",
+          "editor.foreground": "#dde3ec",
+          "editorLineNumber.foreground": "#acbbce",
+          "editorRuler.foreground": "#4b5665",
+        },
+      });
+      monacoEditor.editor.defineTheme("dprint-light", {
+        base: "vs",
+        inherit: true,
+        rules: [],
+        colors: {
+          "editor.background": "#ffffff",
+          "editor.foreground": "#354153",
+          "editorLineNumber.foreground": "#56677d",
+          "editorRuler.foreground": "#d3dce7",
         },
       });
 
@@ -79,7 +95,15 @@ export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState
     );
   }
 
+  componentDidMount() {
+    window.addEventListener("dprint:theme-change", this.onThemeChange);
+    this.onThemeChange();
+  }
+
+  private onThemeChange = () => this.setState({ theme: getTheme() });
+
   componentWillUnmount() {
+    window.removeEventListener("dprint:theme-change", this.onThemeChange);
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -88,7 +112,7 @@ export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState
 
   private getEditor() {
     if (this.state.editorComponent == null) {
-      return <Spinner backgroundColor="#181a1e" />;
+      return <Spinner backgroundColor="var(--code-bg)" />;
     }
     if (this.state.editorComponent === false) {
       return <div className="errorMessage">Error loading code editor. Please refresh the page to try again.</div>;
@@ -99,7 +123,7 @@ export class CodeEditor extends React.Component<CodeEditorProps, CodeEditorState
         width="100%"
         height="100%"
         value={this.props.text}
-        theme="dprint-theme"
+        theme={`dprint-${this.state.theme}`}
         language={this.props.language}
         onChange={text => this.props.onChange && this.props.onChange(text)}
         editorDidMount={this.editorDidMount}

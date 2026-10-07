@@ -39,6 +39,7 @@ site
   }))
   .add("scripts.js")
   .add("style.scss")
+  .add("theme.css")
   .copy("assets", ".");
 
 // cache busting: give the built CSS/JS content-hashed filenames (like Vite)

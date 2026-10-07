@@ -4,11 +4,13 @@ import { addInstallTabsEvent } from "./scripts/install-tabs.js";
 import { setupNavHeight } from "./scripts/nav-height.js";
 import { replaceConfigTable } from "./scripts/plugin-config-table-replacer.js";
 import { replacePluginUrls } from "./scripts/plugin-url-replacer.js";
+import { setupTheme } from "./scripts/theme.js";
 
 if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(onLoad, 0);
 else document.addEventListener("DOMContentLoaded", onLoad);
 
 function onLoad() {
+  setupTheme();
   setupNavHeight();
   restoreAnchorScroll();
   replacePluginUrls();

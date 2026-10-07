@@ -1,11 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <script async src="/scripts.js"></script>
     <meta charset="utf-8" />
     <title>{% if title %}{{ title }} - dprint - Code Formatter{% else %}dprint - Code Formatter{% endif %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#1e1e1e" />
+    <link rel="icon" href="/icons/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#303640" media="(prefers-color-scheme: dark)" />
+    <script>
+    try {
+      const theme = localStorage.getItem("dprint-theme");
+      if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    } catch {}
+    </script>
+    <script async src="/scripts.js"></script>
     <meta name="description" content="{{ description }}" />
     <meta name="author" content="Dprint Code Formatting" />
     <meta name="twitter:card" content="summary" />
@@ -16,6 +28,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/theme.css" />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
@@ -28,6 +41,13 @@
           <a href="/playground">Playground</a>
           <a href="/sponsor" {% if url == "/sponsor/" %}class="active"{% endif %}>Sponsor</a>
           <a class="gh-button" href="https://github.com/kjanat/dprint" rel="noopener noreferrer">GitHub <span>↗</span></a>
+          <button class="theme-toggle" type="button" data-theme-toggle hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+              <path d="M10 3a7 7 0 0 1 0 14Z" fill="currentColor" />
+            </svg>
+            <span data-theme-label>Theme</span>
+          </button>
         </div>
       </div>
     </nav>

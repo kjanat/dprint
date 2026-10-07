@@ -13,9 +13,9 @@ export function addInstallTabsEvent() {
   const copyBtn = document.getElementById("copy-btn");
   if (tabs.length === 0 || cmdText == null) return; // not on the home page
 
-  tabs.forEach(function(tab) {
-    tab.addEventListener("click", function() {
-      tabs.forEach(function(t) {
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      tabs.forEach((t) => {
         t.classList.remove("active");
       });
       tab.classList.add("active");
@@ -27,7 +27,7 @@ export function addInstallTabsEvent() {
 
   if (copyBtn != null) {
     let copyTimeout;
-    copyBtn.addEventListener("click", async function() {
+    copyBtn.addEventListener("click", async () => {
       clearTimeout(copyTimeout);
       copyBtn.disabled = true;
       const command = cmdText.textContent;
@@ -39,7 +39,7 @@ export function addInstallTabsEvent() {
         if (cmdText.textContent === command) copyBtn.textContent = "copy failed";
       } finally {
         copyBtn.disabled = false;
-        copyTimeout = setTimeout(function() {
+        copyTimeout = setTimeout(() => {
           copyBtn.textContent = "copy";
         }, 1600);
       }

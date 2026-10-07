@@ -1,0 +1,89 @@
+/* Shared by the documentation site and playground. */
+:root {
+  color-scheme: light dark;
+  --page-bg: light-dark(#f3f5f8, #303640);
+  --surface: light-dark(#ffffff, #373e49);
+  --surface-soft: light-dark(#eaf0f6, #343b46);
+  --surface-hover: light-dark(#e0e8f1, #414b59);
+  --code-bg: light-dark(#ffffff, #282f39);
+  --nav-bg: light-dark(rgba(243, 245, 248, 0.94), rgba(48, 54, 64, 0.94));
+  --text: light-dark(#354153, #dde3ec);
+  --text-strong: light-dark(#202c3e, #f1f4f8);
+  --text-secondary: light-dark(#526278, #bcc8d9);
+  --text-muted: light-dark(#56677d, #acbbce);
+  --accent: light-dark(#315f94, #b6d2f5);
+  --border: light-dark(#d3dce7, #4b5665);
+  --border-strong: light-dark(#aab9cb, #74849a);
+  --button-bg: light-dark(#315f94, #c5daf3);
+  --button-hover: light-dark(#244b79, #e0edfc);
+  --button-text: light-dark(#ffffff, #23334a);
+  --selection-bg: light-dark(#cddff3, #4a6080);
+  --selection-text: light-dark(#1d3554, #ffffff);
+  --warning: light-dark(#905817, #ebbb79);
+  --success: light-dark(#316b44, #a4d6ad);
+  --glow-color: light-dark(rgba(63, 106, 156, 0.08), rgba(156, 192, 235, 0.09));
+  --shadow: light-dark(rgba(40, 59, 85, 0.14), rgba(12, 19, 29, 0.24));
+  --syntax-comment: light-dark(#627084, #a9b9cb);
+  --syntax-red: light-dark(#9b3c3f, #efa6a5);
+  --syntax-orange: light-dark(#84500c, #e7bd83);
+  --syntax-yellow: light-dark(#755914, #e2cc8e);
+  --syntax-green: light-dark(#316744, #add3aa);
+  --syntax-blue: light-dark(#24608b, #9bcce8);
+  --syntax-purple: light-dark(#7050a0, #d0b8e8);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  min-width: 94px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.theme-toggle:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-strong);
+}
+
+.theme-toggle[hidden] {
+  display: none;
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

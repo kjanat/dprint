@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { createFromBuffer, Formatter } from "@dprint/formatter";
+import { createFromBuffer, type Formatter } from "@dprint/formatter";
 import { formatTextUntilStable } from "./stableFormat";
 
 let formatter: Promise<Formatter> | undefined;
@@ -7,7 +7,7 @@ let config: Record<string, unknown> | undefined;
 let nextFormat: { filePath: string; fileText: string } | undefined;
 let abortController = new AbortController();
 
-onmessage = function(e) {
+onmessage = (e) => {
   switch (e.data.type) {
     case "LoadUrl": {
       loadUrl(e.data.url);

@@ -8,13 +8,13 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   height: 100%;
-  background-color: #1e1e1e;
-  color: #abb2bf;
+  background-color: var(--page-bg);
+  color: var(--text);
 }
 
 ::selection {
-  background: #3a3f49;
-  color: #fff;
+  background: var(--selection-bg);
+  color: var(--selection-text);
 }
 
 #root {
