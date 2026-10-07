@@ -105,17 +105,15 @@ pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: 
   .map_err(|err| anyhow!("Error reading dir '{}': {}", start_dir.display(), err))?;
   for event in scan {
     match event {
-      // already handled by the policy when the directory was listed
-      Ok(ScanEvent::Entry(_)) => {}
-      // not emitted, since crossings are followed
-      Ok(ScanEvent::Boundary { .. }) => {}
+      // the policy handled the entry when its directory was listed, and
+      // there are no boundaries because crossings are followed
+      Ok(ScanEvent::Entry(_) | ScanEvent::Boundary { .. }) => {}
       Ok(ScanEvent::Unlisted { path, failure }) => {
         let dir_path = path_of(environment, &start_dir, &path);
         match failure {
+          // only listing a directory tells whether it can be listed
           ScanFailure::Fs(FsError::PermissionDenied) => {
-            if !is_system_volume_information(&dir_path) {
-              log_warn!(environment, "WARNING: Ignoring directory. Permission denied: {}", dir_path.display());
-            }
+            log_warn!(environment, "WARNING: Ignoring directory. Permission denied: {}", dir_path.display());
           }
           failure => return Err(anyhow!("Error reading dir '{}': {}", dir_path.display(), failure_message(&failure))),
         }
@@ -150,12 +148,6 @@ fn failure_message(failure: &ScanFailure) -> String {
     ScanFailure::Fs(FsError::Transient(message) | FsError::Unsupported(message) | FsError::Fatal(message)) => message.clone(),
     failure => failure.to_string(),
   }
-}
-
-/// Windows denies access to "System Volume Information" at a drive's root.
-/// That's expected, so it gets no warning.
-fn is_system_volume_information(dir_path: &Path) -> bool {
-  cfg!(windows) && dir_path.file_name().is_some_and(|name| name == "System Volume Information")
 }
 
 fn path_of(environment: &impl Environment, start_dir: &Path, path: &RelativePath) -> PathBuf {
@@ -210,6 +202,12 @@ impl<TEnvironment: Environment> DiscoveryPolicy<TEnvironment> {
   }
 }
 
+/// Windows keeps "System Volume Information" at a drive's root and never lets
+/// it be listed, so it isn't tried.
+fn is_system_volume_information(name: &std::ffi::OsStr) -> bool {
+  cfg!(windows) && name == "System Volume Information"
+}
+
 fn dir_context(context: &PolicyContext) -> &DirContext {
   context.get::<DirContext>().expect("the discovery policy only creates directory contexts")
 }
@@ -237,7 +235,7 @@ impl<TEnvironment: Environment> ScanPolicy for DiscoveryPolicy<TEnvironment> {
       return DESCEND;
     };
     let parent = dir_context(parent);
-    if parent.has_config_file || name == ".git" {
+    if parent.has_config_file || name == ".git" || is_system_volume_information(name) {
       return ScanDecision::Excluded;
     }
     let dir_path = self.environment.dir_entry_path(&parent.dir, name);
