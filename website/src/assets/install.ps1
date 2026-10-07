@@ -23,7 +23,9 @@ $Target = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -e
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Resolve the permanent repository ID so downloads survive repository renames.
-$Repository = Invoke-RestMethod 'https://api.github.com/repositories/1092062077' -UseBasicParsing
+$RepositoryHeaders = @{}
+if ($env:GITHUB_TOKEN) { $RepositoryHeaders.Authorization = "Bearer $env:GITHUB_TOKEN" }
+$Repository = Invoke-RestMethod 'https://api.github.com/repositories/1092062077' -UseBasicParsing -Headers $RepositoryHeaders
 $RepositoryUrl = $Repository.html_url
 $DprintUri = $Version ? "$RepositoryUrl/releases/download/$Version/dprint-${Target}.zip" : "$RepositoryUrl/releases/latest/download/dprint-${Target}.zip"
 

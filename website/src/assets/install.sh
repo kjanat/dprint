@@ -54,7 +54,12 @@ if [ "${target%-linux}" != "${target}" ]; then # check "-linux" suffix
 fi
 
 # Resolve the permanent repository ID so downloads survive repository renames.
-repository_url=$(curl --fail --location --silent --show-error "https://api.github.com/repositories/1092062077" | jq --exit-status --raw-output '.html_url | strings')
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+	repository_json=$(curl --fail --location --silent --show-error --header "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repositories/1092062077")
+else
+	repository_json=$(curl --fail --location --silent --show-error "https://api.github.com/repositories/1092062077")
+fi
+repository_url=$(printf '%s\n' "${repository_json}" | jq --exit-status --raw-output '.html_url | strings')
 if [ $# -eq 0 ]; then
 	dprint_uri="${repository_url}/releases/latest/download/dprint-${target}.zip"
 else
