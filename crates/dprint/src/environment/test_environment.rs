@@ -762,6 +762,14 @@ impl Environment for TestEnvironment {
     self.sys.fs_is_file_no_err(path)
   }
 
+  fn scan_file_system(&self) -> Arc<dyn tree_fucker::FileSystem> {
+    Arc::new(super::EnvironmentFileSystem::new(self.clone()))
+  }
+
+  fn dir_entry_path(&self, dir: &Path, name: &OsStr) -> PathBuf {
+    self.clean_path(dir.join(name))
+  }
+
   fn path_kind(&self, file_path: impl AsRef<Path>) -> Option<PathKind> {
     let path = self.clean_path(file_path);
     let metadata = self.sys.fs_symlink_metadata(path).ok()?;

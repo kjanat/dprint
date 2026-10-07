@@ -1,11 +1,6 @@
-use anyhow::Error;
 use anyhow::Result;
-use anyhow::anyhow;
-use parking_lot::Condvar;
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,32 +8,31 @@ use std::sync::Arc;
 use crate::arg_parser::ConfigDiscovery;
 use crate::configuration::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::DirEntry;
 use crate::environment::Environment;
 use crate::environment::PathKind;
-use crate::utils::gitignore::DirEntriesHint;
 use crate::utils::gitignore::GitIgnoreTree;
 use crate::utils::gitignore::GitIgnoreTreeOptions;
 use crate::utils::gitignore::resolve_global_gitignore_lines;
-use crate::utils::read_matching_shebang_line;
 
 use super::ExcludeMatchDetail;
 use super::GlobMatcher;
 use super::GlobMatcherOptions;
-use super::GlobMatchesDetail;
 use super::GlobPattern;
 use super::GlobPatterns;
 use super::escape_glob_text;
 use super::is_pattern;
 use super::non_negated_glob;
+use super::scan::DirScanGitIgnore;
+use super::scan::DirScanOptions;
+use super::scan::scan_dir;
 use super::unescape_glob_text;
 
 #[derive(Debug, Default, Clone)]
 pub struct GlobOutput {
+  /// Files matching the patterns. Extensionless files that would match with a
+  /// shebang line are included without reading them. Plugin resolution reads
+  /// the shebang later.
   pub file_paths: Vec<PathBuf>,
-  /// The shebang lines read while traversing, keyed by file path, so that
-  /// resolving the plugin for a shebang file doesn't have to read it again.
-  pub shebang_lines: HashMap<PathBuf, Vec<u8>>,
   pub config_files: Vec<PathBuf>,
   /// CLI paths and patterns that are outside the pattern base directory.
   /// The caller resolves the config file to use for these separately.
@@ -101,18 +95,11 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
     log_debug!(environment, "Skipping traversal because the CLI args were all file paths.");
   }
 
-  let mut git_ignore_tree = if opts.no_gitignore {
-    None
-  } else {
-    Some(GitIgnoreTree::new(
-      environment.clone(),
-      GitIgnoreTreeOptions {
-        include_paths: opts.file_patterns.include_paths(),
-        global_gitignore_lines: resolve_global_gitignore_lines(environment),
-      },
-    ))
-  };
-  let shebangs = opts.file_patterns.shebangs.clone();
+  let git_ignore_options = (!opts.no_gitignore).then(|| GitIgnoreTreeOptions {
+    include_paths: opts.file_patterns.include_paths(),
+    global_gitignore_lines: resolve_global_gitignore_lines(environment),
+  });
+  let mut git_ignore_tree = git_ignore_options.clone().map(|options| GitIgnoreTree::new(environment.clone(), options));
   let glob_matcher = Arc::new(GlobMatcher::new(
     opts.file_patterns,
     &GlobMatcherOptions {
@@ -139,7 +126,7 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
   // file. That's deliberate: it's what happens when running from the pattern
   // base instead, where the traversal descends into the directory and finds it.
   // The traversal below intentionally does the opposite for the start directory
-  // (see `ReadDirRunner::read_dir_entries`), which only matters when this check
+  // (see `DiscoveryPolicy::child_context`), which only matters when this check
   // doesn't run because the start directory is the pattern base.
   if run_traversal && opts.start_dir != opts.pattern_base.as_ref() && opts.start_dir.starts_with(opts.pattern_base.as_ref()) {
     match check_dir_chain(
@@ -198,42 +185,25 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
   }
 
   if run_traversal {
-    let shared_state = Arc::new(SharedState::new(opts.start_dir.clone()));
-
-    // This is a performance improvement to attempt to reduce the time of globbing down
-    // to the speed of `fs::read_dir` calls. Essentially, run all the `fs::read_dir` calls
-    // on separate threads and do the glob matching on the current thread.
-    //
-    // Reading directories is I/O bound, so spreading the reads across several threads
-    // saturates the disk far better than a single reader can. See issue #1001.
-    let read_dir_thread_count = resolve_read_dir_thread_count(environment);
-    log_debug!(environment, "Reading directories on {} thread(s)", read_dir_thread_count);
-    let read_dir_runner = Arc::new(ReadDirRunner::new(
-      environment.clone(),
-      shared_state.clone(),
-      glob_matcher.clone(),
-      ReadDirRunnerOptions {
+    let gitignore = git_ignore_options.map(|options| DirScanGitIgnore {
+      above_start_dir: git_ignore_tree.as_mut().and_then(|tree| tree.get_resolved_git_ignore_for_file(&opts.start_dir)),
+      options,
+    });
+    let results = scan_dir(
+      environment,
+      DirScanOptions {
         start_dir: opts.start_dir,
-        config_discovery: opts.config_discovery,
+        matcher: glob_matcher.clone(),
+        gitignore,
+        discover_configs,
         current_config_path: opts.current_config_path,
-        thread_count: read_dir_thread_count,
-        shebangs,
       },
-    ));
-    for _ in 0..read_dir_thread_count {
-      let read_dir_runner = read_dir_runner.clone();
-      dprint_core::async_runtime::spawn_blocking(move || read_dir_runner.run());
-    }
-
-    // run the glob matching on the current thread (it communicates with the reader threads)
-    let mut glob_matching_processor = GlobMatchingProcessor::new(shared_state, git_ignore_tree);
-    let results = glob_matching_processor.run()?;
+    )?;
     output.file_paths.extend(results.file_paths);
-    output.shebang_lines.extend(results.shebang_lines);
     for config_file in results.config_files {
-      // the traversal skips the directories the checks above already handled,
-      // so this shouldn't overlap with them, but dedup anyway because a
-      // duplicate would resolve the same scope (and format its files) twice
+      // the scan skips directories the checks above already handled, so this
+      // shouldn't overlap. Dedup anyway: a duplicate would resolve the same
+      // scope, and format its files, twice
       push_dedup_config_file(&mut output.config_files, config_file);
     }
   }
@@ -608,458 +578,6 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
   }
 }
 
-/// Default number of threads used for reading directories.
-///
-/// Reading is I/O bound rather than CPU bound, so this is a small fixed value
-/// instead of a function of the CPU count: a handful of threads saturate the
-/// disk even on a machine with few cores, while going much higher regresses
-/// (see the measurements in issue #1001). It's deliberately independent of
-/// `DPRINT_MAX_THREADS`, which limits the CPU threads used for formatting.
-const DEFAULT_READ_DIR_THREAD_COUNT: usize = 8;
-
-/// Resolves how many threads to use for reading directories.
-///
-/// Defaults to [`DEFAULT_READ_DIR_THREAD_COUNT`] and can be overridden via the
-/// `DPRINT_GLOB_READ_THREADS` environment variable.
-fn resolve_read_dir_thread_count(environment: &impl Environment) -> usize {
-  if let Some(count) = environment
-    .env_var("DPRINT_GLOB_READ_THREADS")
-    .and_then(|v| v.to_str().and_then(|v| v.parse::<usize>().ok()))
-  {
-    return count.max(1);
-  }
-  DEFAULT_READ_DIR_THREAD_COUNT
-}
-
-struct DirEntries {
-  path: PathBuf,
-  /// Derived from the full directory listing on the reader thread, since the
-  /// entries below have already had the non-matching ones (usually including
-  /// the `.gitignore` itself) filtered out.
-  hint: DirEntriesHint,
-  entries: Vec<DirOrConfigEntry>,
-}
-
-/// An entry that made it past the pattern matching done on the reader threads,
-/// leaving only the gitignore for the matching thread to apply.
-enum DirOrConfigEntry {
-  Dir {
-    path: PathBuf,
-    check_gitignore: bool,
-  },
-  File {
-    path: PathBuf,
-    check_gitignore: bool,
-    /// The first line of an extensionless file when it matches a configured
-    /// shebang, which the matching thread hands to plugin resolution.
-    shebang_line: Option<Vec<u8>>,
-  },
-  // todo: get rid of this from here probably
-  Config(PathBuf),
-}
-
-const PUSH_DIR_ENTRIES_BATCH_COUNT: usize = 500;
-
-struct ReadDirRunnerOptions {
-  start_dir: PathBuf,
-  config_discovery: ConfigDiscovery,
-  current_config_path: Option<PathBuf>,
-  thread_count: usize,
-  /// The configured shebang lines to check extensionless files for.
-  shebangs: Vec<String>,
-}
-
-struct ReadDirRunner<TEnvironment: Environment> {
-  environment: TEnvironment,
-  shared_state: Arc<SharedState>,
-  glob_matcher: Arc<GlobMatcher>,
-  options: ReadDirRunnerOptions,
-}
-
-impl<TEnvironment: Environment> ReadDirRunner<TEnvironment> {
-  pub fn new(environment: TEnvironment, shared_state: Arc<SharedState>, glob_matcher: Arc<GlobMatcher>, options: ReadDirRunnerOptions) -> Self {
-    Self {
-      environment,
-      shared_state,
-      glob_matcher,
-      options,
-    }
-  }
-
-  pub fn run(&self) {
-    while let Some(pending_dirs) = self.acquire_dirs() {
-      let mut pending_count = 0;
-      let mut all_entries = Vec::new();
-      for current_dir in pending_dirs {
-        match self.read_dir_entries(current_dir) {
-          Ok(Some((entries_read, dir_entries))) => {
-            // count what was read rather than what matched so that narrow
-            // includes don't stop the readers from handing work over
-            pending_count += entries_read;
-            all_entries.push(dir_entries);
-            // it is much faster to batch these than to hit the lock every time
-            if pending_count > PUSH_DIR_ENTRIES_BATCH_COUNT {
-              self.push_entries(std::mem::take(&mut all_entries));
-              pending_count = 0;
-            }
-          }
-          Ok(None) => continue,
-          Err(err) => {
-            self.finish_with_error(err);
-            return;
-          }
-        }
-      }
-      self.finish_reading(all_entries);
-    }
-  }
-
-  /// Reads a single directory and matches its entries against the patterns.
-  ///
-  /// The matching happens here rather than on the thread that consumes these
-  /// because these threads run in parallel and it's the bulk of the per entry
-  /// work. Only the gitignore is left to the consumer, since resolving one
-  /// caches lazily up the directory tree and so can't be shared.
-  ///
-  /// `Ok(None)` means the directory contributed nothing and should be skipped
-  /// (it was empty, nothing in it matched, or it couldn't be read for a
-  /// non-fatal reason).
-  fn read_dir_entries(&self, current_dir: PathBuf) -> Result<Option<(usize, DirEntries)>> {
-    let entries = match self.environment.dir_info(&current_dir) {
-      Ok(entries) => entries,
-      Err(err) => {
-        if is_system_volume_error(&current_dir, &err) {
-          return Ok(None);
-        }
-        if err.kind() == std::io::ErrorKind::PermissionDenied {
-          log_warn!(self.environment, "WARNING: Ignoring directory. Permission denied: {}", current_dir.display());
-          return Ok(None);
-        }
-        return Err(anyhow!("Error reading dir '{}': {:#}", current_dir.display(), err));
-      }
-    };
-    if entries.is_empty() {
-      return Ok(None);
-    }
-    let entries_read = entries.len();
-    // derive this before filtering, because the `.gitignore` that the hint is
-    // about is itself usually not a file that matches the patterns
-    let hint = DirEntriesHint::from_dir_entries(&entries);
-    // Note the start directory is exempt from config file detection because the
-    // traversal starts there, so a config file in it would take over the entire
-    // scope. Usually `current_config_path` already filters it out, but not when
-    // the config in use has no local path (ex. `--config https://host/x.json`,
-    // where the base path is the cwd) or when the directory holds a config file
-    // name other than the one in use (ex. both `dprint.json` and `.dprint.json`),
-    // because that filter only ever removes the one in use. Note that the start
-    // directory is not exempt when it's below the pattern base: the chain check
-    // in `glob` handles it there so the result doesn't depend on which
-    // directory dprint was run from.
-    let maybe_config_file = if self.options.config_discovery.traverse_descendants() && current_dir != self.options.start_dir {
-      entries
-        .iter()
-        .filter_map(|e| match e {
-          DirEntry::Directory(_) => None,
-          DirEntry::File { name, path } => {
-            // the config file already in use doesn't create a new scope
-            if name.to_str().is_some_and(|name| POSSIBLE_CONFIG_FILE_NAMES.contains(&name))
-              && Some(path.as_path()) != self.options.current_config_path.as_deref()
-            {
-              Some(path)
-            } else {
-              None
-            }
-          }
-        })
-        .next()
-    } else {
-      None
-    };
-    if let Some(config_file) = maybe_config_file {
-      let config_file = config_file.clone();
-      return Ok(Some((
-        entries_read,
-        DirEntries {
-          path: current_dir,
-          hint,
-          entries: vec![DirOrConfigEntry::Config(config_file)],
-        },
-      )));
-    }
-
-    let mut matched_entries = Vec::with_capacity(entries.len());
-    matched_entries.extend(entries.into_iter().filter_map(|e| self.match_entry(e)));
-    if matched_entries.is_empty() {
-      // nothing matched means no `Dir` entry was produced either, so nothing
-      // below this directory is ever traversed and its gitignore is never needed
-      return Ok(None);
-    }
-    Ok(Some((
-      entries_read,
-      DirEntries {
-        path: current_dir,
-        hint,
-        entries: matched_entries,
-      },
-    )))
-  }
-
-  fn match_entry(&self, entry: DirEntry) -> Option<DirOrConfigEntry> {
-    match entry {
-      DirEntry::Directory(path) => {
-        if path.file_name().map(|f| f == ".git").unwrap_or(false) {
-          return None;
-        }
-        let check_gitignore = match self.glob_matcher.is_dir_ignored(&path) {
-          ExcludeMatchDetail::Excluded => return None,
-          // an explicitly opted out exclude takes precedence over the gitignore
-          ExcludeMatchDetail::OptedOutExclude => false,
-          ExcludeMatchDetail::NotExcluded => true,
-        };
-        Some(DirOrConfigEntry::Dir { path, check_gitignore })
-      }
-      DirEntry::File { path, .. } => {
-        // read the shebang here too since these threads run in parallel and
-        // reading the file is I/O bound
-        let shebang_line = self.maybe_read_shebang_line(&path);
-        let check_gitignore = match self.glob_matcher.matches_detail_with_shebang_checked(&path, shebang_line.is_some()) {
-          GlobMatchesDetail::Excluded | GlobMatchesDetail::NotMatched => return None,
-          GlobMatchesDetail::Matched => true,
-          GlobMatchesDetail::MatchedOptedOutExclude => false,
-        };
-        Some(DirOrConfigEntry::File {
-          path,
-          check_gitignore,
-          shebang_line,
-        })
-      }
-    }
-  }
-
-  fn maybe_read_shebang_line(&self, path: &Path) -> Option<Vec<u8>> {
-    if self.options.shebangs.is_empty() || path.extension().is_some() {
-      return None;
-    }
-    read_matching_shebang_line(&self.environment, path, &self.options.shebangs)
-  }
-
-  /// Waits for directories to read, returning a chunk of them or `None` once the
-  /// walk is finished (or aborted via an error on another thread).
-  fn acquire_dirs(&self) -> Option<Vec<PathBuf>> {
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    loop {
-      if state.shutdown {
-        return None;
-      }
-      if !state.pending_dirs.is_empty() {
-        let take = read_dir_chunk_size(state.pending_dirs.len(), self.options.thread_count);
-        let chunk = state.pending_dirs.drain(..take).collect::<Vec<_>>();
-        state.reading_count += 1;
-        return Some(chunk);
-      }
-      // nothing to read right now; wait for the matching thread to feed more
-      // directories or to signal that the walk is complete
-      cvar.wait(&mut state);
-    }
-  }
-
-  fn push_entries(&self, entries: Vec<DirEntries>) {
-    if entries.is_empty() {
-      return;
-    }
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    state.pending_entries.push(entries);
-    cvar.notify_all();
-  }
-
-  /// Pushes any remaining entries and marks this reader as no longer reading.
-  fn finish_reading(&self, entries: Vec<DirEntries>) {
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    if !entries.is_empty() {
-      state.pending_entries.push(entries);
-    }
-    state.finish_reading();
-    cvar.notify_all();
-  }
-
-  /// Aborts the whole walk: records the error (first one wins) and marks this
-  /// reader as no longer reading. Any entries this reader had already read are
-  /// dropped — the matching thread surfaces the error rather than a partial result.
-  fn finish_with_error(&self, error: Error) {
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    if state.error.is_none() {
-      state.error = Some(error);
-    }
-    state.shutdown = true;
-    state.finish_reading();
-    cvar.notify_all();
-  }
-}
-
-/// Maximum number of directories a reader grabs per lock acquisition. Kept small
-/// so work stays balanced across readers and the matching thread is fed steadily,
-/// while still amortizing the lock over several directories.
-const READ_DIR_CHUNK_SIZE: usize = 8;
-
-/// Hands out a share of the pending directories to a reader, while keeping the
-/// chunk small enough that the matching thread stays fed and the readers stay
-/// balanced across a wide directory level. Note that a single very large
-/// directory is still read by one thread (a `read_dir` isn't splittable), so
-/// this balances across directories, not within one.
-fn read_dir_chunk_size(pending_len: usize, thread_count: usize) -> usize {
-  (pending_len / thread_count.max(1)).clamp(1, READ_DIR_CHUNK_SIZE)
-}
-
-fn is_system_volume_error(dir_path: &Path, err: &std::io::Error) -> bool {
-  // ignore any access denied errors for the system volume information
-  cfg!(target_os = "windows")
-    && matches!(err.raw_os_error(), Some(5))
-    && matches!(dir_path.file_name().and_then(|f| f.to_str()), Some("System Volume Information"))
-}
-
-struct GlobMatchingProcessor<TEnvironment: Environment> {
-  shared_state: Arc<SharedState>,
-  git_ignore_tree: Option<GitIgnoreTree<TEnvironment>>,
-}
-
-impl<TEnvironment: Environment> GlobMatchingProcessor<TEnvironment> {
-  pub fn new(shared_state: Arc<SharedState>, git_ignore_tree: Option<GitIgnoreTree<TEnvironment>>) -> Self {
-    Self { shared_state, git_ignore_tree }
-  }
-
-  pub fn run(&mut self) -> Result<GlobOutput> {
-    let mut output = GlobOutput::default();
-
-    loop {
-      let mut pending_dirs = Vec::new();
-
-      match self.get_next_entries() {
-        Ok(None) => return Ok(output),
-        Err(err) => return Err(err), // error
-        Ok(Some(entries)) => {
-          for dir in entries.into_iter().flatten() {
-            // reuse the directory listing we already have to avoid extra file system calls
-            let gitignore = self
-              .git_ignore_tree
-              .as_mut()
-              .and_then(|t| t.get_resolved_git_ignore_for_dir_children(&dir.path, dir.hint));
-            let is_gitignored = |path: &Path, check_gitignore: bool, is_dir: bool| match &gitignore {
-              Some(gitignore) if check_gitignore => gitignore.is_ignored(path, is_dir),
-              _ => false,
-            };
-            for entry in dir.entries {
-              match entry {
-                DirOrConfigEntry::Dir { path, check_gitignore } => {
-                  if !is_gitignored(&path, check_gitignore, /* is dir */ true) {
-                    pending_dirs.push(path);
-                  }
-                }
-                DirOrConfigEntry::File {
-                  path,
-                  check_gitignore,
-                  shebang_line,
-                } => {
-                  if !is_gitignored(&path, check_gitignore, /* is dir */ false) {
-                    if let Some(shebang_line) = shebang_line {
-                      output.shebang_lines.insert(path.clone(), shebang_line);
-                    }
-                    output.file_paths.push(path);
-                  }
-                }
-                DirOrConfigEntry::Config(path) => {
-                  output.config_files.push(path);
-                }
-              }
-            }
-          }
-        }
-      }
-
-      self.push_pending_dirs(pending_dirs);
-    }
-  }
-
-  fn push_pending_dirs(&self, pending_dirs: Vec<PathBuf>) {
-    if pending_dirs.is_empty() {
-      return; // nothing new to read; don't bother waking the readers
-    }
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    state.pending_dirs.extend(pending_dirs);
-    cvar.notify_all();
-  }
-
-  fn get_next_entries(&self) -> Result<Option<Vec<Vec<DirEntries>>>> {
-    let (lock, cvar) = &self.shared_state.inner;
-    let mut state = lock.lock();
-    loop {
-      if let Some(err) = state.error.take() {
-        return Err(err);
-      }
-      if !state.pending_entries.is_empty() {
-        return Ok(Some(std::mem::take(&mut state.pending_entries)));
-      }
-      // when no reader is currently reading and there's nothing left to read,
-      // the walk is complete: tell the readers to stop and finish up
-      if state.reading_count == 0 && state.pending_dirs.is_empty() {
-        state.shutdown = true;
-        cvar.notify_all();
-        return Ok(None);
-      }
-      // wait to be notified by a reader thread
-      cvar.wait(&mut state);
-    }
-  }
-}
-
-struct SharedStateInternal {
-  /// Directories waiting to be read by the reader threads.
-  pending_dirs: VecDeque<PathBuf>,
-  /// Batches of read directory entries waiting to be matched.
-  pending_entries: Vec<Vec<DirEntries>>,
-  /// Number of reader threads currently reading directories.
-  reading_count: usize,
-  /// The first error encountered by a reader thread, if any.
-  error: Option<Error>,
-  /// Set once the walk is complete (or aborted) so reader threads stop.
-  shutdown: bool,
-}
-
-impl SharedStateInternal {
-  /// Records that a reader has stopped reading the chunk it acquired. Every
-  /// acquired chunk decrements exactly once, so this should never underflow;
-  /// guard it anyway because an underflow would silently hang the walk (the
-  /// `reading_count == 0` termination check could never become true).
-  fn finish_reading(&mut self) {
-    self.reading_count = self.reading_count.checked_sub(1).expect("reading_count underflow");
-  }
-}
-
-struct SharedState {
-  inner: (Mutex<SharedStateInternal>, Condvar),
-}
-
-impl SharedState {
-  pub fn new(initial_dir: PathBuf) -> Self {
-    SharedState {
-      inner: (
-        Mutex::new(SharedStateInternal {
-          pending_dirs: VecDeque::from([initial_dir]),
-          pending_entries: Vec::new(),
-          reading_count: 0,
-          error: None,
-          shutdown: false,
-        }),
-        Condvar::new(),
-      ),
-    }
-  }
-}
-
 #[cfg(test)]
 mod test {
   use pretty_assertions::assert_eq;
@@ -1123,12 +641,12 @@ mod test {
   }
 
   #[tokio::test]
-  async fn should_keep_shebang_lines_of_matched_files() {
+  async fn should_find_extensionless_files_without_reading_them() {
     let mut builder = TestEnvironmentBuilder::new();
     builder.write_file("/a.txt", "");
     builder.write_file("/scripts/build", "#!/bin/sh\ntext");
     builder.write_file("/scripts/notes", "text");
-    builder.write_file("/scripts/other", "#!/usr/bin/env node\ntext");
+    builder.write_file("/scripts/other.md", "#!/bin/sh\ntext");
     let environment = builder.build();
     let root_dir = environment.canonicalize("/").unwrap();
     let result = glob(
@@ -1151,26 +669,19 @@ mod test {
     .unwrap();
     let mut file_paths = result.file_paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>();
     file_paths.sort();
-    assert_eq!(file_paths, vec!["/a.txt".to_string(), "/scripts/build".to_string()]);
-    // the line is kept around so that resolving the plugin for the file
-    // doesn't have to read it a second time
-    assert_eq!(
-      result.shebang_lines,
-      HashMap::from([(PathBuf::from("/scripts/build"), b"#!/bin/sh\n".to_vec())])
-    );
+    // every extensionless file is found, whatever its first line is: plugin
+    // resolution reads the shebang line and drops `notes`. a file with an
+    // extension is only found by the patterns
+    assert_eq!(file_paths, vec!["/a.txt", "/scripts/build", "/scripts/notes"]);
   }
 
   #[tokio::test]
-  async fn should_match_same_files_regardless_of_read_thread_count() {
-    // build a wide + deep tree (with a gitignore at the root) so the work is
-    // split across many readers and fed back in several waves, then assert the
-    // matched set is identical whether globbing with a single reader or a pool
-    // of readers. only ordering and speed should differ — if reordered
-    // traversal ever changed which files matched (e.g. a gitignore resolution
-    // order dependency) this would catch it.
+  async fn should_match_a_wide_tree() {
+    // a wide and deep tree with a gitignore at the root, excludes, an opted
+    // out exclude and extensionless files
     let mut builder = TestEnvironmentBuilder::new();
     builder.write_file("/.git/HEAD", "");
-    // `keep.txt` is gitignored so that opting it back in has to beat the
+    // `keep.txt` is gitignored, so opting it back in has to beat the
     // gitignore as well as the exclude
     builder.write_file("/.gitignore", "ignored\nkeep.txt\n");
     for i in 0..200 {
@@ -1180,60 +691,52 @@ mod test {
       builder.write_file(format!("/dir{}/ignored/c.txt", i), "");
       // excluded by the config excludes
       builder.write_file(format!("/dir{}/skip/d.txt", i), "");
-      // opted back in, which has to beat both the exclude and the gitignore
+      // opted back in, beating both the exclude and the gitignore
       builder.write_file(format!("/dir{}/skip/keep.txt", i), "");
-      // resolved by its shebang rather than by the includes
+      // extensionless, so found for plugin resolution to check the shebang
       builder.write_file(format!("/dir{}/script", i), "#!/bin/sh\n");
       builder.write_file(format!("/dir{}/notes", i), "not a script\n");
     }
     let environment = builder.build();
     let root_dir = environment.canonicalize("/").unwrap();
-    let run = |read_threads: &str| {
-      environment.set_env_var("DPRINT_GLOB_READ_THREADS", Some(read_threads));
-      let result = glob(
-        &environment,
-        GlobOptions {
-          current_config_path: None,
-          start_dir: PathBuf::from("/"),
-          config_discovery: ConfigDiscovery::Default,
-          file_patterns: GlobPatterns {
-            shebangs: vec!["#!/bin/sh".to_string()],
-            arg_includes: None,
-            config_includes: Some(vec![GlobPattern::new("**/*.txt".to_string(), root_dir.clone())]),
-            arg_excludes: None,
-            config_excludes: vec![
-              GlobPattern::new("**/skip/**".to_string(), root_dir.clone()),
-              GlobPattern::new("!**/skip/keep.txt".to_string(), root_dir.clone()),
-            ],
-          },
-          pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
-          no_gitignore: false,
+    let result = glob(
+      &environment,
+      GlobOptions {
+        current_config_path: None,
+        start_dir: PathBuf::from("/"),
+        config_discovery: ConfigDiscovery::Default,
+        file_patterns: GlobPatterns {
+          shebangs: vec!["#!/bin/sh".to_string()],
+          arg_includes: None,
+          config_includes: Some(vec![GlobPattern::new("**/*.txt".to_string(), root_dir.clone())]),
+          arg_excludes: None,
+          config_excludes: vec![
+            GlobPattern::new("**/skip/**".to_string(), root_dir.clone()),
+            GlobPattern::new("!**/skip/keep.txt".to_string(), root_dir.clone()),
+          ],
         },
-      )
-      .unwrap();
-      let mut result = result.file_paths.into_iter().map(|r| r.to_string_lossy().to_string()).collect::<Vec<_>>();
-      result.sort();
-      result
-    };
-
-    let serial = run("1");
-    let parallel = run("16");
-    assert_eq!(serial, parallel);
-    // a.txt, nested/deep/b.txt, skip/keep.txt and the shebang script per dir
-    assert_eq!(serial.len(), 800);
-    assert!(serial.iter().all(|p| !p.contains("ignored")));
-    assert_eq!(serial.iter().filter(|p| p.ends_with("/skip/keep.txt")).count(), 200);
-    assert_eq!(serial.iter().filter(|p| p.ends_with("/skip/d.txt")).count(), 0);
-    assert_eq!(serial.iter().filter(|p| p.ends_with("/script")).count(), 200);
-    assert_eq!(serial.iter().filter(|p| p.ends_with("/notes")).count(), 0);
+        pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
+        no_gitignore: false,
+      },
+    )
+    .unwrap();
+    let mut result = result.file_paths.into_iter().map(|r| r.to_string_lossy().to_string()).collect::<Vec<_>>();
+    result.sort();
+    // a.txt, nested/deep/b.txt, skip/keep.txt, script and notes per dir, and
+    // the root `.gitignore`, which has no extension either
+    assert_eq!(result.len(), 1001);
+    assert!(result.contains(&"/.gitignore".to_string()));
+    assert!(result.iter().all(|p| !p.contains("ignored")));
+    assert_eq!(result.iter().filter(|p| p.ends_with("/skip/keep.txt")).count(), 200);
+    assert_eq!(result.iter().filter(|p| p.ends_with("/skip/d.txt")).count(), 0);
+    assert_eq!(result.iter().filter(|p| p.ends_with("/script")).count(), 200);
+    assert_eq!(result.iter().filter(|p| p.ends_with("/notes")).count(), 200);
   }
 
   #[tokio::test]
   async fn should_skip_a_directory_where_nothing_matched() {
-    // `/sub` yields no entries at all after matching: the gitignore doesn't
-    // match the includes, the binary doesn't either, and `skip` is excluded. it
-    // gets dropped on the reader thread, which is only safe because dropping it
-    // also means nothing below it is ever traversed.
+    // nothing in `/sub` matches: the gitignore and the binary don't match the
+    // includes, and `skip` is excluded
     let environment = TestEnvironmentBuilder::new()
       .write_file("/a.txt", "")
       .write_file("/sub/.gitignore", "whatever\n")
@@ -1266,9 +769,7 @@ mod test {
 
   #[tokio::test]
   async fn should_respect_gitignore_that_doesnt_match_the_patterns() {
-    // the `.gitignore` itself doesn't match the includes, so it's filtered out
-    // before the matching thread sees the directory listing. its presence still
-    // has to be reported so the gitignore gets read.
+    // the `.gitignore` doesn't match the includes, but it must still be read
     let environment = TestEnvironmentBuilder::new()
       .write_file("/sub/.gitignore", "ignored\n")
       .write_file("/sub/ignored/a.txt", "")

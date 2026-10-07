@@ -230,7 +230,9 @@ impl IncludeMatcher {
   /// extension when `include_extensionless` is true. A negated include pattern
   /// still excludes an extensionless file.
   fn is_match_or_extensionless(&self, path: &Path, include_extensionless: bool) -> bool {
-    if self.literal_paths.contains(path) || matches!(self.matcher.matched(path, false), Match::Whitelist(_)) {
+    // hashing a path walks its components, so skip it when there's nothing to find
+    let is_literal = !self.literal_paths.is_empty() && self.literal_paths.contains(path);
+    if is_literal || matches!(self.matcher.matched(path, false), Match::Whitelist(_)) {
       return true;
     }
     include_extensionless
@@ -251,7 +253,8 @@ struct ExcludeMatcher {
 
 impl ExcludeMatcher {
   fn matched(&self, path: &Path, is_dir: bool) -> ExcludeMatchDetail {
-    if self.literal_paths.contains(path) {
+    // hashing a path walks its components, so skip it when there's nothing to find
+    if !self.literal_paths.is_empty() && self.literal_paths.contains(path) {
       return ExcludeMatchDetail::Excluded;
     }
     match self.matcher.matched(path, is_dir) {

@@ -95,7 +95,7 @@ This is very unsafe to do and not recommended. A warning will be displayed on fi
 
 By default, dprint only runs for a short period of time and so it will try to take advantage of as many CPU cores as it can. This might be an issue in some scenarios, and so you can limit the amount of parallelism by setting the `DPRINT_MAX_THREADS` environment variable in version 0.32 and up (ex. `DPRINT_MAX_THREADS=4`).
 
-Separately, dprint reads directories on several threads when discovering files in order to better saturate the disk. This is I/O bound, so the number of read threads is independent of `DPRINT_MAX_THREADS`. You can override it with the `DPRINT_GLOB_READ_THREADS` environment variable (ex. `DPRINT_GLOB_READ_THREADS=8`), though the default is suitable for most setups.
+Finding the files to format doesn't use these threads. dprint scans directories with [tree-fucker](https://github.com/kjanat/tree-fucker), which limits how much file system work runs at once across the whole process.
 
 ## Stalled Plugin Setup
 

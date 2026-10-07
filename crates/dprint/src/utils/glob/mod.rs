@@ -3,6 +3,7 @@ mod glob;
 mod glob_matcher;
 mod glob_pattern;
 mod glob_utils;
+mod scan;
 
 pub use glob::*;
 pub use glob_matcher::*;

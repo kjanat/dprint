@@ -282,6 +282,16 @@ pub trait Environment:
     }
   }
   fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>>;
+  /// File system to scan when finding files to format (see `utils/glob/scan.rs`).
+  fn scan_file_system(&self) -> Arc<dyn tree_fucker::FileSystem>;
+  /// Joins `name` onto `dir` using this environment's path format.
+  fn dir_entry_path(&self, dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    // `Path::join` copies `dir` and then grows the copy for `name`
+    let mut path = PathBuf::with_capacity(dir.as_os_str().len() + 1 + name.len());
+    path.push(dir);
+    path.push(name);
+    path
+  }
   /// Kills any running process whose executable lives under the given directory
   /// and returns how many were killed. Used when clearing the cache so a process
   /// plugin that's still running can't stop its executable from being deleted
