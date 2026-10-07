@@ -12,6 +12,7 @@ use anyhow::bail;
 use dprint_core::async_runtime::FutureExt;
 use dprint_core::async_runtime::LocalBoxFuture;
 use dprint_core::configuration::ConfigKeyMap;
+use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::plugins::CancellationToken;
 use dprint_core::plugins::CheckConfigUpdatesMessage;
 use dprint_core::plugins::ConfigChange;
@@ -38,9 +39,9 @@ use crate::configuration::ResolvedConfigPathWithText;
 use crate::configuration::get_default_config_file_in_ancestor_directories;
 use crate::configuration::get_global_config;
 use crate::configuration::get_plugin_config_map;
-use crate::configuration::inherit_config;
 use crate::configuration::resolve_config_from_args;
 use crate::configuration::resolve_config_from_path_with_bytes;
+use crate::configuration::resolve_descendant_config_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
@@ -60,6 +61,7 @@ use crate::plugins::PluginNameResolutionMaps;
 use crate::plugins::PluginResolution;
 use crate::plugins::PluginResolver;
 use crate::plugins::PluginWrapper;
+use crate::plugins::describe_config_diagnostic;
 use crate::plugins::output_plugin_config_diagnostics;
 use crate::utils::FastInsecureHasher;
 use crate::utils::GlobMatcher;
@@ -79,6 +81,9 @@ pub struct PluginConfigOverride {
   properties: ConfigKeyMap,
   config_id: FormatConfigId,
   matcher: GlobMatcher,
+  /// Like `PluginWithConfig::property_origins`, with this override's
+  /// properties from the file the override is from.
+  property_origins: IndexMap<String, PathSource>,
 }
 
 pub struct PluginWithConfig {
@@ -91,6 +96,7 @@ pub struct PluginWithConfig {
   /// the incremental hash so that values the plugin derives at resolution time
   /// (ex. the exec plugin's `cacheKeyFiles` hash) invalidate the cache.
   serialized_resolved_config: String,
+  property_origins: IndexMap<String, PathSource>,
   config_diagnostic_count: tokio::sync::Mutex<Option<usize>>,
 }
 
@@ -101,6 +107,10 @@ pub struct PluginWithConfigOptions {
   pub overrides: Vec<PluginConfigOverride>,
   /// The plugin's resolved configuration serialized as JSON.
   pub serialized_resolved_config: String,
+  /// The configuration files the properties of its configuration (and the
+  /// global configuration) are from, when that's not the configuration file
+  /// being resolved, for diagnostics.
+  pub property_origins: IndexMap<String, PathSource>,
 }
 
 impl PluginWithConfig {
@@ -113,6 +123,7 @@ impl PluginWithConfig {
       config_diagnostic_count: Default::default(),
       file_matching: options.file_matching,
       serialized_resolved_config: options.serialized_resolved_config,
+      property_origins: options.property_origins,
     }
   }
 
@@ -265,7 +276,14 @@ impl InitializedPluginWithConfig {
     &self,
     environment: &TEnvironment,
   ) -> Result<Result<(), OutputPluginConfigDiagnosticsError>> {
-    output_plugin_config_diagnostics(&self.info().name, &*self.instance, self.plugin.format_config.clone(), environment).await
+    output_plugin_config_diagnostics(
+      &self.info().name,
+      &*self.instance,
+      self.plugin.format_config.clone(),
+      &self.plugin.property_origins,
+      environment,
+    )
+    .await
   }
 
   pub async fn output_override_config_diagnostics<TEnvironment: Environment>(
@@ -284,7 +302,12 @@ impl InitializedPluginWithConfig {
         global: self.plugin.format_config.global.clone(),
       });
       for diagnostic in self.instance.config_diagnostics(format_config).await? {
-        log_warn!(environment, "[{}]: {}", self.info().name, diagnostic);
+        log_warn!(
+          environment,
+          "[{}]: {}",
+          self.info().name,
+          describe_config_diagnostic(&diagnostic, &override_config.property_origins)
+        );
         diagnostic_count += 1;
       }
     }
@@ -335,7 +358,8 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     config: Rc<ResolvedConfig>,
     global_config_diagnostics: Vec<GlobalConfigDiagnostic>,
   ) -> Result<Self> {
-    let plugin_name_maps = PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.base_path, config.shebangs.as_ref())?;
+    let plugin_name_maps =
+      PluginNameResolutionMaps::from_plugins(plugins.iter().map(|p| p.as_ref()), &config.origin.base_path, config.routing.shebangs.as_ref())?;
 
     Ok(PluginsScope {
       environment,
@@ -363,6 +387,20 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     if self.plugins.is_empty() { Err(NoPluginsFoundError) } else { Ok(()) }
   }
 
+  /// A global configuration diagnostic, followed by the configuration file
+  /// its property is from when that's not the configuration file being
+  /// resolved (ex. a file it extends).
+  fn describe_global_config_diagnostic(&self, diagnostic: &ConfigurationDiagnostic) -> String {
+    let source = self
+      .config
+      .as_ref()
+      .and_then(|config| config.plugins.origins.root_elsewhere(&diagnostic.property_name, &config.origin.source));
+    match source {
+      Some(source) => format!("{}\n    at {}", diagnostic, source.display()),
+      None => diagnostic.to_string(),
+    }
+  }
+
   pub fn ensure_no_global_config_diagnostics(&self) -> Result<(), ResolveConfigError> {
     if self.global_config_diagnostics.is_empty() {
       return Ok(());
@@ -372,7 +410,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       .iter()
       .filter_map(|d| match d {
         GlobalConfigDiagnostic::UnknownProperty(_) => None,
-        GlobalConfigDiagnostic::Other(d) => Some(d.to_string()),
+        GlobalConfigDiagnostic::Other(d) => Some(self.describe_global_config_diagnostic(d)),
       })
       .collect::<Vec<_>>();
     self.error_for_diagnostics(&diagnostics)
@@ -386,7 +424,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       .global_config_diagnostics
       .iter()
       .filter_map(|d| match d {
-        GlobalConfigDiagnostic::UnknownProperty(d) => Some(d.to_string()),
+        GlobalConfigDiagnostic::UnknownProperty(d) => Some(self.describe_global_config_diagnostic(d)),
         GlobalConfigDiagnostic::Other(_) => None,
       })
       .collect::<Vec<_>>();
@@ -406,7 +444,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     }
     output_text.push_str(&format!("\nHad {} config diagnostic(s)", diagnostics_len));
     if let Some(config) = &self.config {
-      output_text.push_str(&format!(" in {}", config.source));
+      output_text.push_str(&format!(" in {}", config.origin.source));
     }
     Err(ResolveConfigError::Other(anyhow::anyhow!("{}", output_text)))
   }
@@ -430,7 +468,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       plugin.incremental_hash(&mut hasher);
     }
     // the shebang mappings affect which plugin formats a file
-    if let Some(shebangs) = self.config.as_ref().and_then(|c| c.shebangs.as_ref()) {
+    if let Some(shebangs) = self.config.as_ref().and_then(|c| c.routing.shebangs.as_ref()) {
       shebangs.len().hash(&mut hasher);
       for (shebang, extension) in shebangs {
         shebang.hash(&mut hasher);
@@ -483,7 +521,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         FileMatcherOptions {
           config,
           args: &FilePatternArgs::default(),
-          root_dir: &config.base_path,
+          root_dir: &config.origin.base_path,
           specified_file_path: None,
         },
       ) {
@@ -585,7 +623,7 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
         None => {
           for scope in &self.inner {
             if let Some(config) = scope.scope.config.as_ref() {
-              scope.file_paths_by_plugins.ensure_not_empty(&config.base_path)?;
+              scope.file_paths_by_plugins.ensure_not_empty(&config.origin.base_path)?;
             }
           }
         }
@@ -660,7 +698,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       )
       .await?
     };
-    let root_config_path = config.source.maybe_local_path().cloned();
+    let root_config_path = config.origin.source.maybe_local_path().cloned();
 
     // resolve specified paths that are outside the config's directory
     // against the config file found in their own directory tree or the
@@ -742,7 +780,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       return Ok(Some(OutsideScopeConfig::ConfigFile(config_path)));
     }
 
-    if self.args.config.is_some() || config.is_global {
+    if self.args.config.is_some() || config.origin.is_global {
       // an explicitly specified config file or the global config file
       // governs explicitly specified paths anywhere
       let root_dir = self.canonical_path_root_dir(&outside_path.config_search_dir)?;
@@ -794,7 +832,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     // the current scope already handles everything in the config's
     // directory (ex. a `dprint fmt ..` arg covers it with `**`), escaping
     // in case the directory path contains glob characters (ex. `[app]`)
-    include_patterns.push(format!("!{}/**", escape_glob_text_for_cli(&config.base_path.to_string_lossy())));
+    include_patterns.push(format!("!{}/**", escape_glob_text_for_cli(&config.origin.base_path.to_string_lossy())));
     let patterns = Rc::new(FilePatternArgs {
       include_patterns: Some(include_patterns),
       only_staged: false,
@@ -841,7 +879,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     patterns: Rc<FilePatternArgs>,
   ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
     let mut rebased_config = (**config).clone();
-    rebased_config.base_path = base_path;
+    rebased_config.origin.base_path = base_path;
     self
       .resolve_scope_and_descendants(Rc::new(rebased_config), config_discovery, root_config_path, patterns)
       .await
@@ -911,13 +949,14 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     patterns: Rc<FilePatternArgs>,
   ) -> LocalBoxFuture<'a, Result<Vec<PluginsScopeAndPaths<TEnvironment>>>> {
     async move {
-      let mut config = resolve_config_from_path_with_bytes(&config_path, self.environment).await?;
-      // when a nested config opts into inheriting, merge in the ancestor config
-      if is_descendant_config && config.inherit == Some(true) {
-        config = inherit_config(config, &parent_config, self.environment)?;
-      }
+      let mut config = if is_descendant_config {
+        // a nested config that opts into inheriting merges in the ancestor config
+        resolve_descendant_config_from_path_with_bytes(&config_path, &parent_config, self.environment).await?
+      } else {
+        resolve_config_from_path_with_bytes(&config_path, self.environment).await?
+      };
       if !self.args.plugins.is_empty() {
-        config.plugins.clone_from(&parent_config.plugins);
+        config.plugins.sources.clone_from(&parent_config.plugins.sources);
       }
       self
         .resolve_scope_and_descendants(Rc::new(config), config_discovery, root_config_path, patterns)
@@ -1030,8 +1069,8 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
   // resolve the plugins
-  let plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.clone()).await?);
-  let mut config_map = config.config_map.clone();
+  let plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.sources.clone()).await?);
+  let mut config_map = config.plugins.config.clone();
 
   // resolve each plugin's configuration
   let mut plugins_with_config = Vec::new();
@@ -1042,7 +1081,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   // now get global config
   let global_config_result = get_global_config(config_map);
   let global_config = global_config_result.config;
-  let config_base_path = config.base_path.clone();
+  let config_base_path = config.origin.base_path.clone();
 
   // create the scope
   let plugins = plugins_with_config
@@ -1050,7 +1089,14 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     .map(|(plugin_config, plugin)| {
       let global_config = global_config.clone();
       let environment = environment.clone();
-      let overrides = resolve_plugin_config_overrides(plugin_config.overrides, &config_base_path, plugin_resolver)?;
+      let property_origins = config.plugins.origins.plugin_elsewhere(&plugin.info().config_key, &config.origin.source);
+      let overrides = resolve_plugin_config_overrides(
+        plugin_config.overrides,
+        &config_base_path,
+        &property_origins,
+        &config.origin.source,
+        plugin_resolver,
+      )?;
       let next_config_id = plugin_resolver.next_config_id();
       Ok(
         async move {
@@ -1068,6 +1114,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
               file_matching: resolution.file_matching,
               overrides,
               serialized_resolved_config: resolution.resolved_config,
+              property_origins,
             },
           )))
         }
@@ -1122,20 +1169,38 @@ fn filter_duplicate_plugin_names(plugins: Vec<Rc<PluginWrapper>>) -> Vec<Rc<Plug
   plugins.into_iter().filter(|plugin| names.insert(plugin.info().name.clone())).collect()
 }
 
+/// `property_origins` are where the plugin's properties are from, when that's
+/// not `config_source` (see `PluginWithConfig::property_origins`).
 fn resolve_plugin_config_overrides<TEnvironment: Environment>(
   overrides: Vec<RawPluginConfigOverride>,
   config_base_path: &CanonicalizedPathBuf,
+  property_origins: &IndexMap<String, PathSource>,
+  config_source: &PathSource,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<Vec<PluginConfigOverride>> {
   overrides
     .into_iter()
     .map(|override_config| {
       let matcher = get_patterns_as_glob_matcher(&override_config.files, config_base_path)?;
+      // the override's own properties are from the file it's from, whatever
+      // other overrides or the plugin's configuration say for the same name
+      let mut override_origins = property_origins.clone();
+      for property in override_config.properties.keys() {
+        match &override_config.origin.0 {
+          Some(origin) if origin != config_source => {
+            override_origins.insert(property.clone(), origin.clone());
+          }
+          _ => {
+            override_origins.shift_remove(property);
+          }
+        }
+      }
       Ok(PluginConfigOverride {
         files: override_config.files,
         properties: override_config.properties,
         config_id: plugin_resolver.next_config_id(),
         matcher,
+        property_origins: override_origins,
       })
     })
     .collect()
@@ -1146,6 +1211,8 @@ mod test {
   use dprint_core::configuration::ConfigKeyValue;
   use dprint_core::configuration::GlobalConfiguration;
 
+  use crate::configuration::ConfigOrigin;
+  use crate::configuration::FileRouting;
   use crate::plugins::TestPlugin;
 
   use super::*;
@@ -1166,6 +1233,7 @@ mod test {
       let plugin_with_config = PluginWithConfig::new(
         plugin,
         PluginWithConfigOptions {
+          property_origins: Default::default(),
           associations: None,
           format_config,
           file_matching: FileMatchingInfo {
@@ -1200,17 +1268,15 @@ mod test {
       let environment = crate::environment::TestEnvironment::new();
       let base_path = CanonicalizedPathBuf::new_for_testing("/");
       let config = Rc::new(ResolvedConfig {
-        config_map: Default::default(),
-        base_path: base_path.clone(),
-        source: PathSource::new_local(base_path.join_panic_relative("dprint.json")),
-        is_global: false,
-        excludes: None,
-        includes: None,
-        incremental: None,
-        shebangs,
-        inherit: None,
-        plugins: Vec::new(),
-        remote_exec: Default::default(),
+        origin: ConfigOrigin {
+          source: PathSource::new_local(base_path.join_panic_relative("dprint.json")),
+          base_path,
+          is_global: false,
+        },
+        files: Default::default(),
+        routing: FileRouting { shebangs },
+        execution: Default::default(),
+        plugins: Default::default(),
       });
       let scope = PluginsScope::new(environment, vec![Rc::new(create_plugin_with_overrides(Vec::new()))], config, Vec::new()).unwrap();
       scope.plugins_hash()
@@ -1260,6 +1326,7 @@ mod test {
       properties: ConfigKeyMap::from([("ending".to_string(), "package".into())]),
       config_id: FormatConfigId::from_raw(2),
       matcher: get_patterns_as_glob_matcher(&["**/package.txt".to_string()], &config_base_path).unwrap(),
+      property_origins: Default::default(),
     }]);
 
     assert_ne!(get_plugin_hash(&plugin_without_override), get_plugin_hash(&plugin_with_override));
@@ -1279,6 +1346,7 @@ mod test {
       properties,
       config_id: FormatConfigId::from_raw(2),
       matcher,
+      property_origins: Default::default(),
     }])
   }
 
@@ -1286,6 +1354,7 @@ mod test {
     PluginWithConfig::new(
       Rc::new(PluginWrapper::new(Box::new(TestPlugin::new("test-plugin", "test-plugin", vec!["txt"], vec![])))),
       PluginWithConfigOptions {
+        property_origins: Default::default(),
         associations: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),

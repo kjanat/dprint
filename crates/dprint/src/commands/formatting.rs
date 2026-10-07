@@ -492,6 +492,78 @@ mod test {
   }
 
   #[test]
+  fn should_format_with_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file(
+        "/dprint.toml",
+        "#:schema https://dprint.dev/schemas/v0.json\nplugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_toml");
+  }
+
+  #[test]
+  fn should_prefer_json_config_over_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .write_file(
+        "/dprint.toml",
+        "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n\n[test-plugin]\nending = \"toml\"\n",
+      )
+      .write_file(
+        "/dprint.json",
+        r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"], "test-plugin": { "ending": "json" } }"#,
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_json");
+  }
+
+  #[test]
+  fn should_extend_toml_config() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file("https://example.com/base.toml", "[test-plugin]\nending = \"remote_toml\"\n")
+      .write_file(
+        "/dprint.json",
+        r#"{ "extends": "https://example.com/base.toml", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .write_file("/file.txt", "text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_remote_toml");
+  }
+
+  #[test]
+  fn should_use_toml_config_text_from_the_cli() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin().write_file("/file.txt", "text").build();
+    let config = "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n[test-plugin]\nending = \"inline\"";
+    run_test_cli(vec!["fmt", "--config", config, "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
+    );
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_inline");
+  }
+
+  #[test]
   fn should_format_files() {
     let file_path1 = "/file.txt";
     let file_path2 = "/file.txt_ps";
@@ -2459,6 +2531,88 @@ text2"
   }
 
   #[test]
+  fn should_say_which_file_a_plugin_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#)
+          .add_config_section("test-plugin", r#"{ "also-non-existent": 1 }"#);
+      })
+      .write_file("/base.json", r#"{ "test-plugin": { "non-existent": 25 } }"#)
+      .write_file("/test.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 2 errors formatting.");
+    let mut messages = environment.take_stderr_messages();
+    messages.sort();
+    assert_eq!(
+      messages,
+      vec![
+        // the one in the configuration file being used doesn't say so
+        "[test-plugin]: Error initializing from configuration file. Had 2 diagnostic(s).",
+        "[test-plugin]: Unknown property in configuration (also-non-existent)",
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /base.json",
+      ]
+    );
+  }
+
+  #[test]
+  fn should_say_which_file_an_override_config_diagnostic_is_in() {
+    // overrides in both files with the same property, each from its own file
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#)
+          .add_config_section("test-plugin", r#"{ "overrides": [{ "files": "**/a.txt", "non-existent": 1 }] }"#);
+      })
+      .write_file(
+        "/base.json",
+        r#"{ "test-plugin": { "overrides": [{ "files": "**/b.txt", "non-existent": 2 }] } }"#,
+      )
+      .write_file("/a.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 2 errors formatting.");
+    let mut messages = environment.take_stderr_messages();
+    messages.sort();
+    assert_eq!(
+      messages,
+      vec![
+        "[test-plugin]: Error initializing from configuration file. Had 2 diagnostic(s).",
+        // the one in the configuration file being used doesn't say so
+        "[test-plugin]: Unknown property in configuration (non-existent)",
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /base.json",
+      ]
+    );
+  }
+
+  #[test]
+  fn should_say_which_file_an_inherited_plugin_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("test-plugin", r#"{ "non-existent": 25 }"#);
+      })
+      .with_local_config("/sub/dprint.json", |c| {
+        c.set_inherit(true);
+      })
+      .write_file("/sub/test.txt", "test")
+      .build();
+
+    let error_message = run_test_cli(vec!["fmt", "sub/*.txt"], &environment).err().unwrap();
+
+    assert_eq!(error_message.to_string(), "Had 1 error formatting.");
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![
+        "[test-plugin]: Unknown property in configuration (non-existent)\n    at /dprint.json",
+        "[test-plugin]: Error initializing from configuration file. Had 1 diagnostic(s)."
+      ]
+    );
+  }
+
+  #[test]
   fn should_error_on_process_plugin_config_diagnostic() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
       .with_default_config(|c| {
@@ -2635,6 +2789,24 @@ text2"
     assert_eq!(
       err.to_string(),
       "* Unknown property in configuration (excess-primitive)\n\nHad 1 config diagnostic(s) in /dprint.json"
+    );
+  }
+
+  #[test]
+  fn should_say_which_file_a_global_config_diagnostic_is_in() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_config_section("extends", r#""./base.json""#);
+      })
+      .write_file("/base.json", r#"{ "excess-primitive": true }"#)
+      .write_file("/test.txt", "test")
+      .build();
+
+    let err = run_test_cli(vec!["fmt", "**/*.txt"], &environment).err().unwrap();
+    err.assert_exit_code(11);
+    assert_eq!(
+      err.to_string(),
+      "* Unknown property in configuration (excess-primitive)\n    at /base.json\n\nHad 1 config diagnostic(s) in /dprint.json"
     );
   }
 

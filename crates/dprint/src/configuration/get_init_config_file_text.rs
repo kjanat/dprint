@@ -9,6 +9,7 @@ use dprint_core::plugins::wasm::{self};
 use jsonc_parser::cst::CstInputValue;
 use jsonc_parser::cst::CstRootNode;
 
+use super::ConfigFileFormat;
 use crate::environment::DirEntry;
 use crate::environment::Environment;
 use crate::plugins::InfoFile;
@@ -44,6 +45,8 @@ pub struct GetInitConfigFileTextOptions {
   /// age that applies is the one nearest the config file rather than the
   /// process cwd (which differs for `--global` and `--config`).
   pub config_dir: Option<PathBuf>,
+  /// The format of the config file to be written.
+  pub config_format: ConfigFileFormat,
 }
 
 /// Options for [`get_init_plugins_to_add`].
@@ -56,6 +59,8 @@ pub struct GetInitPluginsToAddOptions {
   /// Directory of the config file being added to. An .npmrc setting
   /// `min-release-age` is looked for here and in its ancestors.
   pub config_dir: Option<PathBuf>,
+  /// The format of the config file being added to.
+  pub config_format: ConfigFileFormat,
 }
 
 /// The outcome of prompting for plugins to add to a config file that already
@@ -69,6 +74,14 @@ pub enum InitPluginsToAdd {
   Entries(Vec<String>),
 }
 
+/// The file extension of a config file of the format, which a plugin formats.
+fn config_file_extension(format: ConfigFileFormat) -> &'static str {
+  match format {
+    ConfigFileFormat::Json => "json",
+    ConfigFileFormat::Toml => "toml",
+  }
+}
+
 pub async fn get_init_config_file_text(environment: &impl Environment, options: GetInitConfigFileTextOptions) -> Result<String> {
   let info = read_plugin_info_file(environment).await;
 
@@ -76,9 +89,9 @@ pub async fn get_init_config_file_text(environment: &impl Environment, options: 
     let latest_plugins = info.latest_plugins;
     // pre-select the plugins that match files found in the current directory
     let mut project_files = scan_project_files(environment);
-    // the config file about to be written is JSON, so it counts as a project
-    // file even though it doesn't exist yet — a json plugin is always relevant
-    project_files.extensions.insert("json".to_string());
+    // the config file about to be written counts as a project file even
+    // though it doesn't exist yet, so a plugin for its format is relevant
+    project_files.extensions.insert(config_file_extension(options.config_format).to_string());
     let defaults = compute_default_selections(&latest_plugins, &project_files, &[]);
 
     let mut selected_indexes = if options.non_interactive {
@@ -154,9 +167,10 @@ pub async fn get_init_plugins_to_add(environment: &impl Environment, options: Ge
   // pre-select the plugins matching files in the current directory, leaving out
   // the file types the config file's plugins already handle
   let mut project_files = scan_project_files(environment);
-  // the config file being added to is JSON, so a json plugin is always
-  // relevant (the scan doesn't see it for a global config outside the cwd)
-  project_files.extensions.insert("json".to_string());
+  // the config file being added to counts as a project file, so a plugin for
+  // its format is relevant (the scan doesn't see it for a global config
+  // outside the cwd)
+  project_files.extensions.insert(config_file_extension(options.config_format).to_string());
   let defaults = compute_default_selections(&latest_plugins, &project_files, &already_configured);
   // show the pre-selected plugins at the top and the ones already in the config at the bottom
   let order = display_order(&defaults, &already_configured);
@@ -854,6 +868,41 @@ mod test {
   }
 
   #[test]
+  fn should_pre_select_the_plugin_for_the_config_files_format() {
+    let toml_info_plugin = || TestInfoFilePlugin {
+      name: "dprint-plugin-toml".to_string(),
+      version: "0.6.0".to_string(),
+      url: "https://plugins.dprint.dev/toml-0.6.0.wasm".to_string(),
+      config_key: Some("toml".to_string()),
+      file_extensions: vec!["toml".to_string()],
+      config_excludes: vec![],
+      ..Default::default()
+    };
+    let environment = TestEnvironmentBuilder::new()
+      .with_info_file(|info| {
+        info.add_plugin(json_info_plugin()).add_plugin(toml_info_plugin());
+      })
+      .build();
+    environment.clone().run_in_runtime(async move {
+      let get_text = |config_format| {
+        get_init_config_file_text(
+          &environment,
+          GetInitConfigFileTextOptions {
+            non_interactive: true,
+            config_format,
+            ..Default::default()
+          },
+        )
+      };
+      // in an otherwise empty directory, the config file is the only file
+      let text = get_text(ConfigFileFormat::Toml).await.unwrap();
+      assert!(text.contains("toml-0.6.0.wasm") && !text.contains("json-0.19.2.wasm"), "{text}");
+      let text = get_text(ConfigFileFormat::Json).await.unwrap();
+      assert!(text.contains("json-0.19.2.wasm") && !text.contains("toml-0.6.0.wasm"), "{text}");
+    });
+  }
+
+  #[test]
   fn should_pre_select_additive_plugin_alongside_the_plugin_that_claims_the_file() {
     let environment = TestEnvironmentBuilder::new()
       .with_info_file(|info| {
@@ -1157,6 +1206,7 @@ mod test {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
             config_dir: None,
+            config_format: ConfigFileFormat::Json,
           },
         )
         .await
@@ -1196,6 +1246,7 @@ mod test {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
             config_dir: None,
+            config_format: ConfigFileFormat::Json,
           },
         )
         .await
@@ -1231,6 +1282,7 @@ mod test {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
             config_dir: None,
+            config_format: ConfigFileFormat::Json,
           },
         )
         .await
@@ -1574,6 +1626,7 @@ mod test {
       non_interactive: true,
       minimum_dependency_age: Some(MinimumDependencyAgeArg::from_str(age).unwrap()),
       config_dir: None,
+      config_format: ConfigFileFormat::Json,
     }
   }
 

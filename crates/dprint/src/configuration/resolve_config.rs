@@ -1,65 +1,111 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use super::remote_exec::RemoteExec;
-use super::remote_exec::RemoteExecProvenance;
-use std::borrow::Cow;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use anyhow::bail;
 use deno_terminal::colors;
-use dprint_core::async_runtime::FutureExt;
-use dprint_core::async_runtime::LocalBoxFuture;
-use dprint_core::configuration::ConfigKeyValue;
-use indexmap::IndexMap;
 use thiserror::Error;
 
 use crate::arg_parser::CliArgs;
 use crate::arg_parser::ConfigDiscovery;
 use crate::arg_parser::SubCommand;
-use crate::configuration::ConfigMap;
-use crate::configuration::ConfigMapValue;
-use crate::configuration::deserialize_config;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
-use crate::patterns::process_config_pattern;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::parse_plugin_source_reference;
-use crate::utils::GlobPattern;
-use crate::utils::GlobPatternKind;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
-use crate::utils::ResolvedFilePathWithText;
-use crate::utils::ResolvedFilePathWithTextRef;
 use crate::utils::ShowConfirmStrategy;
-use crate::utils::resolve_url_or_file_path_to_file_with_cache;
+use crate::utils::resolve_path_source_to_file_with_cache;
 
+use super::ConfigMap;
+use super::ConfigMapValue;
+use super::ConfigSettings;
+use super::ExecutionPolicy;
+use super::FileRouting;
+use super::FileSelection;
+use super::PluginConfiguration;
+use super::PropertyOrigins;
+use super::config_layer::ConfigDocument;
+use super::config_layer::ConfigLayer;
+use super::config_layer::ConfigReference;
+use super::config_layer::LayerOrigin;
+use super::remote_exec::RemoteExec;
 use super::resolve_main_config_path::ResolvedConfigPathWithText;
 use super::resolve_main_config_path::resolve_main_config_path_and_bytes;
 
+/// A configuration with the configuration files it consists of combined: the
+/// file it's from, the files that one extends and, for a nested configuration
+/// file that inherits, its ancestor's configuration. What those files said
+/// about how to combine them is used up.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedConfig {
+  pub origin: ConfigOrigin,
+  pub files: FileSelection,
+  pub routing: FileRouting,
+  pub execution: ExecutionPolicy,
+  pub plugins: PluginConfiguration,
+}
+
+/// Where a configuration is from and what it applies to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigOrigin {
   pub source: PathSource,
   /// The folder that should be considered the "root".
   pub base_path: CanonicalizedPathBuf,
   /// Whether this is the user's global configuration file.
   pub is_global: bool,
-  pub includes: Option<Vec<String>>,
-  pub excludes: Option<Vec<String>>,
-  pub plugins: Vec<PluginSourceReference>,
-  pub incremental: Option<bool>,
-  /// Maps a shebang line (ex. `#!/usr/bin/env bash`) to a file extension so
-  /// extensionless scripts can be routed to a plugin.
-  pub shebangs: Option<IndexMap<String, String>>,
-  /// Whether a nested (directory specific) configuration file should inherit
-  /// the plugins and configuration of its ancestor configuration file.
-  pub inherit: Option<bool>,
-  pub config_map: ConfigMap,
-  /// What remote configuration added to the exec configuration, which a
-  /// nested configuration that inherits this one filters by its own
-  /// `"playWithFire"`.
-  pub remote_exec: RemoteExecProvenance,
+}
+
+impl ResolvedConfig {
+  pub fn new(origin: ConfigOrigin, settings: ConfigSettings) -> Self {
+    // listing every group makes a new one fail to compile until it's handled
+    let ConfigSettings {
+      files,
+      routing,
+      execution,
+      plugins,
+    } = settings;
+    Self {
+      origin,
+      files,
+      routing,
+      execution,
+      plugins,
+    }
+  }
+
+  /// Adds what a configuration file this one extends says, where this
+  /// configuration doesn't say otherwise.
+  fn extend(&mut self, extended: ConfigSettings) -> Result<()> {
+    let ConfigSettings {
+      files,
+      routing,
+      execution,
+      plugins,
+    } = extended;
+    self.files.extend(files)?;
+    self.routing.extend(routing);
+    self.execution.extend(execution);
+    self.plugins.extend(plugins)
+  }
+
+  /// Adds the configuration of an ancestor directory, for a nested
+  /// configuration file that specified `"inherit": true`, where this
+  /// configuration doesn't say otherwise.
+  fn inherit(&mut self, ancestor: &ResolvedConfig, environment: &impl Environment) -> Result<()> {
+    let ResolvedConfig {
+      origin,
+      files,
+      routing,
+      execution,
+      plugins,
+    } = ancestor;
+    self.files.inherit(files, &origin.base_path, &self.origin.base_path);
+    self.routing.inherit(routing);
+    self.execution.inherit(execution);
+    self.plugins.inherit(plugins, environment)
+  }
 }
 
 #[derive(Debug, Error)]
@@ -133,19 +179,14 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
     None => {
       if !args.plugins.is_empty() {
         // allow no config file when plugins are specified
-        ResolvedConfig {
-          config_map: ConfigMap::new(),
-          base_path: environment.cwd().clone(),
-          source: PathSource::new_local(environment.cwd().join_panic_relative("dprint.json")),
-          is_global: false,
-          excludes: None,
-          includes: None,
-          incremental: None,
-          shebangs: None,
-          inherit: None,
-          plugins: Vec::new(),
-          remote_exec: Default::default(),
-        }
+        ResolvedConfig::new(
+          ConfigOrigin {
+            source: PathSource::new_local(environment.cwd().join_panic_relative("dprint.json")),
+            base_path: environment.cwd().clone(),
+            is_global: false,
+          },
+          ConfigSettings::default(),
+        )
       } else if args.config_discovery(environment).traverse_ancestors() {
         return Err(ResolveConfigError::NotFound {
           config_path: environment.cwd().join_panic_relative("dprint.json"),
@@ -164,7 +205,7 @@ pub async fn resolve_config_from_args(args: &CliArgs, environment: &impl Environ
       plugins.push(parse_plugin_source_reference(url_or_file_path, &base_path, environment)?);
     }
 
-    resolved_config.plugins = plugins;
+    resolved_config.plugins.sources = plugins;
   }
 
   Ok(resolved_config)
@@ -174,28 +215,203 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  let base_source = config_path_and_text.source.parent();
-  let mut config_map = get_config_map_from_path(ConfigPathContext {
-    current: config_path_and_text.as_file_path_with_text_ref(),
-    origin: &config_path_and_text.source,
-  })
-  .map_err(|err| anyhow::anyhow!("{:#}\n    at {}", err, config_path_and_text.source.display()))?;
+  resolve_config_file(config_path_and_text, None, environment).await
+}
 
-  let plugins_vec = take_plugins_array_from_config_map(&mut config_map, &base_source, environment)?; // always take this out of the config map
-  let remote_exec = Rc::new(RefCell::new(RemoteExec::default()));
-  let plugins = filter_duplicate_plugin_sources({
-    // filter out any non-wasm plugins from remote config
-    if !config_path_and_text.source.is_local() {
-      // the exec plugin and its commands only run when local config allows it
-      let plugins_vec =
-        remote_exec
-          .borrow_mut()
-          .take_from_remote_config(&mut config_map, plugins_vec, &ConfigMap::new(), &config_path_and_text.source, environment);
-      filter_non_wasm_plugins(plugins_vec, environment) // NEVER REMOVE THIS STATEMENT
-    } else {
-      plugins_vec
+/// Resolves a configuration file in a directory within the directory of the
+/// `ancestor` configuration, which it inherits when it specifies
+/// `"inherit": true`.
+pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  ancestor: &ResolvedConfig,
+  environment: &TEnvironment,
+) -> Result<ResolvedConfig, ResolveConfigError> {
+  resolve_config_file(config_path_and_text, Some(ancestor), environment).await
+}
+
+/// Resolves a configuration file in three steps: its layers are collected,
+/// which uses up their directives, then combined in order of precedence, and
+/// last the ancestor's configuration is inherited when it says to.
+async fn resolve_config_file<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  ancestor: Option<&ResolvedConfig>,
+  environment: &TEnvironment,
+) -> Result<ResolvedConfig, ResolveConfigError> {
+  let root = ConfigDocument {
+    file: config_path_and_text.as_file_path_with_text_ref(),
+    is_first_download: config_path_and_text.is_first_download,
+    extended_by: &[],
+  }
+  .parse(environment)?;
+  let collected = collect_layers(root, environment).await?;
+
+  let mut remote_exec = RemoteExec::default();
+  let mut layers = collected.layers.into_iter();
+  let mut root = layers.next().expect("the configuration file being resolved");
+  apply_remote_restrictions(&mut root, &ConfigMap::new(), &mut remote_exec, environment);
+  root.record_property_origins();
+  let mut config = ResolvedConfig::new(
+    ConfigOrigin {
+      source: root.origin.source,
+      base_path: config_path_and_text.base_path.clone(),
+      is_global: config_path_and_text.is_global_config,
+    },
+    root.settings,
+  );
+  for mut layer in layers {
+    apply_remote_restrictions(&mut layer, &config.plugins.config, &mut remote_exec, environment);
+    layer.record_property_origins();
+    if let Err(err) = config.extend(layer.settings) {
+      return Err(layer.origin.locate(err).into());
     }
-  });
+  }
+  remote_exec.apply(&mut config.plugins, environment)?;
+
+  if let Some(ancestor) = ancestor
+    && collected.inherit
+  {
+    config.inherit(ancestor, environment)?;
+  }
+  Ok(config)
+}
+
+/// A configuration file whose directives were used.
+struct CollectedLayer {
+  origin: LayerOrigin,
+  settings: ConfigSettings,
+}
+
+impl CollectedLayer {
+  /// Records that its plugin configuration is from this file, for
+  /// diagnostics.
+  fn record_property_origins(&mut self) {
+    let plugins = &mut self.settings.plugins;
+    plugins.origins = PropertyOrigins::of(&plugins.config, &self.origin.source);
+    for value in plugins.config.values_mut() {
+      if let ConfigMapValue::PluginConfig(plugin_config) = value {
+        for override_config in &mut plugin_config.overrides {
+          override_config.origin.0.get_or_insert_with(|| self.origin.source.clone());
+        }
+      }
+    }
+  }
+}
+
+struct CollectedLayers {
+  /// Whether the configuration file being resolved inherits its ancestor's
+  /// configuration.
+  inherit: bool,
+  /// The configuration file being resolved and the files it extends, highest
+  /// precedence first.
+  layers: Vec<CollectedLayer>,
+}
+
+/// Reads the configuration files a configuration file extends, directly or
+/// through another one. A file comes before the files it extends, and those
+/// come in the order it lists them, each followed by the files it extends
+/// (depth first). That's their precedence, highest first.
+///
+/// A file that's extended more than once (ex. by two files that are both
+/// extended) is only read where it has the highest precedence, since its
+/// properties are already set everywhere after that. A file that extends
+/// itself, directly or through other files, is an error.
+async fn collect_layers(root: ConfigLayer, environment: &impl Environment) -> Result<CollectedLayers> {
+  struct PendingReference {
+    reference: ConfigReference,
+    referrer: LayerOrigin,
+  }
+
+  fn push_references(pending: &mut Vec<PendingReference>, referrer: &LayerOrigin, extends: Vec<ConfigReference>) {
+    // reversed, so the first one is read next
+    for reference in extends.into_iter().rev() {
+      pending.push(PendingReference {
+        reference,
+        referrer: referrer.clone(),
+      });
+    }
+  }
+
+  /// Errors when the reference goes back to the referrer or a file that
+  /// extends it.
+  fn ensure_not_cycle(reference: &ConfigReference, target: &PathSource, referrer: &LayerOrigin) -> Result<()> {
+    if referrer.source != *target && !referrer.extended_by.contains(target) {
+      return Ok(());
+    }
+    let chain = referrer
+      .extended_by
+      .iter()
+      .rev()
+      .chain([&referrer.source, target])
+      .map(|source| source.display())
+      .collect::<Vec<_>>();
+    Err(referrer.locate(anyhow::anyhow!(
+      "The configuration file '{}' extends itself: {}",
+      reference.specifier,
+      chain.join(" -> ")
+    )))
+  }
+
+  let ConfigLayer { origin, directives, settings } = root;
+  let inherit = directives.inherit;
+  let mut pending = Vec::new();
+  push_references(&mut pending, &origin, directives.extends);
+  let mut collected_sources = HashSet::from([origin.source.clone()]);
+  // where each reference that was read went, which differs for a redirect
+  let mut read_targets = HashMap::<PathSource, PathSource>::new();
+  let mut layers = vec![CollectedLayer { origin, settings }];
+
+  while let Some(PendingReference { reference, referrer }) = pending.pop() {
+    // a reference that was read before is to the file it went to then
+    let target = read_targets.get(&reference.target).unwrap_or(&reference.target);
+    ensure_not_cycle(&reference, target, &referrer)?;
+    if collected_sources.contains(target) {
+      continue;
+    }
+    let file = match resolve_path_source_to_file_with_cache(reference.target.clone(), environment)
+      .await
+      .and_then(|file| file.into_text())
+    {
+      Ok(file) => file,
+      Err(err) => return Err(referrer.locate(err)),
+    };
+    // the file may be somewhere else than the reference says (ex. a redirect)
+    ensure_not_cycle(&reference, &file.source, &referrer)?;
+    read_targets.insert(reference.target, file.source.clone());
+    if !collected_sources.insert(file.source.clone()) {
+      continue;
+    }
+    let extended_by = std::iter::once(referrer.source.clone())
+      .chain(referrer.extended_by.iter().cloned())
+      .collect::<Vec<_>>();
+    let ConfigLayer { origin, directives, settings } = ConfigDocument {
+      file: file.as_ref(),
+      is_first_download: file.is_first_download,
+      extended_by: &extended_by,
+    }
+    .parse(environment)?;
+    if directives.inherit {
+      return Err(origin.locate(anyhow::anyhow!(
+        "The 'inherit' property can't be used in an extended configuration file. Specify it in the configuration file that extends it."
+      )));
+    }
+    push_references(&mut pending, &origin, directives.extends);
+    layers.push(CollectedLayer { origin, settings });
+  }
+
+  Ok(CollectedLayers { inherit, layers })
+}
+
+/// Removes what a remote configuration file isn't trusted to specify, since it
+/// could make dprint run or change anything: which files are formatted,
+/// non-wasm plugins, and exec commands a local configuration file doesn't
+/// allow (see `remote_exec.rs`). A local file a remote one extends (ex. with
+/// `file://`) is the remote one's choice, so it's trusted no further (see
+/// `LayerOrigin::is_trusted`). `resolved_config` is the configuration of
+/// higher precedence resolved so far.
+fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &ConfigMap, remote_exec: &mut RemoteExec, environment: &impl Environment) {
+  if layer.origin.is_trusted() {
+    return;
+  }
 
   // IMPORTANT
   // =========
@@ -203,500 +419,26 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   // specifying something like system or some configuration
   // files that it could change. Basically, the end user should have 100%
   // control over what files get formatted.
-  if !config_path_and_text.source.is_local() {
-    // Careful! Don't be fancy and ensure this is removed.
-    let removed_includes = config_map.shift_remove("includes"); // NEVER REMOVE THIS STATEMENT
-    if removed_includes.is_some() && config_path_and_text.is_first_download {
-      log_warn!(environment, &get_warn_includes_message());
-    }
+  // Careful! Don't be fancy and ensure this is removed.
+  let removed_includes = layer.settings.files.includes.take(); // NEVER REMOVE THIS STATEMENT
+  // noted once per download, and every time for a local file a remote one
+  // chose, which is never downloaded
+  if removed_includes.is_some() && (layer.origin.is_first_download || layer.origin.source.is_local()) {
+    log_warn!(environment, &get_warn_includes_message());
   }
-  // =========
 
-  let includes = take_array_from_config_map(&mut config_map, "includes")?;
-  let excludes = take_array_from_config_map(&mut config_map, "excludes")?;
-
-  let incremental = take_bool_from_config_map(&mut config_map, "incremental")?;
-  let shebangs = take_shebangs_from_config_map(&mut config_map)?;
-  let inherit = take_bool_from_config_map(&mut config_map, "inherit")?;
-  config_map.shift_remove("projectType"); // this was an old config property that's no longer used
-  let extends = take_extends(&mut config_map)?;
-  let resolved_config = ResolvedConfig {
-    source: config_path_and_text.source.clone(),
-    base_path: config_path_and_text.base_path.clone(),
-    is_global: config_path_and_text.is_global_config,
-    config_map,
-    includes,
-    excludes,
-    plugins,
-    incremental,
-    shebangs,
-    inherit,
-    remote_exec: Default::default(),
-  };
-
-  // resolve extends
-  let mut resolved_config = resolve_extends(resolved_config, extends, base_source, environment.clone(), remote_exec.clone()).await?;
-  let remote_exec = std::mem::take(&mut *remote_exec.borrow_mut());
-  resolved_config.remote_exec = remote_exec.apply(&mut resolved_config.config_map, &mut resolved_config.plugins, environment)?;
-  Ok(resolved_config)
-}
-
-/// Merges the ancestor (`parent`) configuration into a nested configuration
-/// file that has specified `"inherit": true`.
-///
-/// The nested config's values take precedence. Plugins specified in the nested
-/// config have precedence over the ancestor's plugins, the ancestor's excludes
-/// are combined with the nested config's excludes, and plugin configurations are
-/// merged with the nested config winning on conflicts.
-///
-/// Note: `includes` are not inherited.
-pub fn inherit_config(mut config: ResolvedConfig, parent: &ResolvedConfig, environment: &impl Environment) -> Result<ResolvedConfig> {
-  let mut parent_config_map = parent.config_map.clone();
-  let mut parent_plugins = parent.plugins.clone();
-  // what remote configuration added to the ancestor's exec configuration is
-  // only inherited as far as the nested config's own "playWithFire" allows,
-  // so the exec configuration is made again from what each specified, once
-  // the rest is merged
-  config.remote_exec.inherit(
-    &parent.remote_exec,
-    &mut config.config_map,
-    &mut config.plugins,
-    &mut parent_config_map,
-    &mut parent_plugins,
+  // the exec plugin and its commands only run when local config allows it
+  let plugins = remote_exec.take_from_remote_config(
+    &mut layer.settings.plugins.config,
+    std::mem::take(&mut layer.settings.plugins.sources),
+    resolved_config,
+    &layer.origin.source,
+    environment,
   );
-
-  // plugins specified in the nested config have precedence over the ancestor's
-  config.plugins.extend(parent_plugins);
-  config.plugins = filter_duplicate_plugin_sources(std::mem::take(&mut config.plugins));
-
-  // combine excludes, rebasing the ancestor's patterns onto this config's directory
-  config.excludes = inherit_excludes(config.excludes, parent.excludes.as_deref(), &parent.base_path, &config.base_path);
-
-  // inherit the incremental flag when not specified in the nested config
-  if config.incremental.is_none() {
-    config.incremental = parent.incremental;
-  }
-
-  // inherit the shebang mappings when not specified in the nested config
-  if config.shebangs.is_none() {
-    config.shebangs = parent.shebangs.clone();
-  }
-
-  merge_config_map_into(&mut config.config_map, parent_config_map)?;
-  config.remote_exec.make_inherited(&mut config.config_map, &mut config.plugins, environment)?;
-
-  Ok(config)
-}
-
-/// Combines a nested config's own excludes with its ancestor's, rebasing each
-/// ancestor pattern from the ancestor's directory onto the nested config's
-/// directory. Ancestor patterns that don't reach into the nested directory are
-/// dropped.
-///
-/// The ancestor's patterns are ordered first so the nested config's own excludes
-/// can opt back out of them (ex. with a `!` pattern).
-fn inherit_excludes(
-  own: Option<Vec<String>>,
-  ancestor: Option<&[String]>,
-  ancestor_base: &CanonicalizedPathBuf,
-  new_base: &CanonicalizedPathBuf,
-) -> Option<Vec<String>> {
-  let Some(ancestor) = ancestor else {
-    return own;
-  };
-  let mut result = ancestor
-    .iter()
-    .filter_map(|pattern| {
-      // normalize the same way the ancestor config's own excludes are (ex. backslash
-      // path separators, a leading `/` meaning the config's directory) so the rebase
-      // sees the pattern the way the ancestor interprets it
-      GlobPattern::new(process_config_pattern(pattern), ancestor_base.clone())
-        .into_new_base(new_base.clone(), GlobPatternKind::Exclude)
-        .map(|p| p.relative_pattern)
-    })
-    .collect::<Vec<_>>();
-  if let Some(own) = own {
-    result.extend(own);
-  }
-  if result.is_empty() { None } else { Some(result) }
-}
-
-fn resolve_extends<TEnvironment: Environment>(
-  mut resolved_config: ResolvedConfig,
-  extends: Vec<String>,
-  base_path: PathSource,
-  environment: TEnvironment,
-  remote_exec: Rc<RefCell<RemoteExec>>,
-) -> LocalBoxFuture<'static, Result<ResolvedConfig>> {
-  // boxed because of recursion
-  async move {
-    for url_or_file_path in extends {
-      let resolved_file = resolve_url_or_file_path_to_file_with_cache(&url_or_file_path, &base_path, &environment)
-        .await?
-        .into_text()?;
-      resolved_config = match handle_config_file(&resolved_file, resolved_config, &environment, remote_exec.clone()).await {
-        Ok(resolved_config) => resolved_config,
-        Err(err) => bail!("{:#}\n    at {}", err, resolved_file.source.display()),
-      }
-    }
-    Ok(resolved_config)
-  }
-  .boxed_local()
-}
-
-async fn handle_config_file<TEnvironment: Environment>(
-  config_path_and_text: &ResolvedFilePathWithText,
-  mut resolved_config: ResolvedConfig,
-  environment: &TEnvironment,
-  remote_exec: Rc<RefCell<RemoteExec>>,
-) -> Result<ResolvedConfig> {
-  let mut new_config_map = get_config_map_from_path(ConfigPathContext {
-    current: config_path_and_text.as_ref(),
-    origin: &resolved_config.source,
-  })?;
-  let extends = take_extends(&mut new_config_map)?;
-
-  // Discard any properties that shouldn't be inherited
-  if !config_path_and_text.source.is_local() {
-    // IMPORTANT
-    // =========
-    // Remove the includes from all referenced remote configuration since
-    // we don't want it specifying something like system or some configuration
-    // files that it could change. Basically, the end user should have 100%
-    // control over what files get formatted.
-    let removed_includes = new_config_map.shift_remove("includes"); // NEVER REMOVE THIS STATEMENT
-    if removed_includes.is_some() && config_path_and_text.is_first_download {
-      log_warn!(environment, &get_warn_includes_message());
-    }
-  }
-
-  // combine excludes
-  let excludes = take_array_from_config_map(&mut new_config_map, "excludes")?;
-  if let Some(excludes) = excludes {
-    match &mut resolved_config.excludes {
-      Some(resolved_excludes) => resolved_excludes.extend(excludes),
-      None => resolved_config.excludes = Some(excludes),
-    }
-  }
-
-  // combine shebangs, keeping the higher-precedence (extending) config's entry
-  // when the same shebang is specified in both
-  if let Some(shebangs) = take_shebangs_from_config_map(&mut new_config_map)? {
-    let resolved_shebangs = resolved_config.shebangs.get_or_insert_default();
-    for (shebang, extension) in shebangs {
-      resolved_shebangs.entry(shebang).or_insert(extension);
-    }
-  }
-
-  // Also remove any non-wasm plugins, but only for remote configurations.
-  // The assumption here is that the user won't be malicious to themselves.
-  let plugins = take_plugins_array_from_config_map(&mut new_config_map, &config_path_and_text.source.parent(), environment)?;
-  let plugins = if !config_path_and_text.source.is_local() {
-    // the exec plugin and its commands only run when local config allows it
-    let plugins = remote_exec.borrow_mut().take_from_remote_config(
-      &mut new_config_map,
-      plugins,
-      &resolved_config.config_map,
-      &config_path_and_text.source,
-      environment,
-    );
-    filter_non_wasm_plugins(plugins, environment)
-  } else {
-    plugins
-  };
+  // The assumption here is that the user won't be malicious to themselves, so
+  // this is only for remote configuration.
+  layer.settings.plugins.sources = filter_non_wasm_plugins(plugins, environment); // NEVER REMOVE THIS STATEMENT
   // =========
-
-  // combine plugins, keeping the higher-precedence (earlier) entry when the same
-  // plugin is specified both here and in the config it extends. Without this a
-  // plugin listed in both would appear twice and, sharing a config key, cause
-  // the extended configuration to be ignored (see issue #1043).
-  resolved_config.plugins.extend(plugins);
-  resolved_config.plugins = filter_duplicate_plugin_sources(std::mem::take(&mut resolved_config.plugins));
-
-  merge_config_map_into(&mut resolved_config.config_map, new_config_map)?;
-
-  resolve_extends(resolved_config, extends, config_path_and_text.source.parent(), environment.clone(), remote_exec).await
-}
-
-/// Merges the lower precedence `source` config map into the higher precedence
-/// `target` config map. Values already present in `target` win, while plugin
-/// configurations have their properties and overrides combined.
-///
-/// This is used both when resolving `extends` (the extended config is the lower
-/// precedence `source`) and when a nested config `inherit`s its ancestor (the
-/// ancestor config is the lower precedence `source`).
-pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -> Result<()> {
-  for (key, value) in source {
-    match value {
-      ConfigMapValue::KeyValue(key_value) => {
-        target.entry(key).or_insert(ConfigMapValue::KeyValue(key_value));
-      }
-      ConfigMapValue::Vec(items) => {
-        target.entry(key).or_insert(ConfigMapValue::Vec(items));
-      }
-      ConfigMapValue::PluginConfig(obj) => {
-        if let Some(target_obj) = target.get_mut(&key) {
-          if let ConfigMapValue::PluginConfig(target_obj) = target_obj {
-            // check for locked configuration
-            if obj.locked && (!target_obj.properties.is_empty() || !target_obj.overrides.is_empty()) {
-              bail!(
-                concat!(
-                  "The configuration for \"{}\" was locked, but a parent configuration specified it. ",
-                  "Locked configurations cannot have their properties overridden."
-                ),
-                key
-              );
-            }
-
-            // now the properties
-            for (key, value) in obj.properties {
-              target_obj.properties.entry(key).or_insert(value);
-            }
-
-            if !obj.overrides.is_empty() {
-              let mut overrides = obj.overrides;
-              overrides.append(&mut target_obj.overrides);
-              target_obj.overrides = overrides;
-            }
-
-            // Set the associations if they aren't overwritten in the higher
-            // precedence config. This is ok to do because process plugins and
-            // includes/excludes aren't inherited from other config.
-            if target_obj.associations.is_none() {
-              target_obj.associations = obj.associations;
-            }
-          }
-        } else {
-          target.insert(key, ConfigMapValue::PluginConfig(obj));
-        }
-      }
-    }
-  }
-  Ok(())
-}
-
-fn take_extends(config_map: &mut ConfigMap) -> Result<Vec<String>> {
-  match config_map.shift_remove("extends") {
-    Some(ConfigMapValue::KeyValue(ConfigKeyValue::String(url_or_file_path))) => Ok(vec![url_or_file_path]),
-    Some(ConfigMapValue::Vec(url_or_file_paths)) => Ok(url_or_file_paths),
-    Some(_) => bail!("Extends in configuration must be a string or an array of strings."),
-    None => Ok(Vec::new()),
-  }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ConfigPathContext<'a> {
-  /// The path of the configuration file being resolved.
-  ///
-  /// This could be a config being extended.
-  current: ResolvedFilePathWithTextRef<'a>,
-  /// The original configuration file that may have extended
-  /// the current configuration file.
-  origin: &'a PathSource,
-}
-
-fn get_config_map_from_path(path: ConfigPathContext) -> Result<ConfigMap> {
-  let mut result = match deserialize_config(path.current.content) {
-    Ok(map) => map,
-    Err(e) => bail!("Error deserializing. {}", e),
-  };
-  template_expand(path, &mut result)?;
-
-  Ok(result)
-}
-
-fn template_expand(path_ctx: ConfigPathContext, config_map: &mut ConfigMap) -> Result<()> {
-  fn handle_string(path: ConfigPathContext, value: &mut String) -> Result<()> {
-    let mut parts = Vec::with_capacity(16); // unlikely to be more than this
-    let mut last_index = 0;
-    let mut chars = value.char_indices().peekable();
-
-    while let Some((index, c)) = chars.next() {
-      if c == '\\' && matches!(chars.peek(), Some((_, '$'))) {
-        parts.push(Cow::Borrowed(&value[last_index..index]));
-        last_index = index + 1; // skip '\'
-        chars.next(); // skip '$'
-      } else if c == '$' && matches!(chars.peek(), Some((_, '{'))) {
-        // Found start of template literal ${...}
-        chars.next(); // skip '{'
-
-        let mut template_name = "";
-        let template_start_index = index + 2; // skip '{' and '$'
-        for (current_index, inner_char) in chars.by_ref() {
-          if inner_char == '}' {
-            template_name = &value[template_start_index..current_index];
-            parts.push(Cow::Borrowed(&value[last_index..index]));
-            last_index = current_index + 1; // skip '}'
-            break;
-          }
-        }
-
-        match template_name {
-          "configDir" => match &path.current.source {
-            PathSource::Local(source) => {
-              parts.push(Cow::Owned(source.path.parent().unwrap().to_string_lossy().to_string()));
-            }
-            PathSource::Remote(_) | PathSource::Npm(_) => {
-              bail!("Cannot use ${{configDir}} template in remote configuration files. Maybe use ${{originConfigDir}} instead?");
-            }
-          },
-          "originConfigDir" => match &path.origin {
-            PathSource::Local(origin) => {
-              parts.push(Cow::Owned(origin.path.parent().unwrap().to_string_lossy().to_string()));
-            }
-            PathSource::Remote(origin) => {
-              bail!(
-                "Cannot use ${{originConfigDir}} template when the origin configuration file ({}) is remote.",
-                origin.url,
-              );
-            }
-            PathSource::Npm(npm) => {
-              bail!(
-                "Cannot use ${{originConfigDir}} template when the origin configuration file ({}) is an npm package.",
-                npm.specifier.display(),
-              );
-            }
-          },
-          "" => {
-            // ignore
-          }
-          _ => {
-            bail!(
-              concat!(
-                "Unknown template literal ${{{}}}. Only ${{configDir}} and ${{originConfigDir}} are supported. ",
-                "If you meant to pass this to a plugin, escape the dollar sign with two back slashes.",
-              ),
-              template_name,
-            );
-          }
-        }
-      }
-    }
-
-    if !parts.is_empty() {
-      parts.push(Cow::Borrowed(&value[last_index..]));
-      *value = parts.join("");
-    }
-
-    Ok(())
-  }
-
-  fn handle_config_key_value(path_ctx: ConfigPathContext, value: &mut ConfigKeyValue) -> Result<()> {
-    match value {
-      ConfigKeyValue::String(value) => {
-        handle_string(path_ctx, value)?;
-      }
-      ConfigKeyValue::Array(array) => {
-        for value in array {
-          handle_config_key_value(path_ctx, value)?;
-        }
-      }
-      ConfigKeyValue::Object(obj) => {
-        for value in obj.values_mut() {
-          handle_config_key_value(path_ctx, value)?;
-        }
-      }
-      ConfigKeyValue::Number(_) | ConfigKeyValue::Bool(_) | ConfigKeyValue::Null => {
-        // ignore
-      }
-    }
-    Ok(())
-  }
-
-  for value in config_map.values_mut() {
-    match value {
-      ConfigMapValue::KeyValue(kv) => {
-        handle_config_key_value(path_ctx, kv)?;
-      }
-      ConfigMapValue::PluginConfig(config) => {
-        for value in config.properties.values_mut() {
-          handle_config_key_value(path_ctx, value)?;
-        }
-      }
-      ConfigMapValue::Vec(vec) => {
-        for value in vec {
-          handle_string(path_ctx, value)?;
-        }
-      }
-    }
-  }
-
-  Ok(())
-}
-
-fn take_plugins_array_from_config_map(
-  config_map: &mut ConfigMap,
-  base_path: &PathSource,
-  environment: &impl Environment,
-) -> Result<Vec<PluginSourceReference>> {
-  let plugin_url_or_file_paths = take_array_from_config_map(config_map, "plugins")?.unwrap_or_default();
-  let mut plugins = Vec::with_capacity(plugin_url_or_file_paths.len());
-  for url_or_file_path in plugin_url_or_file_paths {
-    plugins.push(parse_plugin_source_reference(&url_or_file_path, base_path, environment)?);
-  }
-  Ok(plugins)
-}
-
-fn take_array_from_config_map(config_map: &mut ConfigMap, property_name: &str) -> Result<Option<Vec<String>>> {
-  match config_map.shift_remove(property_name) {
-    Some(ConfigMapValue::Vec(elements)) => Ok(Some(elements)),
-    Some(_) => bail!("Expected array in '{}' property.", property_name),
-    None => Ok(None),
-  }
-}
-
-fn take_shebangs_from_config_map(config_map: &mut ConfigMap) -> Result<Option<IndexMap<String, String>>> {
-  match config_map.shift_remove("shebangs") {
-    Some(ConfigMapValue::PluginConfig(plugin_config)) => {
-      if plugin_config.locked || !plugin_config.overrides.is_empty() || plugin_config.associations.is_some() {
-        bail!("The 'shebangs' property must be an object that maps shebang lines to file extensions.");
-      }
-      // the shebangs and extensions are normalized here so the rest of the
-      // code (ex. merging, hashing, resolution) can compare them directly
-      let mut map = IndexMap::with_capacity(plugin_config.properties.len());
-      for (mut shebang, value) in plugin_config.properties {
-        if !shebang.starts_with("#!") || shebang.contains(['\r', '\n']) {
-          bail!(
-            "Expected the key '{}' in the 'shebangs' property to be a shebang line starting with '#!'.",
-            shebang
-          );
-        }
-        match value {
-          ConfigKeyValue::String(extension) => {
-            let extension_without_dot = extension.strip_prefix('.').unwrap_or(&extension);
-            if extension_without_dot.is_empty()
-              || extension_without_dot.contains(|c: char| c.is_whitespace() || matches!(c, '.' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}'))
-            {
-              bail!(
-                "Expected a file extension (ex. \"sh\") for shebang '{}' in the 'shebangs' property, but found '{}'.",
-                shebang,
-                extension
-              );
-            }
-            // stored lowercased and without a leading dot so it resolves the
-            // same way as a real file extension
-            shebang.truncate(shebang.trim_end().len());
-            map.insert(shebang, extension_without_dot.to_lowercase());
-          }
-          _ => bail!("Expected a string file extension for shebang '{}' in the 'shebangs' property.", shebang),
-        }
-      }
-      Ok(Some(map))
-    }
-    Some(_) => bail!("Expected object in 'shebangs' property."),
-    None => Ok(None),
-  }
-}
-
-fn take_bool_from_config_map(config_map: &mut ConfigMap, property_name: &str) -> Result<Option<bool>> {
-  if let Some(value) = config_map.shift_remove(property_name) {
-    match value {
-      ConfigMapValue::KeyValue(ConfigKeyValue::Bool(value)) => Ok(Some(value)),
-      _ => bail!("Expected boolean in '{}' property.", property_name),
-    }
-  } else {
-    Ok(None)
-  }
 }
 
 fn filter_non_wasm_plugins(plugins: Vec<PluginSourceReference>, environment: &impl Environment) -> Vec<PluginSourceReference> {
@@ -722,44 +464,23 @@ fn get_warn_non_wasm_plugins_message() -> String {
   )
 }
 
-/// Removes plugins that specify the same source, keeping the highest precedence
-/// (earliest) entry.
-///
-/// A discarded duplicate's checksum is kept when the entry that wins doesn't
-/// specify one. Otherwise a config that specifies a plugin without a checksum
-/// would discard the checksum specified for it by a lower precedence config
-/// (ex. a shared config being extended), which either silently drops the
-/// integrity check for a Wasm plugin or fails outright for a process plugin
-/// because those require a checksum.
-fn filter_duplicate_plugin_sources(plugin_sources: Vec<PluginSourceReference>) -> Vec<PluginSourceReference> {
-  let mut checksums_by_path_source: IndexMap<PathSource, Option<String>> = IndexMap::with_capacity(plugin_sources.len());
-
-  for plugin_source in plugin_sources {
-    let checksum = checksums_by_path_source.entry(plugin_source.path_source).or_default();
-    if checksum.is_none() {
-      *checksum = plugin_source.checksum;
-    }
-  }
-
-  checksums_by_path_source
-    .into_iter()
-    .map(|(path_source, checksum)| PluginSourceReference { path_source, checksum })
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
   use std::path::PathBuf;
 
   use crate::arg_parser::parse_args;
+  use crate::configuration::ConfigMapValue;
   use crate::configuration::RawPluginConfig;
   use crate::configuration::RawPluginConfigOverride;
+  use crate::configuration::json_config_text_to_toml;
   use crate::environment::Environment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::utils::TestStdInReader;
   use anyhow::Result;
   use dprint_core::configuration::ConfigKeyMap;
+  use dprint_core::configuration::ConfigKeyValue;
+  use indexmap::IndexMap;
   use pretty_assertions::assert_eq;
 
   use super::*;
@@ -773,16 +494,106 @@ mod tests {
     resolve_config_from_args(&args, environment).await
   }
 
-  async fn resolve_local_config(path: &str, environment: &TestEnvironment) -> ResolvedConfig {
+  fn local_config_path(path: &str, environment: &TestEnvironment) -> ResolvedConfigPathWithText {
     let canonical = environment.canonicalize(path).unwrap();
-    let config_path = ResolvedConfigPathWithText {
+    ResolvedConfigPathWithText {
       content: environment.read_file(&canonical).unwrap(),
       base_path: canonical.parent().unwrap(),
       source: PathSource::new_local(canonical),
       is_global_config: false,
       is_first_download: false,
-    };
-    resolve_config_from_path_with_bytes(&config_path, environment).await.unwrap()
+    }
+  }
+
+  fn test_origin(config_path: &str, base_path: &str) -> ConfigOrigin {
+    ConfigOrigin {
+      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing(config_path)),
+      base_path: CanonicalizedPathBuf::new_for_testing(base_path),
+      is_global: false,
+    }
+  }
+
+  async fn resolve_local_config(path: &str, environment: &TestEnvironment) -> ResolvedConfig {
+    resolve_config_from_path_with_bytes(&local_config_path(path, environment), environment)
+      .await
+      .unwrap()
+  }
+
+  async fn resolve_local_descendant_config(path: &str, ancestor: &ResolvedConfig, environment: &TestEnvironment) -> Result<ResolvedConfig, ResolveConfigError> {
+    resolve_descendant_config_from_path_with_bytes(&local_config_path(path, environment), ancestor, environment).await
+  }
+
+  /// Where each configuration file of [`resolve_in_every_format`] is written.
+  #[derive(Clone)]
+  struct ConfigPaths(IndexMap<String, String>);
+
+  impl ConfigPaths {
+    /// The local path or url of the file of that name.
+    fn get(&self, name: &str) -> &str {
+      &self.0[name]
+    }
+  }
+
+  /// Writes the configuration files in every combination of JSON and TOML,
+  /// resolves them with `resolve` in each, and asserts that every combination
+  /// resolves the same as when they're all JSON, which it gives.
+  ///
+  /// The files are given in JSON by name. A name that's a url is a remote
+  /// file, and any other one is a file in `/`. In a file, `<name>` stands for
+  /// the file name the file of that name has in the combination (ex.
+  /// `"extends": "./<base>"` for `./base.json` or `./base.toml`). What's
+  /// resolved is compared with the file names in TOML ones made JSON.
+  fn resolve_in_every_format<T: std::fmt::Debug>(files: &[(&str, &str)], resolve: impl AsyncFn(&TestEnvironment, &ConfigPaths) -> T) -> T {
+    let file_name = |name: &str, toml: bool| format!("{}.{}", name, if toml { "toml" } else { "json" });
+    let mut all_json = None;
+    for combination in 0..1usize << files.len() {
+      let is_toml = |index: usize| combination & (1 << index) != 0;
+      let environment = TestEnvironment::new();
+      let paths = ConfigPaths(
+        files
+          .iter()
+          .enumerate()
+          .map(|(index, (name, _))| {
+            let path = if name.starts_with("https://") {
+              file_name(name, is_toml(index))
+            } else {
+              format!("/{}", file_name(name, is_toml(index)))
+            };
+            (name.to_string(), path)
+          })
+          .collect(),
+      );
+      for (index, (name, json_text)) in files.iter().enumerate() {
+        let mut text = json_text.to_string();
+        for (other_index, (other_name, _)) in files.iter().enumerate() {
+          text = text.replace(&format!("<{}>", other_name), &file_name(other_name, is_toml(other_index)));
+        }
+        if is_toml(index) {
+          text = json_config_text_to_toml(&text).unwrap();
+        }
+        let path = paths.get(name);
+        if path.starts_with("https://") {
+          environment.add_remote_file_bytes(path, text.into_bytes());
+        } else {
+          environment.mk_dir_all(Path::new(path).parent().unwrap()).unwrap();
+          environment.write_file(path, &text).unwrap();
+        }
+      }
+      let result = environment.clone().run_in_runtime(resolve(&environment, &paths));
+      let text = format!("{:#?}", result).replace(".toml", ".json");
+      match &all_json {
+        None => all_json = Some((text, result)),
+        Some((json_text, _)) => {
+          let formats = files
+            .iter()
+            .enumerate()
+            .map(|(index, (name, _))| format!("{} as {}", name, if is_toml(index) { "TOML" } else { "JSON" }))
+            .collect::<Vec<_>>();
+          assert_eq!(&text, json_text, "{}", formats.join(", "));
+        }
+      }
+    }
+    all_json.unwrap().1
   }
 
   #[test]
@@ -812,10 +623,9 @@ mod tests {
 
     environment.clone().run_in_runtime(async move {
       let parent = resolve_local_config("/a/dprint.json", &environment).await;
-      let child = resolve_local_config("/a/b/dprint.json", &environment).await;
-      let result = inherit_config(child, &parent, &TestEnvironment::new()).unwrap();
+      let result = resolve_local_descendant_config("/a/b/dprint.json", &parent, &environment).await.unwrap();
       assert_eq!(
-        result.config_map,
+        result.plugins.config,
         ConfigMap::from([(
           "test".to_string(),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -832,6 +642,165 @@ mod tests {
         )])
       );
     });
+  }
+
+  /// A plugin's configuration with the properties and the overrides, which
+  /// are each the files and the properties.
+  fn plugin_config(properties: &[(&str, ConfigKeyValue)], overrides: &[(&str, &[(&str, ConfigKeyValue)])]) -> ConfigMapValue {
+    let to_map = |properties: &[(&str, ConfigKeyValue)]| properties.iter().map(|(key, value)| (key.to_string(), value.clone())).collect::<ConfigKeyMap>();
+    ConfigMapValue::PluginConfig(RawPluginConfig {
+      locked: false,
+      associations: None,
+      overrides: overrides
+        .iter()
+        .map(|(files, override_properties)| RawPluginConfigOverride {
+          files: vec![files.to_string()],
+          properties: to_map(override_properties),
+          origin: Default::default(),
+        })
+        .collect(),
+      properties: to_map(properties),
+    })
+  }
+
+  #[test]
+  fn expands_templates_in_plugin_overrides_like_in_plugin_properties() {
+    // each file's templates are expanded relative to that file, before its
+    // overrides are combined with the ones of the files it extends
+    let config = resolve_in_every_format(
+      &[
+        (
+          "dir/dprint",
+          r#"{
+            "extends": ["../<other/base>", "<https://dprint.dev/remote>"],
+            "local": {
+              "value": "${configDir}/base",
+              "overrides": [{
+                "files": "**/*.txt",
+                "value": "${configDir}/override && ${originConfigDir}/origin && \\${configDir}/escaped"
+              }]
+            }
+          }"#,
+        ),
+        (
+          "other/base",
+          r#"{
+            "extended": {
+              "value": "${configDir}/base && ${originConfigDir}/origin",
+              "overrides": [{ "files": "**/*.txt", "value": "${configDir}/override && ${originConfigDir}/origin" }]
+            }
+          }"#,
+        ),
+        (
+          "https://dprint.dev/remote",
+          r#"{
+            "remote": {
+              "overrides": [{
+                "files": "**/*.txt",
+                "value": "${originConfigDir}/override && \\${originConfigDir}/escaped",
+                "nested": { "values": ["${originConfigDir}/nested", "{{file_path}}"] }
+              }]
+            }
+          }"#,
+        ),
+      ],
+      async |environment, paths| get_result(paths.get("dir/dprint"), environment).await.map(|config| config.plugins.config),
+    )
+    .unwrap();
+    let txt = "**/*.txt";
+    assert_eq!(
+      config,
+      ConfigMap::from([
+        (
+          "local".to_string(),
+          plugin_config(
+            &[("value", ConfigKeyValue::from_str("/dir/base"))],
+            &[(
+              txt,
+              &[("value", ConfigKeyValue::from_str("/dir/override && /dir/origin && ${configDir}/escaped"))],
+            )],
+          ),
+        ),
+        (
+          "extended".to_string(),
+          plugin_config(
+            &[("value", ConfigKeyValue::from_str("/other/base && /dir/origin"))],
+            &[(txt, &[("value", ConfigKeyValue::from_str("/other/override && /dir/origin"))])],
+          ),
+        ),
+        (
+          "remote".to_string(),
+          plugin_config(
+            &[],
+            &[(
+              txt,
+              &[
+                ("value", ConfigKeyValue::from_str("/dir/override && ${originConfigDir}/escaped")),
+                (
+                  "nested",
+                  ConfigKeyValue::Object(ConfigKeyMap::from([(
+                    "values".to_string(),
+                    // a plugin's own template syntax is left alone
+                    ConfigKeyValue::Array(vec![ConfigKeyValue::from_str("/dir/nested"), ConfigKeyValue::from_str("{{file_path}}")]),
+                  )])),
+                ),
+              ],
+            )],
+          ),
+        ),
+      ])
+    );
+  }
+
+  #[test]
+  fn keeps_templates_in_inherited_plugin_overrides_relative_to_the_ancestor() {
+    let config = resolve_in_every_format(
+      &[
+        (
+          "a/dprint",
+          r#"{ "test": { "overrides": [{ "files": "**/*.md", "fromAncestor": "${configDir}/value" }] } }"#,
+        ),
+        (
+          "a/b/dprint",
+          r#"{ "inherit": true, "test": { "overrides": [{ "files": "**/*.txt", "fromNested": "${configDir}/value" }] } }"#,
+        ),
+      ],
+      async |environment, paths| {
+        let ancestor = resolve_local_config(paths.get("a/dprint"), environment).await;
+        resolve_local_descendant_config(paths.get("a/b/dprint"), &ancestor, environment)
+          .await
+          .map(|config| config.plugins.config)
+      },
+    )
+    .unwrap();
+    assert_eq!(
+      config,
+      ConfigMap::from([(
+        "test".to_string(),
+        plugin_config(
+          &[],
+          &[
+            ("**/*.md", &[("fromAncestor", ConfigKeyValue::from_str("/a/value"))]),
+            ("**/*.txt", &[("fromNested", ConfigKeyValue::from_str("/a/b/value"))]),
+          ],
+        ),
+      )])
+    );
+  }
+
+  #[test]
+  fn reports_an_unknown_template_in_a_plugin_override() {
+    let err = resolve_in_every_format(
+      &[("dprint", r#"{ "test": { "overrides": [{ "files": "**/*.txt", "value": "${unknown}" }] } }"#)],
+      async |environment, paths| get_result(paths.get("dprint"), environment).await.err().unwrap().to_string(),
+    );
+    assert_eq!(
+      err,
+      concat!(
+        "Unknown template literal ${unknown}. Only ${configDir} and ${originConfigDir} are supported. If you meant to pass this to a plugin, escape the dollar sign with two back slashes.\n",
+        "    at /dprint.json"
+      ),
+    );
   }
 
   #[test]
@@ -851,12 +820,275 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.base_path, CanonicalizedPathBuf::new_for_testing("/"));
-      assert_eq!(result.source.is_local(), true);
-      assert_eq!(result.config_map.contains_key("includes"), false);
-      assert_eq!(result.config_map.contains_key("excludes"), false);
-      assert_eq!(result.includes, Some(vec!["test".to_string()]));
-      assert_eq!(result.excludes, Some(vec!["test-excludes".to_string()]));
+      assert_eq!(result.origin.base_path, CanonicalizedPathBuf::new_for_testing("/"));
+      assert_eq!(result.origin.source.is_local(), true);
+      assert_eq!(result.plugins.config.contains_key("includes"), false);
+      assert_eq!(result.plugins.config.contains_key("excludes"), false);
+      assert_eq!(result.files.includes, Some(vec!["test".to_string()]));
+      assert_eq!(result.files.excludes, vec!["test-excludes".to_string()]);
+    });
+  }
+
+  #[test]
+  fn should_not_read_schema_and_project_type_as_configuration() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/base.toml",
+        r#"#:schema ./dprint.schema.json
+"$schema" = "./dprint.schema.json"
+projectType = "openSource"
+lineWidth = 80
+"#,
+      )
+      .write_file(
+        "/dprint.json",
+        r#"{
+            "$schema": "https://dprint.dev/schemas/v0.json",
+            "projectType": "openSource",
+            "extends": "./base.toml",
+            "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]
+        }"#,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      // the global configuration only has the extended file's `lineWidth`
+      assert_eq!(
+        result.plugins.config,
+        ConfigMap::from([("lineWidth".to_string(), ConfigMapValue::from_i32(80))])
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_extends_cycle() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/a.json",
+        r#"{ "extends": "./b.json", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+      )
+      .write_file("/b.json", r#"{ "extends": "./a.json" }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        "The configuration file './a.json' extends itself: /a.json -> /b.json -> /a.json\n    at /b.json"
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_extends_cycle_goes_through_a_redirect() {
+    // x.json redirects to b.json, which extends x.json: so b.json extends itself
+    let environment = TestEnvironment::new();
+    environment.write_file("/dprint.json", r#"{ "extends": "https://dprint.dev/x.json" }"#).unwrap();
+    environment.add_remote_file_redirect("https://dprint.dev/x.json", "https://dprint.dev/b.json");
+    environment.add_remote_file("https://dprint.dev/b.json", r#"{ "extends": "https://dprint.dev/x.json" }"#.as_bytes());
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The configuration file 'https://dprint.dev/x.json' extends itself: ",
+          "/dprint.json -> https://dprint.dev/b.json -> https://dprint.dev/b.json\n",
+          "    at https://dprint.dev/b.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_config_extends_itself() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/a.json", r#"{ "extends": ["./b.json", "./a.json"] }"#)
+      .write_file("/b.json", r#"{}"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        "The configuration file './a.json' extends itself: /a.json -> /a.json\n    at /a.json"
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_when_remote_extends_cycle() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://dprint.dev/a.json", r#"{ "extends": "./b.json" }"#.as_bytes());
+    environment.add_remote_file("https://dprint.dev/b.json", r#"{ "extends": "./c.json" }"#.as_bytes());
+    environment.add_remote_file("https://dprint.dev/c.json", r#"{ "extends": "https://dprint.dev/b.json" }"#.as_bytes());
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("https://dprint.dev/a.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The configuration file 'https://dprint.dev/b.json' extends itself: ",
+          "https://dprint.dev/a.json -> https://dprint.dev/b.json -> https://dprint.dev/c.json -> https://dprint.dev/b.json\n",
+          "    at https://dprint.dev/c.json\n",
+          "    at https://dprint.dev/b.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_use_a_config_extended_more_than_once_where_it_has_the_highest_precedence() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r#"{
+            "extends": ["./b.json", "./c.json"],
+            "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]
+        }"#,
+      )
+      .write_file("/b.json", r#"{ "extends": "./d.json", "excludes": ["b"] }"#)
+      .write_file("/c.json", r#"{ "extends": "./d.json", "excludes": ["c"], "lineWidth": 100 }"#)
+      .write_file(
+        "/d.json",
+        r#"{
+            "excludes": ["d"],
+            "lineWidth": 80,
+            "test": { "overrides": { "files": "*.d", "prop": 1 } }
+        }"#,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      // d comes after b, which extends it first, and only once
+      assert_eq!(result.files.excludes, vec!["b".to_string(), "d".to_string(), "c".to_string()]);
+      assert_eq!(result.plugins.config.get("lineWidth"), Some(&ConfigMapValue::from_i32(80)));
+      let Some(ConfigMapValue::PluginConfig(test)) = result.plugins.config.get("test") else {
+        unreachable!();
+      };
+      assert_eq!(
+        test.overrides,
+        vec![RawPluginConfigOverride {
+          files: vec!["*.d".to_string()],
+          properties: ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(1))]),
+
+          origin: Default::default(),
+        }]
+      );
+    });
+  }
+
+  #[test]
+  fn should_error_for_includes_in_extended_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "extends": "./base.json", "includes": ["src/**"] }"#)
+      .write_file("/base.json", r#"{ "includes": ["**/*.ts"] }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The 'includes' property can't be used in an extended configuration file. Specify it in the configuration file that extends it.\n",
+          "    at /base.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_ignore_includes_in_extended_remote_config() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/base.json",
+      r#"{ "includes": ["/etc/**"], "excludes": ["dist"] }"#.as_bytes(),
+    );
+    environment
+      .write_file("/dprint.json", r#"{ "extends": "https://dprint.dev/base.json" }"#)
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dprint.json", &environment).await.unwrap();
+      assert_eq!(environment.take_stderr_messages(), vec![get_warn_includes_message()]);
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, vec!["dist".to_string()]);
+    });
+  }
+
+  #[test]
+  fn should_error_for_inherit_in_extended_config() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/a/dprint.json", r#"{ "extends": "../base.json" }"#)
+      .write_file("/base.json", r#"{ "inherit": true }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/a/dprint.json", &environment).await.err().unwrap();
+      assert_eq!(
+        err.to_string(),
+        concat!(
+          "The 'inherit' property can't be used in an extended configuration file. Specify it in the configuration file that extends it.\n",
+          "    at /base.json"
+        )
+      );
+    });
+  }
+
+  #[test]
+  fn should_use_incremental_of_extended_config_when_not_specified() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "extends": "./base.json" }"#)
+      .write_file("/specified.json", r#"{ "extends": "./base.json", "incremental": true }"#)
+      .write_file("/base.json", r#"{ "incremental": false }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(result.execution.incremental, Some(false));
+      // and not as an unknown global configuration property
+      assert_eq!(result.plugins.config, ConfigMap::new());
+      let result = resolve_local_config("/specified.json", &environment).await;
+      assert_eq!(result.execution.incremental, Some(true));
+    });
+  }
+
+  #[test]
+  fn should_record_which_file_each_property_is_from() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/exec.json",
+      r#"{
+            "indentWidth": 4,
+            "exec": { "commands": [{ "command": "tombi format -", "exts": ["toml"] }], "timeout": 5 }
+        }"#
+        .as_bytes(),
+    );
+    environment
+      .write_file(
+        "/dprint.json",
+        r#"{
+            "extends": "https://dprint.dev/exec.json",
+            "lineWidth": 80,
+            "exec": { "playWithFire": true, "timeout": 10 }
+        }"#,
+      )
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dprint.json", &environment).await.unwrap();
+      let remote = PathSource::new_remote_from_str("https://dprint.dev/exec.json");
+      let origins = &result.plugins.origins;
+      assert_eq!(origins.root_elsewhere("indentWidth", &result.origin.source), Some(&remote));
+      assert_eq!(origins.root_elsewhere("lineWidth", &result.origin.source), None);
+      // the remote commands the local configuration allows are from the remote file,
+      // while the timeout specified in both is the local one
+      assert_eq!(
+        origins.plugin_elsewhere("exec", &result.origin.source),
+        IndexMap::from([("commands".to_string(), remote.clone()), ("indentWidth".to_string(), remote)])
+      );
     });
   }
 
@@ -874,8 +1106,8 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.base_path, CanonicalizedPathBuf::new_for_testing("/"));
-      assert_eq!(result.source.is_remote(), true);
+      assert_eq!(result.origin.base_path, CanonicalizedPathBuf::new_for_testing("/"));
+      assert_eq!(result.origin.source.is_remote(), true);
     });
   }
 
@@ -895,12 +1127,12 @@ mod tests {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
       assert_eq!(environment.take_stderr_messages(), vec![get_warn_includes_message()]);
-      assert_eq!(result.includes, None);
+      assert_eq!(result.files.includes, None);
 
       environment.clear_logs();
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stderr_messages().len(), 0); // no warning this time
-      assert_eq!(result.includes, None);
+      assert_eq!(result.files.includes, None);
     });
   }
 
@@ -920,14 +1152,14 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stderr_messages(), vec![get_warn_includes_message()]);
-      assert_eq!(result.includes, None);
-      assert_eq!(result.excludes, Some(vec![]));
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, Vec::<String>::new());
 
       environment.clear_logs();
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stderr_messages().len(), 0); // no warning this time
-      assert_eq!(result.includes, None);
-      assert_eq!(result.excludes, Some(vec![]));
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, Vec::<String>::new());
     });
   }
 
@@ -988,12 +1220,12 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.base_path, CanonicalizedPathBuf::new_for_testing("/"));
-      assert_eq!(result.source.is_local(), true);
-      assert_eq!(result.includes, None);
-      assert_eq!(result.excludes, Some(vec!["test-excludes".to_string()]));
+      assert_eq!(result.origin.base_path, CanonicalizedPathBuf::new_for_testing("/"));
+      assert_eq!(result.origin.source.is_local(), true);
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, vec!["test-excludes".to_string()]);
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin2.wasm"),
@@ -1027,7 +1259,7 @@ mod tests {
         ),
       ]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
       let logged_warnings = environment.take_stderr_messages();
       assert_eq!(logged_warnings, vec![get_warn_includes_message()]);
     });
@@ -1068,13 +1300,13 @@ mod tests {
       let result = get_result("/test.json", &environment).await.unwrap();
       // the plugin must appear only once
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")]
       );
       // and the extended config's settings must be preserved
-      assert_eq!(result.excludes, Some(vec!["test-excludes".to_string()]));
+      assert_eq!(result.files.excludes, vec!["test-excludes".to_string()]);
       assert_eq!(
-        result.config_map.get("test"),
+        result.plugins.config.get("test"),
         Some(&ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: None,
@@ -1110,7 +1342,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference {
           path_source: PathSource::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           checksum: Some(String::from("checksum")),
@@ -1142,7 +1374,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference {
           path_source: PathSource::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           checksum: Some(String::from("local-checksum")),
@@ -1202,10 +1434,10 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.includes, None);
-      assert_eq!(result.excludes, None);
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, Vec::<String>::new());
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin2.wasm"),
@@ -1240,7 +1472,7 @@ mod tests {
         ),
       ]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1304,10 +1536,10 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.includes, None);
-      assert_eq!(result.excludes, None);
+      assert_eq!(result.files.includes, None);
+      assert_eq!(result.files.excludes, Vec::<String>::new());
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
           PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin2.wasm"),
@@ -1343,7 +1575,7 @@ mod tests {
         ),
       ]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1412,7 +1644,7 @@ mod tests {
         (String::from("prop5"), ConfigMapValue::from_i32(5)),
         (String::from("prop6"), ConfigMapValue::from_i32(6)),
       ]);
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1453,7 +1685,7 @@ mod tests {
         (String::from("prop2"), ConfigMapValue::from_i32(2)),
         (String::from("prop3"), ConfigMapValue::from_i32(3)),
       ]);
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1491,7 +1723,7 @@ mod tests {
         (String::from("prop2"), ConfigMapValue::from_i32(2)),
         (String::from("prop3"), ConfigMapValue::from_i32(3)),
       ]);
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1604,7 +1836,7 @@ mod tests {
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1650,7 +1882,7 @@ mod tests {
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1694,7 +1926,7 @@ mod tests {
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1734,12 +1966,14 @@ mod tests {
           overrides: vec![RawPluginConfigOverride {
             files: vec!["**/package.json".to_string()],
             properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+
+            origin: Default::default(),
           }],
           properties: ConfigKeyMap::new(),
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1785,17 +2019,21 @@ mod tests {
             RawPluginConfigOverride {
               files: vec!["**/*.json".to_string()],
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(100))]),
+
+              origin: Default::default(),
             },
             RawPluginConfigOverride {
               files: vec!["**/package.json".to_string()],
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+
+              origin: Default::default(),
             },
           ],
           properties: ConfigKeyMap::new(),
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1875,7 +2113,7 @@ mod tests {
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1916,7 +2154,7 @@ mod tests {
         }),
       )]);
 
-      assert_eq!(result.config_map, expected_config_map);
+      assert_eq!(result.plugins.config, expected_config_map);
     });
   }
 
@@ -1935,7 +2173,7 @@ mod tests {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference::new_remote_from_str("https://dprint.dev/test-plugin.wasm")]
       );
     });
@@ -1972,7 +2210,7 @@ mod tests {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference::new_remote_from_str("https://dprint.dev/test/plugin.wasm")]
       );
     });
@@ -1993,7 +2231,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.plugins, vec![PluginSourceReference::new_local("/testing/asdf.wasm")]);
+      assert_eq!(result.plugins.sources, vec![PluginSourceReference::new_local("/testing/asdf.wasm")]);
     });
   }
 
@@ -2018,7 +2256,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.plugins, vec![PluginSourceReference::new_local("/other/testing/asdf.wasm")]);
+      assert_eq!(result.plugins.sources, vec![PluginSourceReference::new_local("/other/testing/asdf.wasm")]);
     });
   }
 
@@ -2037,7 +2275,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.incremental, None);
+      assert_eq!(result.execution.incremental, None);
     });
   }
 
@@ -2057,7 +2295,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.incremental, Some(true));
+      assert_eq!(result.execution.incremental, Some(true));
     });
   }
 
@@ -2077,7 +2315,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.incremental, Some(false));
+      assert_eq!(result.execution.incremental, Some(false));
     });
   }
 
@@ -2101,7 +2339,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      let shebangs = result.shebangs.unwrap();
+      let shebangs = result.routing.shebangs.unwrap();
       assert_eq!(shebangs.get("#!/bin/sh").map(|s| s.as_str()), Some("sh"));
       // the leading dot is removed and the extension lowercased
       assert_eq!(shebangs.get("#!/usr/bin/env node").map(|s| s.as_str()), Some("js"));
@@ -2139,7 +2377,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      let shebangs = result.shebangs.unwrap();
+      let shebangs = result.routing.shebangs.unwrap();
       assert_eq!(
         shebangs.into_iter().collect::<Vec<_>>(),
         vec![
@@ -2149,7 +2387,7 @@ mod tests {
           ("#!/bin/sh".to_string(), "sh".to_string()),
         ]
       );
-      assert!(!result.config_map.contains_key("shebangs"));
+      assert!(!result.plugins.config.contains_key("shebangs"));
     });
   }
 
@@ -2197,7 +2435,7 @@ mod tests {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
       assert_eq!(
-        result.shebangs.unwrap().into_iter().collect::<Vec<_>>(),
+        result.routing.shebangs.unwrap().into_iter().collect::<Vec<_>>(),
         vec![
           ("#!/usr/bin/env python3".to_string(), "test".to_string()),
           ("#!/usr/bin/env node".to_string(), "base1".to_string()),
@@ -2225,7 +2463,7 @@ mod tests {
 
     assert_eq!(
       get_error(r##"{ "#!/bin/sh": "" }"##),
-      "Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''."
+      "Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.\n    at /test.json"
     );
     for extension in [".", "*.sh", " sh", "tar.gz"] {
       assert!(
@@ -2236,7 +2474,7 @@ mod tests {
     }
     assert_eq!(
       get_error(r##"{ "/bin/sh": "sh" }"##),
-      "Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'."
+      "Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.\n    at /test.json"
     );
     assert!(get_error(r##"{ " #!/bin/sh": "sh" }"##).contains("to be a shebang line starting with '#!'"));
     assert!(get_error(r##"{ "#!/bin/sh\ntext": "sh" }"##).contains("to be a shebang line starting with '#!'"));
@@ -2279,72 +2517,82 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.inherit, Some(true));
       // should not leak into the config map (which would cause an unknown property diagnostic)
-      assert_eq!(result.config_map.contains_key("inherit"), false);
+      assert_eq!(result.plugins.config.contains_key("inherit"), false);
     });
   }
 
   #[test]
   fn inherit_config_should_merge_ancestor_config() {
     let parent = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/"),
-      is_global: false,
-      includes: Some(vec!["**/*.txt".to_string()]),
-      // both patterns match at any depth, so both rebase into the nested directory
-      excludes: Some(vec!["**/node_modules".to_string(), "dist".to_string()]),
-      plugins: vec![
-        PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
-        PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
-      ],
-      incremental: Some(true),
-      shebangs: None,
-      inherit: None,
-      config_map: ConfigMap::from([
-        ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
-        (
+      origin: test_origin("/dprint.json", "/"),
+      files: FileSelection {
+        includes: Some(vec!["**/*.txt".to_string()]),
+        // both patterns match at any depth, so both rebase into the nested directory
+        excludes: vec!["**/node_modules".to_string(), "dist".to_string()],
+      },
+      routing: FileRouting {
+        shebangs: Some(IndexMap::from([
+          ("#!/bin/sh".to_string(), "sh".to_string()),
+          ("#!/usr/bin/env node".to_string(), "js".to_string()),
+        ])),
+      },
+      execution: ExecutionPolicy { incremental: Some(true) },
+      plugins: PluginConfiguration {
+        origins: Default::default(),
+        remote_exec: Default::default(),
+        sources: vec![
+          PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
+          PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
+        ],
+        config: ConfigMap::from([
+          ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
+          (
+            "test".to_string(),
+            ConfigMapValue::PluginConfig(RawPluginConfig {
+              locked: false,
+              associations: None,
+              overrides: Vec::new(),
+              properties: ConfigKeyMap::from([
+                ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
+                ("newLineKind".to_string(), ConfigKeyValue::from_str("crlf")),
+              ]),
+            }),
+          ),
+        ]),
+      },
+    };
+    let mut result = ResolvedConfig {
+      origin: test_origin("/sub/dprint.json", "/sub"),
+      files: FileSelection {
+        includes: None,
+        excludes: vec!["sub-excludes".to_string()],
+      },
+      routing: FileRouting {
+        shebangs: Some(IndexMap::from([("#!/usr/bin/env node".to_string(), "ts".to_string())])),
+      },
+      execution: Default::default(),
+      plugins: PluginConfiguration {
+        origins: Default::default(),
+        remote_exec: Default::default(),
+        // a plugin specified in the child has precedence over the ancestor's
+        sources: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
+        config: ConfigMap::from([(
           "test".to_string(),
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
             overrides: Vec::new(),
-            properties: ConfigKeyMap::from([
-              ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
-              ("newLineKind".to_string(), ConfigKeyValue::from_str("crlf")),
-            ]),
+            properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
           }),
-        ),
-      ]),
-      remote_exec: Default::default(),
-    };
-    let child = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
-      is_global: false,
-      includes: None,
-      excludes: Some(vec!["sub-excludes".to_string()]),
-      // a plugin specified in the child has precedence over the ancestor's
-      plugins: vec![PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm")],
-      incremental: None,
-      shebangs: None,
-      inherit: Some(true),
-      config_map: ConfigMap::from([(
-        "test".to_string(),
-        ConfigMapValue::PluginConfig(RawPluginConfig {
-          locked: false,
-          associations: None,
-          overrides: Vec::new(),
-          properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
-        }),
-      )]),
-      remote_exec: Default::default(),
+        )]),
+      },
     };
 
-    let result = inherit_config(child, &parent, &TestEnvironment::new()).unwrap();
+    result.inherit(&parent, &TestEnvironment::new()).unwrap();
     // child plugins first, then ancestor's, with duplicates removed
     assert_eq!(
-      result.plugins,
+      result.plugins.sources,
       vec![
         PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test-plugin.wasm"),
         PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/json.wasm"),
@@ -2352,15 +2600,20 @@ mod tests {
     );
     // ancestor excludes (rebased, droppable) come first, then the nested config's own
     assert_eq!(
-      result.excludes,
-      Some(vec!["**/node_modules".to_string(), "dist".to_string(), "sub-excludes".to_string()])
+      result.files.excludes,
+      vec!["**/node_modules".to_string(), "dist".to_string(), "sub-excludes".to_string()]
     );
     // includes are not inherited
-    assert_eq!(result.includes, None);
+    assert_eq!(result.files.includes, None);
     // incremental is inherited when not specified
-    assert_eq!(result.incremental, Some(true));
+    assert_eq!(result.execution.incremental, Some(true));
+    // the nested config has shebangs of its own, so the ancestor's aren't used
     assert_eq!(
-      result.config_map,
+      result.routing.shebangs.unwrap().into_iter().collect::<Vec<_>>(),
+      vec![("#!/usr/bin/env node".to_string(), "ts".to_string())]
+    );
+    assert_eq!(
+      result.plugins.config,
       ConfigMap::from([
         (
           "test".to_string(),
@@ -2382,103 +2635,110 @@ mod tests {
   }
 
   #[test]
+  fn inherit_config_should_not_inherit_shebangs_when_specifying_none() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r##"{ "shebangs": { "#!/bin/sh": "sh" } }"##)
+      .write_file("/sub/dprint.json", r#"{ "inherit": true, "shebangs": {} }"#)
+      .write_file("/other/dprint.json", r#"{ "inherit": true }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let ancestor = resolve_local_config("/dprint.json", &environment).await;
+      let result = resolve_local_descendant_config("/sub/dprint.json", &ancestor, &environment).await.unwrap();
+      assert_eq!(result.routing.shebangs, Some(IndexMap::new()));
+      let result = resolve_local_descendant_config("/other/dprint.json", &ancestor, &environment).await.unwrap();
+      assert_eq!(result.routing.shebangs, ancestor.routing.shebangs);
+    });
+  }
+
+  #[test]
   fn inherit_config_should_rebase_ancestor_excludes_onto_nested_directory() {
-    fn inherited_excludes(ancestor: &[&str], ancestor_base: &str, new_base: &str) -> Option<Vec<String>> {
-      inherit_excludes(
-        None,
-        Some(&ancestor.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+    fn inherited_excludes(ancestor: &[&str], ancestor_base: &str, new_base: &str) -> Vec<String> {
+      let mut files = FileSelection::default();
+      files.inherit(
+        &FileSelection {
+          includes: None,
+          excludes: ancestor.iter().map(|s| s.to_string()).collect(),
+        },
         &CanonicalizedPathBuf::new_for_testing(ancestor_base),
         &CanonicalizedPathBuf::new_for_testing(new_base),
-      )
+      );
+      files.excludes
     }
 
     // depth-relative patterns keep matching within the nested directory
-    assert_eq!(inherited_excludes(&["**/node_modules"], "/", "/sub"), Some(vec!["**/node_modules".to_string()]));
+    assert_eq!(inherited_excludes(&["**/node_modules"], "/", "/sub"), vec!["**/node_modules".to_string()]);
     // a pattern with no slash matches its name at any depth, so it's kept as-is
-    assert_eq!(inherited_excludes(&["dist"], "/", "/sub"), Some(vec!["dist".to_string()]));
-    assert_eq!(inherited_excludes(&["dist/"], "/", "/sub"), Some(vec!["dist/".to_string()]));
+    assert_eq!(inherited_excludes(&["dist"], "/", "/sub"), vec!["dist".to_string()]);
+    assert_eq!(inherited_excludes(&["dist/"], "/", "/sub"), vec!["dist/".to_string()]);
     // ...unless it names the nested directory or one of its ancestors, in which
     // case everything in the nested directory is excluded
-    assert_eq!(inherited_excludes(&["sub"], "/", "/sub"), Some(vec!["**".to_string()]));
-    assert_eq!(inherited_excludes(&["sub"], "/", "/sub/nested"), Some(vec!["**".to_string()]));
+    assert_eq!(inherited_excludes(&["sub"], "/", "/sub"), vec!["**".to_string()]);
+    assert_eq!(inherited_excludes(&["sub"], "/", "/sub/nested"), vec!["**".to_string()]);
     // ...including when it names an ancestor other than the first one below the base
-    assert_eq!(inherited_excludes(&["nested"], "/", "/sub/nested"), Some(vec!["**".to_string()]));
-    assert_eq!(inherited_excludes(&["nested"], "/", "/sub/nested/deep"), Some(vec!["**".to_string()]));
+    assert_eq!(inherited_excludes(&["nested"], "/", "/sub/nested"), vec!["**".to_string()]);
+    assert_eq!(inherited_excludes(&["nested"], "/", "/sub/nested/deep"), vec!["**".to_string()]);
     // ...and when it names one with a wildcard
-    assert_eq!(inherited_excludes(&["su*"], "/", "/sub"), Some(vec!["**".to_string()]));
-    assert_eq!(inherited_excludes(&["neste*"], "/", "/sub/nested"), Some(vec!["**".to_string()]));
-    assert_eq!(inherited_excludes(&["**/sub"], "/", "/sub/nested"), Some(vec!["**".to_string()]));
+    assert_eq!(inherited_excludes(&["su*"], "/", "/sub"), vec!["**".to_string()]);
+    assert_eq!(inherited_excludes(&["neste*"], "/", "/sub/nested"), vec!["**".to_string()]);
+    assert_eq!(inherited_excludes(&["**/sub"], "/", "/sub/nested"), vec!["**".to_string()]);
     // a wildcard matching none of them keeps matching its name at any depth
-    assert_eq!(inherited_excludes(&["ot*"], "/", "/sub"), Some(vec!["ot*".to_string()]));
+    assert_eq!(inherited_excludes(&["ot*"], "/", "/sub"), vec!["ot*".to_string()]);
     // a pattern is normalized the way the ancestor config interprets it before
     // rebasing, so a backslash separator is a separator and not part of a name
-    assert_eq!(inherited_excludes(&["dist\\sub"], "/", "/sub"), None);
-    assert_eq!(inherited_excludes(&["sub\\dist"], "/", "/sub"), Some(vec!["dist".to_string()]));
+    assert_eq!(inherited_excludes(&["dist\\sub"], "/", "/sub"), Vec::<String>::new());
+    assert_eq!(inherited_excludes(&["sub\\dist"], "/", "/sub"), vec!["dist".to_string()]);
     // a leading `/` anchors to the ancestor config's directory
-    assert_eq!(inherited_excludes(&["/sub/dist"], "/", "/sub"), Some(vec!["./dist".to_string()]));
-    assert_eq!(inherited_excludes(&["/dist"], "/", "/sub"), None);
+    assert_eq!(inherited_excludes(&["/sub/dist"], "/", "/sub"), vec!["./dist".to_string()]);
+    assert_eq!(inherited_excludes(&["/dist"], "/", "/sub"), Vec::<String>::new());
     // a pattern anchored into the nested directory is rebased to be relative to it
-    assert_eq!(inherited_excludes(&["sub/dist"], "/", "/sub"), Some(vec!["dist".to_string()]));
+    assert_eq!(inherited_excludes(&["sub/dist"], "/", "/sub"), vec!["dist".to_string()]);
     // an anchored pattern that points outside the nested directory is dropped
-    assert_eq!(inherited_excludes(&["other/dist"], "/", "/sub"), None);
+    assert_eq!(inherited_excludes(&["other/dist"], "/", "/sub"), Vec::<String>::new());
     // dropping leaves the nested config's own excludes intact
-    assert_eq!(
-      inherit_excludes(
-        Some(vec!["own".to_string()]),
-        Some(&["other/dist".to_string()]),
-        &CanonicalizedPathBuf::new_for_testing("/"),
-        &CanonicalizedPathBuf::new_for_testing("/sub"),
-      ),
-      Some(vec!["own".to_string()])
+    let mut files = FileSelection {
+      includes: None,
+      excludes: vec!["own".to_string()],
+    };
+    files.inherit(
+      &FileSelection {
+        includes: None,
+        excludes: vec!["other/dist".to_string()],
+      },
+      &CanonicalizedPathBuf::new_for_testing("/"),
+      &CanonicalizedPathBuf::new_for_testing("/sub"),
     );
+    assert_eq!(files.excludes, vec!["own".to_string()]);
   }
 
   #[test]
   fn inherit_config_should_error_overriding_locked_ancestor_config() {
-    let parent = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/"),
-      is_global: false,
-      includes: None,
-      excludes: None,
-      plugins: Vec::new(),
-      incremental: None,
-      shebangs: None,
-      inherit: None,
-      config_map: ConfigMap::from([(
-        "test".to_string(),
-        ConfigMapValue::PluginConfig(RawPluginConfig {
-          locked: true,
-          associations: None,
-          overrides: Vec::new(),
-          properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
-        }),
-      )]),
-      remote_exec: Default::default(),
-    };
-    let child = ResolvedConfig {
-      source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/sub/dprint.json")),
-      base_path: CanonicalizedPathBuf::new_for_testing("/sub"),
-      is_global: false,
-      includes: None,
-      excludes: None,
-      plugins: Vec::new(),
-      incremental: None,
-      shebangs: None,
-      inherit: Some(true),
-      config_map: ConfigMap::from([(
-        "test".to_string(),
-        ConfigMapValue::PluginConfig(RawPluginConfig {
-          locked: false,
-          associations: None,
-          overrides: Vec::new(),
-          properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
-        }),
-      )]),
-      remote_exec: Default::default(),
-    };
+    fn config_with_test_plugin(origin: ConfigOrigin, locked: bool, indent_width: i32) -> ResolvedConfig {
+      ResolvedConfig {
+        origin,
+        files: Default::default(),
+        routing: Default::default(),
+        execution: Default::default(),
+        plugins: PluginConfiguration {
+          origins: Default::default(),
+          remote_exec: Default::default(),
+          sources: Vec::new(),
+          config: ConfigMap::from([(
+            "test".to_string(),
+            ConfigMapValue::PluginConfig(RawPluginConfig {
+              locked,
+              associations: None,
+              overrides: Vec::new(),
+              properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(indent_width))]),
+            }),
+          )]),
+        },
+      }
+    }
+    let parent = config_with_test_plugin(test_origin("/dprint.json", "/"), true, 4);
+    let mut child = config_with_test_plugin(test_origin("/sub/dprint.json", "/sub"), false, 2);
 
-    let err = inherit_config(child, &parent, &TestEnvironment::new()).err().unwrap();
+    let err = child.inherit(&parent, &TestEnvironment::new()).err().unwrap();
     assert_eq!(
       err.to_string(),
       concat!(
@@ -2486,6 +2746,254 @@ mod tests {
         "Locked configurations cannot have their properties overridden."
       )
     );
+  }
+
+  /// The same configuration files resolve the same whether they're JSON, TOML
+  /// or some of each (see [`resolve_in_every_format`]).
+  mod formats {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    /// Resolves the configuration file of that name, and what it logged.
+    async fn resolve(environment: &TestEnvironment, paths: &ConfigPaths, name: &str) -> (Result<ResolvedConfig, String>, Vec<String>) {
+      let result = get_result(paths.get(name), environment).await.map_err(|err| err.to_string());
+      (result, environment.take_stderr_messages())
+    }
+
+    fn plugin_config<'a>(config: &'a ResolvedConfig, key: &str) -> &'a RawPluginConfig {
+      match config.plugins.config.get(key) {
+        Some(ConfigMapValue::PluginConfig(plugin)) => plugin,
+        other => panic!("expected the configuration of {}, got {:?}", key, other),
+      }
+    }
+
+    #[test]
+    fn resolves_every_kind_of_property_the_same() {
+      let (result, messages) = resolve_in_every_format(
+        &[
+          (
+            "dprint",
+            r##"{
+              "extends": "./<base>",
+              "lineWidth": 100,
+              "useTabs": true,
+              "incremental": false,
+              "includes": ["src/**"],
+              "excludes": ["**/dist", "generated"],
+              "shebangs": { "#!/usr/bin/env node": "js" },
+              "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"],
+              "test": {
+                "associations": ["**/*.txt", "!**/skip.txt"],
+                "binaryExpression.operatorPosition": "sameLine",
+                "nested": { "deeper": [1, 2], "flag": false },
+                "overrides": [{ "files": "**/*.md", "lineWidth": 40 }]
+              },
+              "exec": {
+                "timeout": 5,
+                "commands": [
+                  { "command": "tr a-z A-Z", "exts": ["txt"], "stdin": true },
+                  { "command": "cat", "fileNames": ["README"] }
+                ]
+              }
+            }"##,
+          ),
+          ("base", r#"{ "indentWidth": 4, "test": { "newLineKind": "crlf" } }"#),
+        ],
+        async |environment, paths| resolve(environment, paths, "dprint").await,
+      );
+      assert_eq!(messages, Vec::<String>::new());
+      let config = result.unwrap();
+      assert_eq!(config.files.includes, Some(vec!["src/**".to_string()]));
+      assert_eq!(config.execution.incremental, Some(false));
+      assert_eq!(config.plugins.sources.len(), 2);
+      assert_eq!(config.plugins.config.get("indentWidth"), Some(&ConfigMapValue::from_i32(4)));
+      let test = plugin_config(&config, "test");
+      assert_eq!(test.associations, Some(vec!["**/*.txt".to_string(), "!**/skip.txt".to_string()]));
+      assert_eq!(test.overrides.len(), 1);
+      assert_eq!(test.properties.get("newLineKind"), Some(&ConfigKeyValue::from_str("crlf")));
+      let ConfigKeyValue::Array(commands) = &plugin_config(&config, "exec").properties["commands"] else {
+        unreachable!();
+      };
+      assert_eq!(commands.len(), 2);
+    }
+
+    #[test]
+    fn reads_a_file_extended_twice_once_where_it_has_the_highest_precedence() {
+      let (result, _) = resolve_in_every_format(
+        &[
+          (
+            "dprint",
+            r#"{ "extends": ["./<b>", "./<c>"], "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+          ),
+          ("b", r#"{ "extends": "./<d>", "excludes": ["b"] }"#),
+          ("c", r#"{ "extends": "./<d>", "excludes": ["c"], "lineWidth": 100 }"#),
+          (
+            "d",
+            r#"{ "excludes": ["d"], "lineWidth": 80, "test": { "overrides": [{ "files": "*.d", "prop": 1 }] } }"#,
+          ),
+        ],
+        async |environment, paths| resolve(environment, paths, "dprint").await,
+      );
+      let config = result.unwrap();
+      assert_eq!(config.files.excludes, vec!["b".to_string(), "d".to_string(), "c".to_string()]);
+      assert_eq!(config.plugins.config.get("lineWidth"), Some(&ConfigMapValue::from_i32(80)));
+      assert_eq!(plugin_config(&config, "test").overrides.len(), 1);
+    }
+
+    #[test]
+    fn stops_at_an_extends_cycle() {
+      let (result, _) = resolve_in_every_format(
+        &[
+          ("a", r#"{ "extends": "./<b>", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#),
+          ("b", r#"{ "extends": "./<c>" }"#),
+          ("c", r#"{ "extends": "./<a>" }"#),
+        ],
+        async |environment, paths| resolve(environment, paths, "a").await,
+      );
+      assert_eq!(
+        result.unwrap_err(),
+        "The configuration file './a.json' extends itself: /a.json -> /b.json -> /c.json -> /a.json\n    at /c.json\n    at /b.json"
+      );
+    }
+
+    #[test]
+    fn stops_at_a_remote_extends_cycle() {
+      let (result, _) = resolve_in_every_format(
+        &[
+          ("dprint", r#"{ "extends": "<https://dprint.dev/a>" }"#),
+          ("https://dprint.dev/a", r#"{ "extends": "<https://dprint.dev/b>" }"#),
+          ("https://dprint.dev/b", r#"{ "extends": "<https://dprint.dev/a>" }"#),
+        ],
+        async |environment, paths| resolve(environment, paths, "dprint").await,
+      );
+      assert_eq!(
+        result.unwrap_err(),
+        concat!(
+          "The configuration file 'https://dprint.dev/a.json' extends itself: ",
+          "/dprint.json -> https://dprint.dev/a.json -> https://dprint.dev/b.json -> https://dprint.dev/a.json\n",
+          "    at https://dprint.dev/b.json\n",
+          "    at https://dprint.dev/a.json"
+        )
+      );
+    }
+
+    #[test]
+    fn errors_overriding_a_locked_configuration_it_extends() {
+      let files = |own_test_config: &'static str| {
+        [
+          ("dprint", own_test_config),
+          ("https://dprint.dev/locked", r#"{ "test": { "locked": true, "prop": 6, "other": "test" } }"#),
+        ]
+      };
+      let (result, _) = resolve_in_every_format(
+        &files(r#"{ "extends": "<https://dprint.dev/locked>", "test": { "prop": 5 } }"#),
+        async |environment, paths| resolve(environment, paths, "dprint").await,
+      );
+      assert_eq!(
+        result.unwrap_err(),
+        concat!(
+          "The configuration for \"test\" was locked, but a parent configuration specified it. ",
+          "Locked configurations cannot have their properties overridden.\n",
+          "    at https://dprint.dev/locked.json",
+        )
+      );
+
+      // and it's used as is when the configuration doesn't
+      let (result, _) = resolve_in_every_format(&files(r#"{ "extends": "<https://dprint.dev/locked>" }"#), async |environment, paths| {
+        resolve(environment, paths, "dprint").await
+      });
+      let config = result.unwrap();
+      let test = plugin_config(&config, "test");
+      assert!(test.locked);
+      assert_eq!(test.properties.get("prop"), Some(&ConfigKeyValue::from_i32(6)));
+    }
+
+    #[test]
+    fn inherits_the_ancestor_configuration() {
+      let (ancestor, result) = resolve_in_every_format(
+        &[
+          (
+            "dprint",
+            r##"{
+              "lineWidth": 80,
+              "incremental": true,
+              "excludes": ["**/node_modules", "sub/dist"],
+              "shebangs": { "#!/bin/sh": "sh" },
+              "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],
+              "test": { "indentWidth": 4, "newLineKind": "crlf" }
+            }"##,
+          ),
+          (
+            "sub/dprint",
+            r#"{ "inherit": true, "extends": "/<sub/base>", "excludes": ["own"], "test": { "indentWidth": 2 } }"#,
+          ),
+          ("sub/base", r#"{ "useTabs": true }"#),
+        ],
+        async |environment, paths| {
+          let ancestor = resolve_local_config(paths.get("dprint"), environment).await;
+          let result = resolve_local_descendant_config(paths.get("sub/dprint"), &ancestor, environment)
+            .await
+            .map_err(|err| err.to_string());
+          (ancestor, result)
+        },
+      );
+      let config = result.unwrap();
+      assert_eq!(config.plugins.sources, ancestor.plugins.sources);
+      assert_eq!(
+        config.files.excludes,
+        vec!["**/node_modules".to_string(), "dist".to_string(), "own".to_string()]
+      );
+      assert_eq!(config.execution.incremental, Some(true));
+      assert_eq!(config.routing.shebangs, ancestor.routing.shebangs);
+      assert_eq!(config.plugins.config.get("lineWidth"), Some(&ConfigMapValue::from_i32(80)));
+      assert_eq!(config.plugins.config.get("useTabs"), Some(&ConfigMapValue::from_bool(true)));
+      let test = plugin_config(&config, "test");
+      assert_eq!(test.properties.get("indentWidth"), Some(&ConfigKeyValue::from_i32(2)));
+      assert_eq!(test.properties.get("newLineKind"), Some(&ConfigKeyValue::from_str("crlf")));
+    }
+
+    #[test]
+    fn errors_overriding_a_locked_ancestor_configuration() {
+      let (_, result) = resolve_in_every_format(
+        &[
+          (
+            "dprint",
+            r#"{ "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"], "test": { "locked": true, "indentWidth": 4 } }"#,
+          ),
+          ("sub/dprint", r#"{ "inherit": true, "test": { "indentWidth": 2 } }"#),
+        ],
+        async |environment, paths| {
+          let ancestor = resolve_local_config(paths.get("dprint"), environment).await;
+          let result = resolve_local_descendant_config(paths.get("sub/dprint"), &ancestor, environment)
+            .await
+            .map_err(|err| err.to_string());
+          (ancestor, result)
+        },
+      );
+      assert_eq!(
+        result.unwrap_err(),
+        concat!(
+          "The configuration for \"test\" was locked, but a parent configuration specified it. ",
+          "Locked configurations cannot have their properties overridden."
+        )
+      );
+    }
+
+    #[test]
+    fn says_which_file_an_invalid_property_is_in() {
+      let (result, _) = resolve_in_every_format(
+        &[
+          (
+            "dprint",
+            r#"{ "extends": "./<base>", "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"] }"#,
+          ),
+          ("base", r#"{ "incremental": "yes" }"#),
+        ],
+        async |environment, paths| resolve(environment, paths, "dprint").await,
+      );
+      assert_eq!(result.unwrap_err(), "Expected boolean in 'incremental' property.\n    at /base.json");
+    }
   }
 
   mod remote_exec {
@@ -2514,6 +3022,7 @@ mod tests {
     }
 
     /// What the tests look at in a resolved configuration.
+    #[derive(Debug)]
     struct Resolved {
       plugins: Vec<String>,
       exec: Exec,
@@ -2592,37 +3101,42 @@ mod tests {
       )
     }
 
+    /// Resolves the local configuration, which may extend `REMOTE_URL` and
+    /// `./base.json`, with each of the three files in JSON and in TOML (see
+    /// [`resolve_in_every_format`]).
     fn resolve_with_base(local_config: &str, remote_config: &str, base_config: &str) -> Result<Resolved, String> {
-      resolve_with_remote_files(local_config, &[(REMOTE_URL, remote_config)], base_config)
+      let local_config = local_config.replace(REMOTE_URL, "<https://dprint.dev/exec>").replace("./base.json", "./<base>");
+      resolve_files(&[
+        ("dprint", local_config.as_str()),
+        ("base", base_config),
+        ("https://dprint.dev/exec", remote_config),
+      ])
     }
 
-    fn resolve_with_remote_files(local_config: &str, remote_files: &[(&str, &str)], base_config: &str) -> Result<Resolved, String> {
-      resolve_with_remote_files_in(TestEnvironment::new(), local_config, remote_files, base_config)
+    /// Resolves the file `dprint` of the files (see `resolve_in_every_format`).
+    fn resolve_files(files: &[(&str, &str)]) -> Result<Resolved, String> {
+      resolve_files_in(files, |_| {})
     }
 
-    fn resolve_with_remote_files_in(
-      environment: TestEnvironment,
-      local_config: &str,
-      remote_files: &[(&str, &str)],
-      base_config: &str,
-    ) -> Result<Resolved, String> {
-      environment.write_file("/dprint.json", local_config).unwrap();
-      environment.write_file("/base.json", base_config).unwrap();
-      for (url, text) in remote_files {
-        environment.add_remote_file_bytes(url, text.as_bytes().to_vec());
-      }
-      environment.clone().run_in_runtime(async move {
-        let result = get_result("/dprint.json", &environment).await.map_err(|err| err.to_string())?;
+    /// Like `resolve_files`, with each environment set up first (ex. its PATH).
+    fn resolve_files_in(files: &[(&str, &str)], set_up: impl Fn(&TestEnvironment)) -> Result<Resolved, String> {
+      resolve_in_every_format(files, async |environment, paths| {
+        set_up(environment);
+        let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string())?;
         Ok(Resolved {
-          plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
+          plugins: plugin_names(&result),
           exec: exec_of(&result),
           messages: environment.take_stderr_messages(),
         })
       })
     }
 
+    fn plugin_names(config: &ResolvedConfig) -> Vec<String> {
+      config.plugins.sources.iter().map(|plugin| plugin.to_string()).collect()
+    }
+
     fn exec_of(config: &ResolvedConfig) -> Exec {
-      match config.config_map.get("exec") {
+      match config.plugins.config.get("exec") {
         Some(ConfigMapValue::PluginConfig(exec)) => Exec {
           properties: ExecProperties::from_config(&exec.properties),
           overrides: exec
@@ -2889,6 +3403,49 @@ mod tests {
     }
 
     #[test]
+    fn expands_a_remote_override_cwd_without_allowing_it() {
+      // the remote override's working directory becomes a local one once
+      // expanded, which "playWithFire" still has to allow
+      let remote_config = remote_config_with_overrides().replace("/remote-override-cwd", "${originConfigDir}");
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": ["tombi"] }} }}"#, REMOTE_URL),
+        &remote_config,
+      )
+      .unwrap();
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::default(),
+          overrides: vec![ExecOverride::new("**/*.txt", &["tombi format -"], None)],
+        }
+      );
+      assert_eq!(
+        result.messages,
+        vec![
+          "Note: \"playWithFire\" is ignored in remote configuration (https://dprint.dev/exec.json). Specify it in a local configuration file.",
+          "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that run programs not listed in \"playWithFire\": evil",
+          concat!(
+            "Note: The exec \"cwd\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, as it decides what commands run. ",
+            "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+          ),
+        ]
+      );
+
+      let result = resolve(
+        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+        &remote_config,
+      )
+      .unwrap();
+      assert_eq!(
+        result.exec,
+        Exec {
+          properties: ExecProperties::new(&[], Some("/remote-cwd")),
+          overrides: vec![ExecOverride::new("**/*.txt", &["tombi format -", "evil"], Some("/"))],
+        }
+      );
+    }
+
+    #[test]
     fn errors_for_an_invalid_value() {
       let err = resolve(
         &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": "yes" }} }}"#, REMOTE_URL),
@@ -2921,19 +3478,22 @@ mod tests {
     fn keeps_invalid_remote_commands_over_lower_precedence_ones() {
       // the extended remote configuration's commands aren't an array, which
       // still takes precedence over the commands of the one it extends
-      let remote_files = [
-        (REMOTE_URL, r#"{ "extends": "./lower.json", "exec": { "commands": "evil" } }"#),
-        (
-          "https://dprint.dev/lower.json",
-          r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"] }"#,
-        ),
-      ];
       let resolve_allowing = |play_with_fire: &str| {
-        resolve_with_remote_files(
-          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
-          &remote_files,
-          "{}",
-        )
+        let local_config = format!(
+          r#"{{ "extends": "<https://dprint.dev/exec>", "exec": {{ "playWithFire": {} }} }}"#,
+          play_with_fire
+        );
+        resolve_files(&[
+          ("dprint", local_config.as_str()),
+          (
+            "https://dprint.dev/exec",
+            r#"{ "extends": "<https://dprint.dev/lower>", "exec": { "commands": "evil" } }"#,
+          ),
+          (
+            "https://dprint.dev/lower",
+            r#"{ "exec": { "commands": [{ "command": "evil", "exts": ["txt"] }] }, "plugins": ["npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67"] }"#,
+          ),
+        ])
         .unwrap()
       };
       for play_with_fire in ["true", r#"["evil"]"#] {
@@ -2950,25 +3510,21 @@ mod tests {
     #[test]
     fn applies_a_nested_configurations_play_with_fire_to_the_remote_commands_it_inherits() {
       let inherit = |nested_exec: &str| {
-        let environment = TestEnvironment::new();
-        environment
-          .write_file(
-            "/dprint.json",
-            &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
-          )
-          .unwrap();
-        environment.mk_dir_all("/sub").unwrap();
-        environment
-          .write_file("/sub/dprint.json", &format!(r#"{{ "inherit": true{} }}"#, nested_exec))
-          .unwrap();
+        let nested_config = format!(r#"{{ "inherit": true{} }}"#, nested_exec);
         // with a property the exec plugin 0.7.3 doesn't have
-        environment.add_remote_file_bytes(REMOTE_URL, remote_config(r#""shell": "bash","#).into_bytes());
-        environment.clone().run_in_runtime(async move {
-          let ancestor = resolve_local_config("/dprint.json", &environment).await;
-          let nested = resolve_local_config("/sub/dprint.json", &environment).await;
-          let result = inherit_config(nested, &ancestor, &environment).unwrap();
-          (exec_of(&result), result.plugins.iter().map(|plugin| plugin.to_string()).collect::<Vec<_>>())
-        })
+        let remote_config = remote_config(r#""shell": "bash","#);
+        resolve_in_every_format(
+          &[
+            ("dprint", r#"{ "extends": "<https://dprint.dev/exec>", "exec": { "playWithFire": true } }"#),
+            ("sub/dprint", nested_config.as_str()),
+            ("https://dprint.dev/exec", remote_config.as_str()),
+          ],
+          async |environment, paths| {
+            let ancestor = resolve_local_config(paths.get("dprint"), environment).await;
+            let result = resolve_local_descendant_config(paths.get("sub/dprint"), &ancestor, environment).await.unwrap();
+            (exec_of(&result), plugin_names(&result))
+          },
+        )
       };
 
       // what the ancestor allowed, when it doesn't say
@@ -2987,27 +3543,30 @@ mod tests {
       assert_eq!(plugins, vec![EXEC_PLUGIN.to_string()]);
     }
 
-    /// Resolves `/sub/dprint.json` (`nested`), which inherits `/dprint.json`
-    /// (`ancestor`), which may extend `REMOTE_URL` and `./base.json`. Gives
-    /// what the tests look at and the notes about the nested configuration.
+    /// Resolves `sub/dprint` (`nested`), which inherits `dprint` (`ancestor`),
+    /// which may extend `REMOTE_URL` and `./base.json`, with each file in
+    /// JSON and in TOML (see [`resolve_in_every_format`]). Gives what the
+    /// tests look at and the notes about the nested configuration.
     fn resolve_inheriting(ancestor: &str, base: &str, remote: &str, nested: &str) -> Resolved {
-      let environment = TestEnvironment::new();
-      environment.write_file("/dprint.json", ancestor).unwrap();
-      environment.write_file("/base.json", base).unwrap();
-      environment.mk_dir_all("/sub").unwrap();
-      environment.write_file("/sub/dprint.json", nested).unwrap();
-      environment.add_remote_file_bytes(REMOTE_URL, remote.as_bytes().to_vec());
-      environment.clone().run_in_runtime(async move {
-        let ancestor = resolve_local_config("/dprint.json", &environment).await;
-        environment.take_stderr_messages();
-        let nested = resolve_local_config("/sub/dprint.json", &environment).await;
-        let result = inherit_config(nested, &ancestor, &environment).unwrap();
-        Resolved {
-          plugins: result.plugins.iter().map(|plugin| plugin.to_string()).collect(),
-          exec: exec_of(&result),
-          messages: environment.take_stderr_messages(),
-        }
-      })
+      let ancestor = ancestor.replace(REMOTE_URL, "<https://dprint.dev/exec>").replace("./base.json", "./<base>");
+      resolve_in_every_format(
+        &[
+          ("dprint", ancestor.as_str()),
+          ("base", base),
+          ("https://dprint.dev/exec", remote),
+          ("sub/dprint", nested),
+        ],
+        async |environment, paths| {
+          let ancestor = resolve_local_config(paths.get("dprint"), environment).await;
+          environment.take_stderr_messages();
+          let result = resolve_local_descendant_config(paths.get("sub/dprint"), &ancestor, environment).await.unwrap();
+          Resolved {
+            plugins: plugin_names(&result),
+            exec: exec_of(&result),
+            messages: environment.take_stderr_messages(),
+          }
+        },
+      )
     }
 
     fn override_config(commands: &[&str]) -> String {
@@ -3315,6 +3874,103 @@ mod tests {
     }
 
     #[test]
+    fn restricts_a_local_configuration_file_a_remote_one_extends() {
+      // what only a local configuration file may say, in a local file
+      let base = r#"{
+        "plugins": ["https://plugins.dprint.dev/test-plugin.wasm", "./test-process-plugin.json@checksum"],
+        "exec": { "cwd": "/chosen", "commands": [{ "command": "evil", "exts": ["txt"] }] }
+      }"#;
+      // the url a remote file reaches the local file by, which on windows
+      // needs a drive, which the virtual file system's root has none of
+      let (laundered_dir, laundered_url) = if cfg!(windows) {
+        ("C:\\", "file:///C:/<base>")
+      } else {
+        ("/", "file:///<base>")
+      };
+      let laundering = format!(r#"{{ "extends": "{}" }}"#, laundered_url);
+      // which a note names with forward slashes
+      let laundered_path = if cfg!(windows) { "C:/base.json" } else { "/base.json" };
+      let resolve_extending = |extends: &str, remote: &str, base: &str| {
+        resolve_in_every_format(
+          &[
+            ("dprint", &format!(r#"{{ "extends": "{}" }}"#, extends)),
+            ("base", base),
+            ("https://dprint.dev/exec", remote),
+          ],
+          async |environment, paths| {
+            // the local file where that url points (the same file on unix)
+            let base_path = paths.get("base");
+            environment.mk_dir_all(laundered_dir).unwrap();
+            environment
+              .write_file(format!("{}{}", laundered_dir, &base_path[1..]), &environment.read_file(base_path).unwrap())
+              .unwrap();
+            let result = get_result(paths.get("dprint"), environment).await.map_err(|err| err.to_string());
+            let messages = environment.take_stderr_messages();
+            result.map(|result| (result.files.includes.clone(), plugin_names(&result), exec_of(&result), messages))
+          },
+        )
+      };
+      // which a local configuration file that extends it directly gets
+      let (includes, plugins, exec, messages) = resolve_extending("./<base>", "{}", base).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(
+        plugins,
+        vec![
+          "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
+          "/test-process-plugin.json@checksum".to_string()
+        ]
+      );
+      assert_eq!(
+        exec,
+        Exec {
+          properties: ExecProperties::new(&["evil"], Some("/chosen")),
+          overrides: Vec::new(),
+        }
+      );
+      assert_eq!(messages, Vec::<String>::new());
+
+      // but not one a remote configuration file chose to extend: that's the
+      // remote configuration's say, however local the file is
+      let (includes, plugins, exec, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, base).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(plugins, vec!["https://plugins.dprint.dev/test-plugin.wasm".to_string()]);
+      assert_eq!(exec, Exec::default());
+      assert_eq!(
+        messages,
+        vec![
+          get_warn_non_wasm_plugins_message(),
+          format!(
+            concat!(
+              "Note: The exec commands in remote configuration ({}) are ignored for security reasons. ",
+              "To run them, specify \"playWithFire\" in the exec configuration of a local configuration file ",
+              "(`true` or the programs they may run)."
+            ),
+            laundered_path
+          ),
+          format!(
+            concat!(
+              "Note: The exec \"cwd\" in remote configuration ({}) is ignored for security reasons, as it decides what commands run. ",
+              "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
+            ),
+            laundered_path
+          ),
+        ]
+      );
+      // and its includes are ignored with a note, like a remote file's, rather
+      // than being an error like an extended local file's
+      let with_includes = r#"{ "includes": ["**/*.rs"] }"#;
+      let err = resolve_extending("./<base>", "{}", with_includes).unwrap_err();
+      assert!(
+        err.contains("The 'includes' property can't be used in an extended configuration file."),
+        "{}",
+        err
+      );
+      let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, with_includes).unwrap();
+      assert_eq!(includes, None);
+      assert_eq!(messages, vec![get_warn_includes_message()]);
+    }
+
+    #[test]
     fn doesnt_let_a_remote_command_read_files_under_a_program_list() {
       // the exec plugin reads a command's cacheKeyFiles on this machine when
       // the configuration is resolved, before anything runs, so a list of
@@ -3373,13 +4029,19 @@ mod tests {
       );
       let remote = remote.as_str();
       let resolve_with_path = |play_with_fire: &str, path: &str| {
-        let environment = TestEnvironment::new();
-        environment.set_env_var("PATH", Some(path));
-        resolve_with_remote_files_in(
-          environment,
-          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
-          &[(REMOTE_URL, remote)],
-          "{}",
+        resolve_files_in(
+          &[
+            (
+              "dprint",
+              &format!(
+                r#"{{ "extends": "<https://dprint.dev/exec>", "exec": {{ "playWithFire": {} }} }}"#,
+                play_with_fire
+              ),
+            ),
+            ("base", "{}"),
+            ("https://dprint.dev/exec", remote),
+          ],
+          |environment| environment.set_env_var("PATH", Some(path)),
         )
         .unwrap()
       };
@@ -3434,14 +4096,22 @@ mod tests {
         }
       }"#;
       let resolve_allowing = |play_with_fire: &str| {
-        let environment = TestEnvironment::new();
-        environment.set_env_var("PATH", Some(&dir.path().display().to_string()));
-        environment.set_env_var("PATHEXT", Some(".COM;.EXE;.BAT;.CMD"));
-        resolve_with_remote_files_in(
-          environment,
-          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
-          &[(REMOTE_URL, remote)],
-          "{}",
+        resolve_files_in(
+          &[
+            (
+              "dprint",
+              &format!(
+                r#"{{ "extends": "<https://dprint.dev/exec>", "exec": {{ "playWithFire": {} }} }}"#,
+                play_with_fire
+              ),
+            ),
+            ("base", "{}"),
+            ("https://dprint.dev/exec", remote),
+          ],
+          |environment| {
+            environment.set_env_var("PATH", Some(&dir.path().display().to_string()));
+            environment.set_env_var("PATHEXT", Some(".COM;.EXE;.BAT;.CMD"));
+          },
         )
         .unwrap()
       };
@@ -3524,7 +4194,7 @@ mod tests {
 
     environment.clone().run_in_runtime(async move {
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
-      assert_eq!(result.plugins, vec![]);
+      assert_eq!(result.plugins.sources, vec![]);
       assert_eq!(environment.take_stderr_messages(), vec![get_warn_non_wasm_plugins_message()]);
     });
   }
@@ -3552,7 +4222,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stderr_messages(), vec![get_warn_non_wasm_plugins_message()]);
-      assert_eq!(result.plugins, vec![]);
+      assert_eq!(result.plugins.sources, vec![]);
     });
   }
 
@@ -3578,7 +4248,7 @@ mod tests {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
       assert_eq!(
-        result.plugins,
+        result.plugins.sources,
         vec![PluginSourceReference {
           path_source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dir/test-plugin.json")),
           checksum: Some(String::from("checksum")),
@@ -3606,7 +4276,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
-      assert_eq!(result.config_map.is_empty(), true); // should not include projectType
+      assert_eq!(result.plugins.config.is_empty(), true); // should not include projectType
     });
   }
 
@@ -3644,7 +4314,7 @@ mod tests {
     environment.clone().run_in_runtime(async move {
       let config = get_result("/dir/dprint.json", &environment).await.unwrap();
       assert_eq!(
-        config.config_map,
+        config.plugins.config,
         ConfigMap::from([
           (
             "plugin".to_string(),

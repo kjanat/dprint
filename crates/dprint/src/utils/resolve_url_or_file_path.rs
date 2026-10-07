@@ -60,6 +60,7 @@ pub struct ResolvedFilePathWithTextRef<'a> {
   pub content: &'a str,
 }
 
+#[cfg(test)]
 pub async fn resolve_url_or_file_path_to_file_with_cache<TEnvironment: Environment>(
   url_or_file_path: &str,
   base: &PathSource,

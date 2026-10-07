@@ -37,6 +37,42 @@ See [Setup](/setup).
 }
 ```
 
+## TOML
+
+The configuration file may also be TOML: `dprint.toml` or `.dprint.toml`. When a directory has both, the JSON one is used. The example above as TOML:
+
+<!-- dprint-ignore -->
+```toml
+#:schema https://dprint.dev/schemas/v0.json
+lineWidth = 80
+excludes = ["**/*-lock.json"]
+plugins = [
+  "https://plugins.dprint.dev/typescript-x.x.x.wasm",
+  "https://plugins.dprint.dev/json-x.x.x.wasm",
+  "https://plugins.dprint.dev/markdown-x.x.x.wasm",
+]
+
+# This applies to both JavaScript & TypeScript
+[typescript]
+quoteStyle = "preferSingle"
+"binaryExpression.operatorPosition" = "sameLine"
+
+[json]
+indentWidth = 2
+```
+
+Property names with a dot in them are quoted, like they are in JSON. Arrays of objects (ex. `"overrides"` or the exec plugin's `"commands"`) are arrays of tables, ex. `[[exec.commands]]`.
+
+Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
+
+The `#:schema` comment gives editors that read it (ex. [tombi](https://github.com/tombi-toml/tombi)) dprint's schema of the file. The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
+
+```toml
+[[schemas]]
+path = "https://dprint.dev/schemas/v0.json"
+include = ["dprint.toml"]
+```
+
 ## Plugins
 
 The `plugins` property specifies which plugins to use for formatting. These may be URLs or file paths to a WebAssembly file of the plugin.
@@ -424,7 +460,9 @@ Referencing multiple configuration files is also supported. These should be orde
 }
 ```
 
-Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed.
+An extended configuration file adds its plugins, plugin configuration, `"excludes"`, `"shebangs"` and `"incremental"` where the configuration file that extends it doesn't specify them. Which files to format (`"includes"`) and whether to [inherit](#directory-specific-configuration) are up to the configuration file being used, so specifying them in an extended configuration file is an error. A file may be extended by more than one file (ex. a shared base), but a configuration file that extends itself, directly or through other files, is an error.
+
+Note: The `includes` property of extended _remote_ configuration is ignored for security reasons out of an abundance of caution (to disallow the dprint cli pulling in sensitive files) and additionally non-Wasm plugins are ignored in remote configuration because they don't run sandboxed. A local file that a remote configuration extends (ex. with a `file://` url) is treated as remote configuration too, since the remote configuration chose it.
 
 ### Caching of Remote Configuration
 
@@ -619,6 +657,8 @@ dprint expands certain variables in the config:
 - `${originConfigDir}` - The original configuration's directory. Useful when the current config is being extended by another configuration file and you want the original directory.
 
 For example, in a JSON value you might do `"rustfmt --config-path ${configDir}/rustfmt.toml"`.
+
+They're expanded in the values of a plugin's configuration and its [overrides](#overrides) relative to the file they're written in, before it's combined with the configuration it extends or inherits.
 
 This is useful to use in some scenarios like with [dprint-plugin-exec](https://github.com/dprint/dprint-plugin-exec) because the CLI will only launch a single plugin for many configs and when resolving configs, the plugins have no concept of where that config was resolved from. Additionally, configs may resolve other configs and perhaps you want to use the directory of a configuration file that was extended.
 

@@ -183,7 +183,7 @@ pub async fn get_and_resolve_file_paths<'a>(
     //
     // These are based at the config dir rather than the cwd so that explicitly
     // specified paths outside the cwd (ex. ../file.txt) can still match them.
-    file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), config.base_path.clone()));
+    file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), config.origin.base_path.clone()));
   }
 
   get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, config_discovery, environment).await
@@ -197,12 +197,12 @@ async fn get_and_resolve_file_patterns(
   environment: &impl Environment,
 ) -> Result<GlobOutput> {
   let cwd = environment.cwd();
-  let is_cwd_in_base = cwd.starts_with(&config.base_path);
-  let is_in_sub_dir = cwd != config.base_path && is_cwd_in_base;
-  let start_dir = if is_in_sub_dir { cwd } else { config.base_path.clone() };
+  let is_cwd_in_base = cwd.starts_with(&config.origin.base_path);
+  let is_in_sub_dir = cwd != config.origin.base_path && is_cwd_in_base;
+  let start_dir = if is_in_sub_dir { cwd } else { config.origin.base_path.clone() };
   let environment = environment.clone();
-  let pattern_base = config.base_path.clone();
-  let current_config_path = config.source.maybe_local_path().map(|p| p.as_ref().to_path_buf());
+  let pattern_base = config.origin.base_path.clone();
+  let current_config_path = config.origin.source.maybe_local_path().map(|p| p.as_ref().to_path_buf());
 
   // This is intensive so do it in a blocking task
   dprint_core::async_runtime::spawn_blocking(move || {

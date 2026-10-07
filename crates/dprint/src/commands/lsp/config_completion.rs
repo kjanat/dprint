@@ -10,6 +10,7 @@ use text_size::TextSize;
 use tower_lsp::lsp_types as lsp;
 use url::Url;
 
+use crate::configuration::ConfigFileFormat;
 use crate::configuration::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::Environment;
 
@@ -41,13 +42,14 @@ pub struct ConfigCompletions<TEnvironment: Environment> {
   schema_cache: RefCell<HashMap<String, Option<Rc<Value>>>>,
 }
 
-/// Gets whether the given uri points at a file dprint recognizes as a
-/// configuration file (ex. `dprint.json`).
+/// Gets whether the given uri points at a JSON file dprint recognizes as a
+/// configuration file (ex. `dprint.json`). The completions are for JSON, so a
+/// TOML configuration file is left to a TOML language server.
 pub fn is_config_uri(uri: &Url) -> bool {
   let Some(file_name) = uri.path_segments().and_then(|mut s| s.next_back()) else {
     return false;
   };
-  POSSIBLE_CONFIG_FILE_NAMES.contains(&file_name)
+  POSSIBLE_CONFIG_FILE_NAMES.contains(&file_name) && ConfigFileFormat::from_path(file_name) == ConfigFileFormat::Json
 }
 
 impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {

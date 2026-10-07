@@ -48,6 +48,7 @@ tar = "=0.4.46"
 text-size = "=1.1.1"
 tokio = { workspace = true, features = ["io-std"] }
 tokio-util = { version = "=0.7.11" }
+toml_edit = "=0.25.15"
 tower-lsp = "=0.20.0"
 twox-hash = "=2.1.0"
 ureq = { version = "=2.12.1", features = ["gzip", "socks-proxy", "tls"], default-features = false }
