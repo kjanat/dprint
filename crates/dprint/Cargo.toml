@@ -38,7 +38,7 @@ rand                = "=0.9.3"
 # increases of rkyv may cause panics when deserializing data serialized with
 # older versions
 rkyv                = "=0.8.16"
-rustls              = { version = "=0.23.19", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls              = { version = "=0.23.45", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = "=0.7.0"
 rustls-pemfile      = "=2.1.2"
 schemars            = { version = "=1.2.2", features = ["preserve_order"] }
