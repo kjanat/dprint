@@ -14,6 +14,7 @@ on:
         description: Version suffix. Empty means the repository owner, unless that is dprint.
         type: string
         required: false
+permissions: {}
 jobs:
   rust:
     name: release

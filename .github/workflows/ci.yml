@@ -16,6 +16,7 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     permissions: { pull-requests: read }
     outputs: { code: "${{ steps.filter.outputs.code }}" }
     steps:
@@ -36,6 +37,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: "${{ matrix.target }}"
     runs-on: "${{ matrix.os }}"
+    timeout-minutes: 60
     defaults: { run: { shell: bash } }
     strategy:
       fail-fast: false
@@ -530,6 +532,7 @@ jobs:
     needs: [changes, build]
     if: always()
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     env: { code: "${{ case(contains(fromJSON('[\"cancelled\", \"failure\"]'), needs.*.result), '1', '0') }}" }
     steps: [run: 'exit "${code}"']
   draft_release:
@@ -537,6 +540,7 @@ jobs:
     needs: [build]
     if: 'startsWith(github.ref, ''refs/tags/'')'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       id-token: write
