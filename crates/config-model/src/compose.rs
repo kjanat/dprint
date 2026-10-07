@@ -324,6 +324,10 @@ struct TableSchemas {
   conditional_properties: Option<(String, &'static str)>,
   /// A reference to another document that couldn't be followed.
   not_followed: Option<String>,
+  /// The schemas with a reference that isn't followed (to another
+  /// document, or a `$dynamicRef`): what they apply isn't known, so what
+  /// their `unevaluatedProperties` has left isn't either.
+  unfollowed: HashSet<String>,
 }
 
 /// What a schema applies to the instance it applies to.
@@ -351,6 +355,11 @@ impl Applies {
         Some(target) => result.always.push(target),
         None => result.not_followed = Some(reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string())),
       }
+    }
+    // (a `$dynamicRef` is resolved by what applied the schema, which the
+    // table decides, so what it refers to isn't followed)
+    if let Some(reference) = object.get("$dynamicRef") {
+      result.not_followed = Some(reference.as_str().map(ToOwned::to_owned).unwrap_or_else(|| reference.to_string()));
     }
     if let Some(Value::Array(items)) = object.get("allOf") {
       result.always.extend((0..items.len()).map(|index| format!("{}/allOf/{}", pointer, index)));
@@ -395,6 +404,7 @@ impl TableSchemas {
       evaluating_on_a_condition: HashSet::new(),
       conditional_properties: None,
       not_followed: None,
+      unfollowed: HashSet::new(),
     };
     let schema_at = |pointer: &str| resource.schema.pointer(pointer).and_then(Value::as_object);
     let whole_object_keyword = |object: &Map<String, Value>| WHOLE_OBJECT_KEYWORDS.iter().copied().find(|keyword| object.contains_key(*keyword));
@@ -430,6 +440,7 @@ impl TableSchemas {
       let applies = Applies::of(resource, &pointer, object);
       if let Some(reference) = applies.not_followed {
         result.not_followed.get_or_insert(reference);
+        result.unfollowed.insert(pointer.clone());
       }
       on_a_condition.extend(
         applies
@@ -481,6 +492,7 @@ impl TableSchemas {
       let applies = Applies::of(resource, &pointer, object);
       if let Some(reference) = applies.not_followed {
         result.not_followed.get_or_insert(reference);
+        result.unfollowed.insert(pointer.clone());
       }
       on_a_condition.extend(applies.always.into_iter().map(|target| (target, keyword, origin.clone(), evaluates)));
       on_a_condition.extend(
@@ -576,11 +588,12 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
     // applies evaluates: the ones none of those schemas declares, as long as
     // none of them evaluates every property (an `additionalProperties` or
     // `unevaluatedProperties` of its own does, whatever it says, as a
-    // validator's annotations go) and none of them applies, on a condition,
-    // a schema that evaluates properties (what's evaluated then depends on
+    // validator's annotations go), none of them applies, on a condition, a
+    // schema that evaluates properties (what's evaluated then depends on
     // the table the override is merged into, see
-    // [`TableSchemas::evaluating_on_a_condition`]). Otherwise it's left to
-    // the plugin rather than guessed.
+    // [`TableSchemas::evaluating_on_a_condition`]), and none of them
+    // applies what isn't followed (see [`TableSchemas::unfollowed`]).
+    // Otherwise it's left to the plugin rather than guessed.
     if let Some(others) = others("unevaluatedProperties") {
       let evaluated = table.evaluated_by(pointer);
       let evaluates_every_property = evaluated.iter().any(|applied| {
@@ -591,7 +604,8 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
           .is_some_and(|schema| schema.contains_key("additionalProperties") || (applied != pointer && schema.contains_key("unevaluatedProperties")))
       });
       let evaluates_on_a_condition = evaluated.iter().any(|applied| table.evaluating_on_a_condition.contains(applied));
-      if !evaluates_every_property && !evaluates_on_a_condition {
+      let applies_whats_not_followed = evaluated.iter().any(|applied| table.unfollowed.contains(applied));
+      if !evaluates_every_property && !evaluates_on_a_condition && !applies_whats_not_followed {
         restrictions.push(restriction(&evaluated, others));
       }
     }
@@ -1059,6 +1073,39 @@ mod test {
     let schema = build(json!({ "$ref": "../common.json" }), Some(URL));
     assert_eq!(schema.warnings.len(), 1);
     assert_eq!(schema.schema["$defs"]["plugin:test"]["$ref"], json!("../common.json"));
+    // what the other document declares is evaluated through the reference,
+    // so an `unevaluatedProperties` next to it isn't checked in an override,
+    // while an `additionalProperties`, about the schema's own properties, is
+    let override_schema = |plugin_schema: Value| build(plugin_schema, Some(URL)).schema["$defs"]["plugin:test"]["$defs"]["dprint-override"].clone();
+    let unevaluated = override_schema(json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "https://example.com/config.json",
+      "unevaluatedProperties": false,
+    }));
+    assert!(unevaluated.get("allOf").is_none(), "{}", unevaluated);
+    let closed = override_schema(json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$ref": "https://example.com/config.json",
+      "additionalProperties": false,
+    }));
+    assert_eq!(closed["allOf"], json!([{ "properties": { "files": true }, "additionalProperties": false }]));
+    // a `$dynamicRef` is resolved by what applies the schema, which the
+    // table decides, so it isn't followed either
+    let dynamic = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$dynamicRef": "#node",
+      "unevaluatedProperties": false,
+      "$defs": { "node": { "$dynamicAnchor": "node", "properties": { "a": { "type": "string" } } } },
+    });
+    let schema = build(dynamic.clone(), Some(URL));
+    assert_eq!(
+      schema.warnings,
+      vec![format!(
+        "The configuration schema of the test plugin ({}) refers to #node for its table, so editors may report dprint's own properties of its table (ex. `associations`) as unknown.",
+        URL
+      )]
+    );
+    assert!(override_schema(dynamic).get("allOf").is_none());
   }
 
   #[test]
