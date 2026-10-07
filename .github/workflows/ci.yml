@@ -528,7 +528,7 @@ jobs:
         run: ./install.ps1
   ci:
     needs: [changes, build]
-    if: always
+    if: always()
     runs-on: ubuntu-slim
     env: { code: "${{ case(contains(fromJSON('[\"cancelled\", \"failure\"]'), needs.*.result), '1', '0') }}" }
     steps: [run: 'exit "${code}"']
@@ -557,12 +557,10 @@ jobs:
             echo "No previous tag found -- using full history"
             range=HEAD
           fi
+          commits="$(git log --reverse --pretty=format:%s "${range}")"
           {
             echo "changelog<<CHANGELOG_EOF"
-            git log --reverse --pretty=format:%s "${range}" \
-              | grep -Ev '^(chore|refactor|ci)(\([^)]*\))?!?: ' \
-              | grep -Ev '^[0-9]+\.[0-9]+\.[0-9]+$' \
-              | sed 's/^/* /'
+            sed -E '/^$/d; /^(chore|refactor|ci)(\([^)]*\))?!?: /d; /^[0-9]+\.[0-9]+\.[0-9]+$/d; s/^/* /' <<< "${commits}"
             echo ""
             echo "CHANGELOG_EOF"
           } >> "${GITHUB_OUTPUT}"
