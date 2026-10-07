@@ -91,6 +91,12 @@ pub trait Plugin {
     None
   }
 
+  /// Loads existing native code without compiling, so failed cache recovery
+  /// can be counted before a format run starts.
+  async fn prepare_format_engine(&self) -> Result<()> {
+    Ok(())
+  }
+
   /// Whether how the plugin formats depends on how much it formats, which
   /// is the case for a Wasm plugin without native code.
   fn chooses_format_engine(&self) -> bool {

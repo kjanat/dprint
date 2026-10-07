@@ -94,7 +94,7 @@ The TOML plugin puts a space after the `#` of every comment by default, which tu
 
 ```toml
 [[schemas]]
-path = "dprint.schema.json"
+path    = "dprint.schema.json"
 include = ["dprint.toml"]
 ```
 

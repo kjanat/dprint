@@ -1,28 +1,28 @@
 [package]
-name = "dprint-config-model"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-publish = false
-repository = "https://github.com/dprint/dprint"
-description = "The model of dprint's configuration file: the types a configuration file is read into, and (with the `schema` feature) its JSON schema, generated from them."
+name                 = "dprint-config-model"
+version              = "0.1.0"
+edition.workspace    = true
+description          = "The model of dprint's configuration file: the types a configuration file is read into, and (with the `schema` feature) its JSON schema, generated from them."
+repository.workspace = true
+license              = "MIT"
+publish              = false
+
+[dependencies]
+anyhow              = { workspace = true, optional = true }
+dprint-core         = { path = "../core", version = "=0.70.0", default-features = false }
+indexmap            = { workspace = true }
+percent-encoding    = { version = "=2.3.1", optional = true }
+schemars            = { version = "=1.2.2", features = ["indexmap2", "preserve_order"], optional = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+serde_path_to_error = "=0.1.20"
+url                 = { version = "=2.5.4", optional = true }
+
+[dev-dependencies]
+boon              = "0.6.1"
+pretty_assertions = "1.4.0"
 
 [features]
 default = []
 # the JSON schema of the model, and composing the plugins' schemas into it
-schema = ["dep:schemars", "dep:anyhow", "dep:percent-encoding", "dep:url"]
-
-[dependencies]
-anyhow = { workspace = true, optional = true }
-dprint-core = { path = "../core", version = "=0.70.0", default-features = false }
-indexmap = { workspace = true }
-percent-encoding = { version = "=2.3.1", optional = true }
-schemars = { version = "=1.2.2", features = ["preserve_order", "indexmap2"], optional = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_path_to_error = "=0.1.20"
-url = { version = "=2.5.4", optional = true }
-
-[dev-dependencies]
-boon = "0.6.1"
-pretty_assertions = "1.4.0"
+schema  = ["dep:anyhow", "dep:percent-encoding", "dep:schemars", "dep:url"]

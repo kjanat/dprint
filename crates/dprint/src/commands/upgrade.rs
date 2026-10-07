@@ -5,23 +5,41 @@ use std::process::Stdio;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use serde::Deserialize;
 use url::Url;
 
 use crate::environment::Environment;
 use crate::environment::FilePermissions;
+use crate::utils::LATEST_RELEASE_URL;
 use crate::utils::extract_zip;
 use crate::utils::get_running_pids_by_name;
 use crate::utils::kill_process_by_id;
-use crate::utils::latest_cli_version;
+
+#[derive(Deserialize)]
+struct Release {
+  tag_name: String,
+  assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct ReleaseAsset {
+  name: String,
+  browser_download_url: String,
+}
 
 // Note: To test `dprint upgrade`, you must do so manually at the moment.
 // Update ./crates/dprint/Cargo.toml to have a version below the current
 // released one, then run `./target/debug/dprint upgrade --log-level=debug`.
 
 pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> Result<()> {
-  let latest_version = latest_cli_version(environment).await.context("Error fetching latest CLI version.")?;
+  let (_, release_file) = environment
+    .download_file_err_404(&Url::parse(LATEST_RELEASE_URL)?, None)
+    .await
+    .context("Error fetching latest CLI release.")?;
+  let release: Release = serde_json::from_slice(&release_file.content).context("Error reading latest CLI release.")?;
+  let latest_version = &release.tag_name;
   let current_version = environment.cli_version();
-  if current_version == latest_version {
+  if current_version == latest_version.as_str() {
     log_stdout_info!(environment, "Already on latest version {}", latest_version);
     return Ok(());
   }
@@ -59,10 +77,12 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
     _ => bail!("Not implemented operating system: {}", os),
   };
   let zip_filename = format!("dprint-{}-{}.zip", arch, zip_suffix);
-  let zip_url = Url::parse(&format!(
-    "https://github.com/dprint/dprint/releases/download/{}/{}",
-    latest_version, zip_filename
-  ))?;
+  let asset = release
+    .assets
+    .iter()
+    .find(|asset| asset.name == zip_filename)
+    .with_context(|| format!("Release {} does not contain {}", latest_version, zip_filename))?;
+  let zip_url = Url::parse(&asset.browser_download_url)?;
 
   let (_, zip_file) = environment.download_file_err_404(&zip_url, None).await?;
   let old_executable = exe_path.with_extension("old.exe");
@@ -142,6 +162,7 @@ fn try_kill_other_dprint_processes(environment: &impl Environment) {
 
 #[cfg(test)]
 mod test {
+  use super::LATEST_RELEASE_URL;
   use crate::environment::Environment;
   use crate::environment::FilePermissions;
   use crate::environment::TestEnvironment;
@@ -151,7 +172,7 @@ mod test {
   #[test]
   fn should_not_upgrade_same_version() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.0.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.0.0", "assets": [] }"#.as_bytes());
     run_test_cli(vec!["upgrade"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec!["Already on latest version 0.0.0"]);
   }
@@ -167,7 +188,7 @@ mod test {
         FilePermissions::Test(TestFilePermissions { readonly: true }),
       )
       .unwrap();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
       err.to_string(),
@@ -179,7 +200,7 @@ mod test {
   #[test]
   fn should_upgrade_and_fail_node_modules() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
     environment.set_current_exe_path("/test/node_modules/dprint/dprint");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
@@ -192,7 +213,7 @@ mod test {
   #[test]
   fn should_upgrade_and_fail_homebrew() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
     environment.set_current_exe_path("/usr/local/Cellar/dprint");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
@@ -205,7 +226,7 @@ mod test {
   #[test]
   fn should_upgrade_and_fail_cargo_install() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
     environment.set_current_exe_path("/home/david/.cargo/dprint");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
@@ -218,7 +239,7 @@ mod test {
   #[test]
   fn should_upgrade_and_fail_deno_install() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
     environment.set_current_exe_path("/usr/local/deno/npm/registry.npmjs.org/dprint/0.34.0/dprint");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
@@ -232,16 +253,62 @@ mod test {
   }
 
   #[test]
-  fn should_upgrade_and_fail_different_version_no_remote_zip() {
+  fn should_download_matching_asset_after_repo_rename() {
+    for (arch, os, target) in [
+      ("x86_64", "linux", "x86_64-unknown-linux-gnu"),
+      ("aarch64", "linux", "aarch64-unknown-linux-gnu"),
+      ("x86_64", "linux-musl", "x86_64-unknown-linux-musl"),
+      ("aarch64", "linux-musl", "aarch64-unknown-linux-musl"),
+      ("x86_64", "macos", "x86_64-apple-darwin"),
+      ("aarch64", "macos", "aarch64-apple-darwin"),
+      ("x86_64", "windows", "x86_64-pc-windows-msvc"),
+      ("aarch64", "windows", "aarch64-pc-windows-msvc"),
+    ] {
+      let environment = TestEnvironment::new();
+      let exe_path = environment.current_exe().unwrap();
+      environment.mk_dir_all(exe_path.parent().unwrap()).unwrap();
+      environment.write_file(&exe_path, "original executable").unwrap();
+      environment.set_cpu_arch(arch);
+      environment.set_os(os);
+      let asset_name = format!("dprint-{target}.zip");
+      let asset_url = format!("https://github.com/kjanat/renamed-repo/releases/download/0.1.0-kjanat/{asset_name}");
+      environment.add_remote_file_bytes(
+        LATEST_RELEASE_URL,
+        serde_json::to_vec(&serde_json::json!({
+          "tag_name": "0.1.0-kjanat",
+          "assets": [
+            { "name": "SHASUMS256.txt", "browser_download_url": "https://example.com/checksums" },
+            { "name": "dprint-other-target.zip", "browser_download_url": "https://example.com/other-target" },
+            { "name": asset_name, "browser_download_url": asset_url }
+          ]
+        }))
+        .unwrap(),
+      );
+      // Stop before replacing the executable while verifying the chosen download URL.
+      environment.add_remote_file_error(&asset_url, "asset download reached");
+      let err = run_test_cli(vec!["upgrade"], &environment).unwrap_err();
+      assert!(err.to_string().contains("asset download reached"), "{err:#}");
+      assert_eq!(environment.remote_file_download_count(&asset_url), 1);
+      assert_eq!(environment.remote_file_download_count("https://example.com/other-target"), 0);
+      assert_eq!(environment.read_file(&exe_path).unwrap(), "original executable");
+      assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0-kjanat..."]);
+    }
+  }
+
+  #[test]
+  fn should_fail_when_release_has_no_matching_asset() {
     let environment = TestEnvironment::new();
     environment.mk_dir_all(environment.current_exe().unwrap().parent().unwrap()).unwrap();
     environment.write_file(environment.current_exe().unwrap(), "").unwrap();
     environment
       .set_file_permissions(environment.current_exe().unwrap(), FilePermissions::Test(Default::default()))
       .unwrap();
-    environment.add_remote_file("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes());
+    environment.add_remote_file(LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0", "assets": [] }"#.as_bytes());
+    environment.set_cpu_arch("x86_64");
+    environment.set_os("linux");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
-    assert!(err.to_string().starts_with("Error downloading"));
+    assert_eq!(err.to_string(), "Release 0.1.0 does not contain dprint-x86_64-unknown-linux-gnu.zip");
+    assert!(environment.path_exists(environment.current_exe().unwrap()));
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
   }
 }

@@ -625,12 +625,23 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
   /// Then the plugins it compiles are printed with what they format. More
   /// than the limit is an error before anything is compiled or formatted.
   pub async fn plan_format_engines(&self, incremental_files: &[Option<Arc<IncrementalFile<TEnvironment>>>]) -> Result<()> {
-    let mut choosing: Vec<&Rc<PluginWrapper>> = Vec::new();
+    let mut plugins: Vec<&Rc<PluginWrapper>> = Vec::new();
     for scope_and_paths in &self.inner {
       for plugin in scope_and_paths.scope.plugins.values() {
-        if plugin.plugin.chooses_format_engine() && !choosing.iter().any(|choosing| Rc::ptr_eq(choosing, &plugin.plugin)) {
-          choosing.push(&plugin.plugin);
+        if !plugins.iter().any(|existing| Rc::ptr_eq(existing, &plugin.plugin)) {
+          plugins.push(&plugin.plugin);
         }
+      }
+    }
+    // A cache file's existence doesn't prove it can be loaded. Keep loaded
+    // modules for formatting, and count recovery of unusable ones below.
+    let prepared = future::join_all(plugins.iter().map(|plugin| plugin.prepare_format_engine())).await;
+    let mut choosing: Vec<&Rc<PluginWrapper>> = Vec::new();
+    let mut recovering = Vec::new();
+    for (plugin, prepared) in plugins.into_iter().zip(prepared) {
+      if plugin.chooses_format_engine() {
+        choosing.push(plugin);
+        recovering.push(prepared.is_err());
       }
     }
     if choosing.is_empty() {
@@ -648,6 +659,7 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
         if !plugin_indices.is_empty() {
           files.push(FilesToMeasure {
             incremental_file: incremental_files.get(scope_index).cloned().flatten(),
+            check_content_hash: plugin_indices.iter().any(|index| recovering[*index]),
             plugin_indices,
             file_paths: file_paths.clone(),
           });
@@ -1163,6 +1175,9 @@ struct ScopeFiles {
 /// Files a group of plugins formats, for `bytes_to_format`.
 struct FilesToMeasure<TEnvironment: Environment> {
   incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
+  /// Cache recovery must not compile for unchanged files whose recent
+  /// modification time couldn't be trusted by the metadata fast path.
+  check_content_hash: bool,
   /// The plugins choosing how they format that format the files, as indexes
   /// into the result of `bytes_to_format`.
   plugin_indices: Vec<usize>,
@@ -1170,8 +1185,9 @@ struct FilesToMeasure<TEnvironment: Environment> {
 }
 
 /// How many bytes each of `plugin_count` plugins formats, from the files'
-/// sizes. It reads metadata only, on several threads, as there can be tens
-/// of thousands of files.
+/// sizes. It reads metadata on several threads, as there can be tens of
+/// thousands of files. Recovering native caches also check incremental hashes
+/// when metadata alone can't prove the files are unchanged.
 async fn bytes_to_format<TEnvironment: Environment>(
   environment: &TEnvironment,
   files: Vec<FilesToMeasure<TEnvironment>>,
@@ -1193,10 +1209,18 @@ async fn bytes_to_format<TEnvironment: Environment>(
           continue; // it's reported when it's formatted
         };
         let len = metadata.len();
-        let is_known_formatted = match (incremental_file, metadata.modified()) {
+        let mut is_known_formatted = match (incremental_file, metadata.modified()) {
           (Some(incremental_file), Ok(modified)) => incremental_file.is_known_formatted_by_metadata(file_path, &FileMetadata { len, modified }),
           _ => false,
         };
+        if !is_known_formatted
+          && files.check_content_hash
+          && let Some(incremental_file) = incremental_file
+        {
+          is_known_formatted = environment
+            .read_file_bytes(file_path)
+            .is_ok_and(|text| incremental_file.is_file_known_formatted(file_path, &text, None));
+        }
         if !is_known_formatted {
           for index in &files.plugin_indices {
             bytes[*index] += len;

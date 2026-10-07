@@ -48,6 +48,10 @@ impl PluginWrapper {
     self.plugin.built_in()
   }
 
+  pub async fn prepare_format_engine(&self) -> Result<()> {
+    self.plugin.prepare_format_engine().await
+  }
+
   /// Whether how the plugin formats depends on how much it formats.
   pub fn chooses_format_engine(&self) -> bool {
     self.plugin.chooses_format_engine()

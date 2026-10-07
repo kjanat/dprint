@@ -97,11 +97,14 @@ mod tests {
   #[cfg(unix)]
   #[test]
   fn real_reader_never_treats_a_regular_file_as_stdin() {
+    use sys_traits::FsWrite;
+    use sys_traits::impls::RealSys;
+
     // whatever stdin is while the tests run, a regular file is a file of its
     // own, so this holds even when stdin is redirected from it
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("dprint.json");
-    std::fs::write(&file_path, "{}").unwrap();
+    RealSys.fs_write(&file_path, b"{}").unwrap();
     assert!(!RealStdInReader.is_stdin_path(&file_path));
     // and a path that doesn't exist isn't stdin either
     assert!(!RealStdInReader.is_stdin_path(&dir.path().join("missing.json")));

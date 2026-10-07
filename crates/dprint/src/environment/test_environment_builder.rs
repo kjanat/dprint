@@ -20,20 +20,8 @@ pub struct TestConfigFileBuilder {
   sections: IndexMap<String, String>,
 }
 
-impl TestConfigFileBuilder {
-  pub fn new(environment: TestEnvironment) -> Self {
-    TestConfigFileBuilder {
-      environment,
-      incremental: None,
-      inherit: None,
-      includes: None,
-      excludes: None,
-      plugins: None,
-      sections: Default::default(),
-    }
-  }
-
-  pub fn to_string(&self) -> String {
+impl std::fmt::Display for TestConfigFileBuilder {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let mut parts = Vec::new();
     if let Some(inherit) = self.inherit.as_ref() {
       parts.push(format!(r#""inherit": {}"#, inherit));
@@ -57,10 +45,25 @@ impl TestConfigFileBuilder {
       let text = excludes.iter().map(|v| format!("  \"{}\"", v)).collect::<Vec<_>>().join(",\n");
       parts.push(format!("\"excludes\": [\n{}\n]", text))
     }
-    format!(
+    write!(
+      f,
       "{{\n{}\n}}",
       parts.join(",\n").lines().map(|l| format!("  {}", l)).collect::<Vec<_>>().join("\n")
     )
+  }
+}
+
+impl TestConfigFileBuilder {
+  pub fn new(environment: TestEnvironment) -> Self {
+    TestConfigFileBuilder {
+      environment,
+      incremental: None,
+      inherit: None,
+      includes: None,
+      excludes: None,
+      plugins: None,
+      sections: Default::default(),
+    }
   }
 
   pub fn set_incremental(&mut self, value: bool) -> &mut Self {
@@ -93,7 +96,7 @@ impl TestConfigFileBuilder {
   pub fn add_remote_wasm_plugin_0_1_0_with_checksum(&mut self) -> &mut Self {
     self.add_plugin(&format!(
       "https://plugins.dprint.dev/test-plugin-0.1.0.wasm@{}",
-      &crate::utils::get_sha256_checksum(&WASM_PLUGIN_0_1_0_BYTES)
+      crate::utils::get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)
     ))
   }
 
@@ -135,21 +138,21 @@ impl TestConfigFileBuilder {
   }
 
   pub fn add_plugin(&mut self, plugin: &str) -> &mut Self {
-    let mut plugins = self.plugins.take().unwrap_or_else(Vec::new);
+    let mut plugins = self.plugins.take().unwrap_or_default();
     plugins.push(plugin.to_string());
     self.plugins = Some(plugins);
     self
   }
 
   pub fn add_includes(&mut self, includes_item: &str) -> &mut Self {
-    let mut includes = self.includes.take().unwrap_or_else(Vec::new);
+    let mut includes = self.includes.take().unwrap_or_default();
     includes.push(includes_item.to_string());
     self.includes = Some(includes);
     self
   }
 
   pub fn add_excludes(&mut self, excludes_item: &str) -> &mut Self {
-    let mut excludes = self.excludes.take().unwrap_or_else(Vec::new);
+    let mut excludes = self.excludes.take().unwrap_or_default();
     excludes.push(excludes_item.to_string());
     self.excludes = Some(excludes);
     self
@@ -211,6 +214,17 @@ pub struct TestInfoFileMatch {
   pub file_names: Vec<String>,
 }
 
+impl std::fmt::Display for TestInfoFileBuilder {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let mut parts = Vec::new();
+    parts.push("\"schemaVersion\": 4".to_string());
+    parts.push(format!("\"pluginSystemSchemaVersion\": {}", self.plugin_schema_version.unwrap_or(4)));
+    let plugins_text = serde_json::to_string_pretty(&self.plugins).unwrap();
+    parts.push(format!("\"latest\": {}", plugins_text));
+    write!(f, "{{\n{}\n}}", parts.join(",\n"))
+  }
+}
+
 impl TestInfoFileBuilder {
   pub fn add_plugin(&mut self, plugin: TestInfoFilePlugin) -> &mut Self {
     self.plugins.push(plugin);
@@ -220,15 +234,6 @@ impl TestInfoFileBuilder {
   pub fn set_plugin_schema_version(&mut self, version: usize) -> &mut Self {
     self.plugin_schema_version = Some(version);
     self
-  }
-
-  pub fn to_string(&self) -> String {
-    let mut parts = Vec::new();
-    parts.push("\"schemaVersion\": 4".to_string());
-    parts.push(format!("\"pluginSystemSchemaVersion\": {}", self.plugin_schema_version.unwrap_or(4)));
-    let plugins_text = serde_json::to_string_pretty(&self.plugins).unwrap();
-    parts.push(format!("\"latest\": {}", plugins_text));
-    format!("{{\n{}\n}}", parts.join(",\n"))
   }
 }
 

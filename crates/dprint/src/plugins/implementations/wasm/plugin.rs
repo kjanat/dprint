@@ -59,6 +59,8 @@ pub struct WasmPluginModules {
   pub load_interpreted: LoadModule<InterpretedModule>,
   /// Loads the native module, compiling it first when needed.
   pub load_native: LoadModule<WasmModule>,
+  /// Loads existing native code without compiling a missing or unusable cache.
+  pub load_cached_native: LoadModule<Option<WasmModule>>,
   /// Where the plugin's module is kept.
   pub wasm_module_path: PathBuf,
   /// Where the native module is kept once it's compiled.
@@ -97,6 +99,10 @@ impl<T: Clone> LazyModule<T> {
 
   fn is_loaded(&self) -> bool {
     self.module.try_lock().is_ok_and(|module| matches!(&*module, Some(ModuleLoad::Loaded(_))))
+  }
+
+  async fn set(&self, loaded: T) {
+    *self.module.lock().await = Some(ModuleLoad::Loaded(loaded));
   }
 
   /// The module, loaded the first time it's needed. A failure is returned
@@ -138,6 +144,9 @@ pub struct WasmPlugin<TEnvironment: Environment> {
 /// plugin.
 struct Formatting<TEnvironment: Environment> {
   native: Rc<LazyModule<WasmModule>>,
+  load_cached_native: LoadModule<Option<WasmModule>>,
+  /// A cached module failed preflight and needs compiling again.
+  invalid_native: Cell<bool>,
   native_module_path: PathBuf,
   format_rate_path: PathBuf,
   /// What `choose_format_engine` chose for this run. A process that formats
@@ -148,7 +157,7 @@ struct Formatting<TEnvironment: Environment> {
 
 impl<TEnvironment: Environment> Formatting<TEnvironment> {
   fn has_native_code(&self) -> bool {
-    self.native.is_loaded() || self.environment.path_exists(&self.native_module_path)
+    self.native.is_loaded() || (!self.invalid_native.get() && self.environment.path_exists(&self.native_module_path))
   }
 
   /// How the plugin's next instance formats. Native code that exists is
@@ -173,6 +182,8 @@ impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
       interpreted: LazyModule::new(modules.load_interpreted),
       formatting: Rc::new(Formatting {
         native: Rc::new(LazyModule::new(modules.load_native)),
+        load_cached_native: modules.load_cached_native,
+        invalid_native: Cell::new(false),
         native_module_path: modules.native_module_path,
         format_rate_path: modules.format_rate_path,
         chosen: Cell::new(None),
@@ -200,20 +211,48 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     Some(&self.resolution_cache)
   }
 
+  async fn prepare_format_engine(&self) -> Result<()> {
+    if self.formatting.native.is_loaded() {
+      return Ok(());
+    }
+    match (self.formatting.load_cached_native)().await {
+      Ok(Some(module)) => {
+        self.formatting.native.set(module).await;
+        self.formatting.invalid_native.set(false);
+      }
+      Ok(None) => {}
+      Err(err) => {
+        log_debug!(self.environment, "Error loading cached native code for {}: {:#}", self.plugin_info.name, err);
+        self.formatting.invalid_native.set(true);
+        return Err(err);
+      }
+    }
+    Ok(())
+  }
+
   fn chooses_format_engine(&self) -> bool {
     !self.formatting.has_native_code()
   }
 
   fn choose_format_engine(&self, bytes_to_format: u64) {
-    let engine = engine_choice::forced(&self.environment).unwrap_or_else(|| {
-      let module_len = match self.environment.fs_metadata(&self.wasm_module_path) {
-        Ok(metadata) => metadata.len(),
-        // it's set up again when it's loaded, so this is a guess
-        Err(_) => 0,
-      };
-      let rate = engine_choice::read_rate(&self.environment, &self.formatting.format_rate_path);
-      engine_choice::choose(module_len, bytes_to_format, rate.as_ref())
-    });
+    let engine = if self.formatting.invalid_native.get() {
+      // Preserve native cache recovery, but include it in the compile budget.
+      if bytes_to_format == 0 {
+        FormatEngine::Interpreter
+      } else {
+        FormatEngine::Native
+      }
+    } else {
+      engine_choice::forced(&self.environment).unwrap_or_else(|| {
+        let module_len = match self.environment.fs_metadata(&self.wasm_module_path) {
+          Ok(metadata) => metadata.len(),
+          // it's set up again when it's loaded, so this is a guess
+          Err(_) => 0,
+        };
+        let rate = engine_choice::read_rate(&self.environment, &self.formatting.format_rate_path);
+        engine_choice::choose(module_len, bytes_to_format, rate.as_ref())
+      })
+    };
     log_debug!(self.environment, "{} formats {} bytes: {:?}", self.plugin_info.name, bytes_to_format, engine);
     self.formatting.chosen.set(Some(engine));
   }
@@ -698,6 +737,8 @@ mod test {
     });
     let formatting = Rc::new(Formatting {
       native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
       native_module_path: PathBuf::from("/plugin.cwasm"),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
       chosen: Cell::new(None),
@@ -736,6 +777,8 @@ mod test {
     let load_native: LoadModule<WasmModule> = Box::new(|| async { Err(anyhow!("not compiled in this test")) }.boxed_local());
     let formatting = Rc::new(Formatting {
       native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
       native_module_path: PathBuf::from("/plugin.cwasm"),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
       chosen: Cell::new(Some(FormatEngine::Interpreter)),

@@ -166,6 +166,12 @@ fn format_engine() -> &'static Engine {
   static ENGINE: OnceLock<Engine> = OnceLock::new();
   ENGINE.get_or_init(|| {
     let mut config = wasmi::Config::default();
+    // Formatting traverses source trees recursively. Wasmi's default 1,000
+    // calls rejects files the native engine handles (ex. 100 nested blocks).
+    // Interpreter frames differ from native frames, so give both its call
+    // and value stacks bounded headroom beyond the native stack allowance.
+    config.set_max_recursion_depth(16 * 1024);
+    config.set_max_stack_height(16 * super::load_instance::MAX_WASM_STACK_SIZE);
     config.compilation_mode(CompilationMode::Lazy);
     Engine::new(&config)
   })
@@ -289,5 +295,25 @@ impl<T: InterpretedHostData> PluginExports for InterpretedExports<T> {
 
   fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
     self.store.data_mut().set_token(token);
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  #[test]
+  fn formatting_supports_deeper_call_stacks_than_the_default_interpreter() {
+    // (func $recurse (export "recurse") (param i32)
+    //   local.get 0 if local.get 0 i32.const 1 i32.sub call $recurse end)
+    let bytes = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x05\x01\x60\x01\x7f\x00\x03\x02\x01\x00\x07\x0b\x01\x07\x72\x65\x63\x75\x72\x73\x65\x00\x00\x0a\x10\x01\x0e\x00\x20\x00\x04\x40\x20\x00\x41\x01\x6b\x10\x00\x0b\x0b";
+    let engine = format_engine();
+    let module = Module::new(engine, &bytes[..]).unwrap();
+    let mut store = Store::new(engine, ());
+    let instance = Linker::new(engine).instantiate_and_start(&mut store, &module).unwrap();
+    let recurse = instance.get_typed_func::<u32, ()>(&store, "recurse").unwrap();
+    recurse.call(&mut store, 2_000).unwrap();
+    // The larger stack still has a limit and traps rather than growing forever.
+    assert_eq!(recurse.call(&mut store, 20_000).unwrap_err().as_trap_code(), Some(TrapCode::StackOverflow));
   }
 }

@@ -1,3 +1,14 @@
+# :schema https://www.schemastore.org/cargo-config.json
+
+[alias]
+lint = "clippy --workspace --all-features --all-targets"
+
+# [build]
+# rustflags = "-D warnings"
+
+[env]
+RUSTFLAGS = "-D warnings"
+
+[target]
 # statically link the c runtime https://github.com/rust-lang/rust/issues/100874
-[target.'cfg(all(windows, target_env = "msvc"))']
-rustflags = ["-C", "target-feature=+crt-static"]
+'cfg(all(windows, target_env = "msvc"))'.rustflags = ["-C", "target-feature=+crt-static"]

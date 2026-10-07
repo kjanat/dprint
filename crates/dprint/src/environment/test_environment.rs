@@ -133,6 +133,8 @@ impl Write for TestPipeWriter {
   }
 }
 
+type RunCommandResult = (Vec<OsString>, io::Result<Option<i32>>);
+
 #[derive(Clone)]
 pub struct TestEnvironment {
   log_level: Arc<Mutex<LogLevel>>,
@@ -170,7 +172,7 @@ pub struct TestEnvironment {
   max_threads_count: Arc<Mutex<usize>>,
   current_exe_path: Arc<Mutex<PathBuf>>,
   is_terminal_interactive: Arc<Mutex<bool>>,
-  run_command_results: Arc<Mutex<Vec<(Vec<OsString>, io::Result<Option<i32>>)>>>,
+  run_command_results: Arc<Mutex<Vec<RunCommandResult>>>,
   /// Executables of processes that are pretending to be running, each paired
   /// with the number of times it will "restart" (re-lock its directory) after
   /// being killed. A directory containing one of these can't be removed

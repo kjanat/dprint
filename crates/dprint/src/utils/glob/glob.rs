@@ -1140,7 +1140,7 @@ mod test {
   #[tokio::test]
   async fn should_handle_dir_info_erroring() {
     let environment = TestEnvironmentBuilder::new().build();
-    environment.set_dir_info_error(std::io::Error::new(std::io::ErrorKind::Other, "FAILURE"));
+    environment.set_dir_info_error(std::io::Error::other("FAILURE"));
     let root_dir = environment.canonicalize("/").unwrap();
     let err_message = glob(
       &environment,

@@ -70,8 +70,6 @@ impl<TEnvironment: Environment> CacheFsLockPool<TEnvironment> {
 
 #[cfg(test)]
 mod test {
-  use std::sync::Arc;
-
   use dprint_core::async_runtime::FutureExt;
   use tempfile::TempDir;
   use url::Url;
@@ -85,9 +83,9 @@ mod test {
     RealEnvironment::run_test_with_real_env(|env| {
       async move {
         let temp_dir = TempDir::new().unwrap();
-        let pool = Arc::new(CacheFsLockPool::new_with_cache_dir(env.clone(), temp_dir.path().to_path_buf()));
+        let pool = CacheFsLockPool::new_with_cache_dir(env.clone(), temp_dir.path().to_path_buf());
         let url = "https://dprint.dev/test/test.json";
-        let source = PathSource::new_remote(Url::parse(&url).unwrap());
+        let source = PathSource::new_remote(Url::parse(url).unwrap());
         // just ensure this is re-entrant
         let flag1 = pool.lock(&source).await;
         let flag2 = pool.lock(&source).await;

@@ -2026,10 +2026,10 @@ mod tests {
 
         extract_tarball_to_dir(&tarball, &dest, &env).unwrap();
 
-        assert_eq!(std::fs::read(dest.join("plugin.wasm")).unwrap(), b"wasm-bytes");
-        assert_eq!(std::fs::read(dest.join("extra").join("data.bin")).unwrap(), b"extra-data");
+        assert_eq!(env.read_file_bytes(dest.join("plugin.wasm")).unwrap(), b"wasm-bytes");
+        assert_eq!(env.read_file_bytes(dest.join("extra").join("data.bin")).unwrap(), b"extra-data");
         // the "package" prefix should be stripped
-        assert!(!dest.join("package").exists());
+        assert!(!env.path_exists(dest.join("package")));
       })
     });
   }
@@ -2079,8 +2079,8 @@ mod tests {
         let dest = dir.path().join("extracted");
 
         extract_tarball_to_dir(&tarball, &dest, &env).unwrap();
-        assert_eq!(std::fs::read(dest.join("plugin.wasm")).unwrap(), b"wasm-bytes");
-        assert_eq!(std::fs::read(dest.join("extra.bin")).unwrap(), b"extra");
+        assert_eq!(env.read_file_bytes(dest.join("plugin.wasm")).unwrap(), b"wasm-bytes");
+        assert_eq!(env.read_file_bytes(dest.join("extra.bin")).unwrap(), b"extra");
       })
     });
   }
@@ -2150,24 +2150,27 @@ mod tests {
         let dest = dir.path().join("extracted");
 
         extract_tarball_to_dir(&tarball, &dest, &env).unwrap();
-        assert_eq!(std::fs::read(dest.join("plugin.wasm")).unwrap(), b"first-extract");
+        assert_eq!(env.read_file_bytes(dest.join("plugin.wasm")).unwrap(), b"first-extract");
 
         // a second call with different bytes must NOT overwrite — we trust
         // dest_dir's existence to mean "already extracted"
         let different = create_test_tarball(&[("package/plugin.wasm", b"second-extract")]);
         extract_tarball_to_dir(&different, &dest, &env).unwrap();
         assert_eq!(
-          std::fs::read(dest.join("plugin.wasm")).unwrap(),
+          env.read_file_bytes(dest.join("plugin.wasm")).unwrap(),
           b"first-extract",
           "dest_dir should not be re-extracted"
         );
 
         // and there shouldn't be any leftover temp dirs
-        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+        let leftover: Vec<_> = env
+          .dir_info(dir.path())
           .unwrap()
-          .filter_map(|e| e.ok())
-          .map(|e| e.file_name())
-          .filter(|name| name.to_string_lossy().contains(".tmp"))
+          .into_iter()
+          .map(|entry| match entry {
+            crate::environment::DirEntry::Directory(path) | crate::environment::DirEntry::File { path, .. } => path,
+          })
+          .filter(|path| path.file_name().unwrap().to_string_lossy().contains(".tmp"))
           .collect();
         assert!(leftover.is_empty(), "expected no .tmp leftover, got {leftover:?}");
       })
@@ -2187,18 +2190,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("extracted");
 
-        std::fs::create_dir_all(&dest).unwrap();
-        std::fs::write(dest.join("plugin.wasm"), b"winner").unwrap();
+        env.mk_dir_all(&dest).unwrap();
+        env.write_file_bytes(dest.join("plugin.wasm"), b"winner").unwrap();
 
         extract_tarball_to_dir(&tarball, &dest, &env).unwrap();
-        assert_eq!(std::fs::read(dest.join("plugin.wasm")).unwrap(), b"winner");
+        assert_eq!(env.read_file_bytes(dest.join("plugin.wasm")).unwrap(), b"winner");
 
         // no temp dir orphans
-        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+        let leftover: Vec<_> = env
+          .dir_info(dir.path())
           .unwrap()
-          .filter_map(|e| e.ok())
-          .map(|e| e.file_name())
-          .filter(|name| name.to_string_lossy().contains(".tmp"))
+          .into_iter()
+          .map(|entry| match entry {
+            crate::environment::DirEntry::Directory(path) | crate::environment::DirEntry::File { path, .. } => path,
+          })
+          .filter(|path| path.file_name().unwrap().to_string_lossy().contains(".tmp"))
           .collect();
         assert!(leftover.is_empty(), "expected no .tmp leftover, got {leftover:?}");
       })
@@ -2248,19 +2254,22 @@ mod tests {
 
         // a winning concurrent extract has populated dest_dir with content.
         // a non-empty dest is what makes rename of our temp dir collide.
-        std::fs::create_dir_all(&dest).unwrap();
-        std::fs::write(dest.join("plugin.wasm"), b"winner").unwrap();
+        env.mk_dir_all(&dest).unwrap();
+        env.write_file_bytes(dest.join("plugin.wasm"), b"winner").unwrap();
 
         extract_tarball_skipping_existence_check(&tarball, &dest, &env).unwrap();
         // winner's contents preserved
-        assert_eq!(std::fs::read(dest.join("plugin.wasm")).unwrap(), b"winner");
+        assert_eq!(env.read_file_bytes(dest.join("plugin.wasm")).unwrap(), b"winner");
 
         // our temp dir was cleaned up
-        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+        let leftover: Vec<_> = env
+          .dir_info(dir.path())
           .unwrap()
-          .filter_map(|e| e.ok())
-          .map(|e| e.file_name())
-          .filter(|name| name.to_string_lossy().contains(".tmp"))
+          .into_iter()
+          .map(|entry| match entry {
+            crate::environment::DirEntry::Directory(path) | crate::environment::DirEntry::File { path, .. } => path,
+          })
+          .filter(|path| path.file_name().unwrap().to_string_lossy().contains(".tmp"))
           .collect();
         assert!(leftover.is_empty(), "expected no .tmp leftover, got {leftover:?}");
       })
@@ -2796,7 +2805,8 @@ mod tests {
   fn extract_tarball_preserves_exec_bits_via_env_set_permissions() {
     use crate::environment::RealEnvironment;
     use crate::test_helpers::create_test_npm_tarball_with_modes;
-    use std::os::unix::fs::PermissionsExt;
+    use sys_traits::FsMetadata;
+    use sys_traits::FsMetadataValue;
     RealEnvironment::run_test_with_real_env(|env| {
       Box::pin(async move {
         let tarball = create_test_npm_tarball_with_modes(&[("package/plugin.wasm", b"wasm", 0o644), ("package/scripts/run.sh", b"#!/bin/sh\n", 0o755)]);
@@ -2805,9 +2815,9 @@ mod tests {
 
         extract_tarball_to_dir(&tarball, &dest, &env).unwrap();
 
-        let exec_mode = std::fs::metadata(dest.join("scripts").join("run.sh")).unwrap().permissions().mode() & 0o777;
+        let exec_mode = env.fs_metadata(dest.join("scripts").join("run.sh")).unwrap().mode().unwrap() & 0o777;
         assert_eq!(exec_mode, 0o755, "expected exec bits preserved");
-        let plain_mode = std::fs::metadata(dest.join("plugin.wasm")).unwrap().permissions().mode() & 0o777;
+        let plain_mode = env.fs_metadata(dest.join("plugin.wasm")).unwrap().mode().unwrap() & 0o777;
         // 0o644 is the default — set_permissions is skipped for it
         assert_eq!(plain_mode, 0o644);
       })

@@ -185,7 +185,7 @@ mod test {
             signal1.notify_one();
             signal2.notified().await;
             tokio::time::sleep(Duration::from_millis(10)).await; // give the other thread time to acquire the lock
-            std::fs::write(temp_dir_path.join("file.txt"), "update1").unwrap();
+            env.write_file(temp_dir_path.join("file.txt"), "update1").unwrap();
             signal3.notify_one();
             signal4.notified().await;
             drop(flag);
@@ -200,17 +200,17 @@ mod test {
             signal1.notified().await;
             signal2.notify_one();
             let flag = LaxSingleProcessFsFlag::lock(&env, lock_path.to_path_buf(), "waiting").await;
-            std::fs::write(temp_dir_path.join("file.txt"), "update2").unwrap();
+            env.write_file(temp_dir_path.join("file.txt"), "update2").unwrap();
             signal5.notify_one();
             drop(flag);
           }
         });
 
         signal3.notified().await;
-        assert_eq!(std::fs::read_to_string(temp_dir.path().join("file.txt")).unwrap(), "update1");
+        assert_eq!(env.read_file(temp_dir.path().join("file.txt")).unwrap(), "update1");
         signal4.notify_one();
         signal5.notified().await;
-        assert_eq!(std::fs::read_to_string(temp_dir.path().join("file.txt")).unwrap(), "update2");
+        assert_eq!(env.read_file(temp_dir.path().join("file.txt")).unwrap(), "update2");
       }
       .boxed_local()
     });
@@ -227,7 +227,7 @@ mod test {
         let count = 10;
         let mut tasks = Vec::with_capacity(count);
 
-        std::fs::write(&output_path, "").unwrap();
+        env.write_file(&output_path, "").unwrap();
 
         for i in 0..count {
           let lock_path = lock_path.clone();
@@ -238,19 +238,19 @@ mod test {
             let flag = LaxSingleProcessFsFlag::lock(&env, lock_path.to_path_buf(), "waiting").await;
             expected_order.lock().push(i.to_string());
             // be extremely racy
-            let mut output = std::fs::read_to_string(&output_path).unwrap();
+            let mut output = env.read_file(&output_path).unwrap();
             if !output.is_empty() {
               output.push('\n');
             }
             output.push_str(&i.to_string());
-            std::fs::write(&output_path, output).unwrap();
+            env.write_file(&output_path, &output).unwrap();
             drop(flag);
           }));
         }
 
         future::join_all(tasks).await;
         let expected_output = expected_order.lock().join("\n");
-        assert_eq!(std::fs::read_to_string(output_path).unwrap(), expected_output);
+        assert_eq!(env.read_file(output_path).unwrap(), expected_output);
       }
       .boxed_local()
     })

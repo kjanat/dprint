@@ -194,11 +194,11 @@ mod tests {
 
   #[test]
   fn should_get_if_absolute_pattern() {
-    assert_eq!(is_absolute_pattern("test.ts"), false);
-    assert_eq!(is_absolute_pattern("!test.ts"), false);
-    assert_eq!(is_absolute_pattern("/test.ts"), true);
-    assert_eq!(is_absolute_pattern("!/test.ts"), true);
-    assert_eq!(is_absolute_pattern("D:/test.ts"), true);
-    assert_eq!(is_absolute_pattern("!D:/test.ts"), true);
+    assert!(!is_absolute_pattern("test.ts"));
+    assert!(!is_absolute_pattern("!test.ts"));
+    assert!(is_absolute_pattern("/test.ts"));
+    assert!(is_absolute_pattern("!/test.ts"));
+    assert!(is_absolute_pattern("D:/test.ts"));
+    assert!(is_absolute_pattern("!D:/test.ts"));
   }
 }

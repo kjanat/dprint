@@ -848,7 +848,7 @@ mod test {
     assert_eq!(meta.info.version, "0.2.0");
     assert_eq!(meta.local_stamps, None); // remote is content-pinned
     assert!(environment.path_exists(&expected_file_path));
-    assert!(!environment.path_exists(&environment.get_cache_dir().join("plugin-cache-manifest.json")));
+    assert!(!environment.path_exists(environment.get_cache_dir().join("plugin-cache-manifest.json")));
 
     // forget removes both the artifact and the sidecar
     plugin_cache.forget(&plugin_source).await.unwrap();
@@ -921,7 +921,7 @@ mod test {
   async fn should_cache_local_file() -> Result<()> {
     let environment = TestEnvironment::new();
     let original_file_path = PathBuf::from("/test.wasm");
-    environment.write_file_bytes(&original_file_path, &WASM_PLUGIN_BYTES).unwrap();
+    environment.write_file_bytes(&original_file_path, WASM_PLUGIN_BYTES).unwrap();
 
     let plugin_cache = PluginCache::new(environment.clone());
     let plugin_source = PluginSourceReference::new_local(original_file_path.clone());
@@ -946,7 +946,7 @@ mod test {
     // module is a file of its own (so a process that read the entry before
     // never loads it), and the previous build's module is kept for such a
     // process.
-    environment.write_file_bytes(&original_file_path, &WASM_PLUGIN_0_1_0_BYTES).unwrap();
+    environment.write_file_bytes(&original_file_path, WASM_PLUGIN_0_1_0_BYTES).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
     let second_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)), &environment);
     assert_eq!(item.file_path, second_file_path);
@@ -980,7 +980,7 @@ mod test {
     let environment = TestEnvironment::new();
     environment.set_fs_time(1000);
     let path = PathBuf::from("/test.wasm");
-    environment.write_file_bytes(&path, &WASM_PLUGIN_BYTES).unwrap();
+    environment.write_file_bytes(&path, WASM_PLUGIN_BYTES).unwrap();
 
     let plugin_cache = PluginCache::new(environment.clone());
     let source = PluginSourceReference::new_local(path.clone());
@@ -989,7 +989,7 @@ mod test {
 
     // rewrite the same bytes at a newer time
     environment.set_fs_time(2000);
-    environment.write_file_bytes(&path, &WASM_PLUGIN_BYTES).unwrap();
+    environment.write_file_bytes(&path, WASM_PLUGIN_BYTES).unwrap();
     plugin_cache.get_plugin_cache_item(&source).await?;
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
@@ -1019,7 +1019,7 @@ mod test {
     // previous resolve had run
     let extract_dir = environment.get_cache_dir().join("npm").join("registry.npmjs.org").join("@dprint__test@1.0.0");
     environment.mk_dir_all(&extract_dir).unwrap();
-    environment.write_file(&extract_dir.join("plugin.wasm"), "fake").unwrap();
+    environment.write_file(extract_dir.join("plugin.wasm"), "fake").unwrap();
 
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
@@ -1260,7 +1260,7 @@ mod test {
 
     // tarball extracted under registry-host segment
     let extract_dir = environment.get_cache_dir().join("npm").join("registry.npmjs.org").join("some-plugin@1.0.0");
-    assert!(environment.path_exists(&extract_dir.join("plugin.wasm")));
+    assert!(environment.path_exists(extract_dir.join("plugin.wasm")));
 
     // drain the log so it doesn't fail the drop check
     let _ = environment.take_stderr_messages();
@@ -1282,7 +1282,7 @@ mod test {
     let pkg_dir = "/node_modules/foo";
     environment.mk_dir_all(pkg_dir).unwrap();
     environment
-      .write_file_bytes(&PathBuf::from(pkg_dir).join("plugin.wasm"), WASM_PLUGIN_BYTES)
+      .write_file_bytes(PathBuf::from(pkg_dir).join("plugin.wasm"), WASM_PLUGIN_BYTES)
       .unwrap();
     environment.mk_dir_all("/project/sub").unwrap();
     environment.set_cwd("/project/sub");
@@ -1338,7 +1338,7 @@ mod test {
     let environment = TestEnvironment::new();
     // package exists but the requested plugin file does not
     environment.mk_dir_all("/node_modules/foo").unwrap();
-    environment.write_file(&PathBuf::from("/node_modules/foo/package.json"), "{}").unwrap();
+    environment.write_file(PathBuf::from("/node_modules/foo/package.json"), "{}").unwrap();
 
     let plugin_cache = PluginCache::new(environment.clone());
     let plugin_source = PluginSourceReference {

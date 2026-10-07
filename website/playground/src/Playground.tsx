@@ -127,7 +127,7 @@ export function Playground({
             <a href="/overview">Overview</a>
             <a className="active" href="/playground">Playground</a>
             <a href="/sponsor">Sponsor</a>
-            <a className="ghButton" href="https://github.com/dprint/dprint" rel="noopener noreferrer">
+            <a className="ghButton" href="https://github.com/kjanat/dprint" rel="noopener noreferrer">
               GitHub <span className="ghArrow">↗</span>
             </a>
           </div>

@@ -357,7 +357,7 @@ mod test {
   #[test]
   fn should_output_help_when_cli_not_out_of_date() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file_bytes("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.0.0" }"#.as_bytes().to_vec());
+    environment.add_remote_file_bytes(crate::utils::LATEST_RELEASE_URL, r#"{ "tag_name": "0.0.0" }"#.as_bytes().to_vec());
     run_test_cli(vec!["--help"], &environment).unwrap();
     let logged_messages = environment.take_stdout_messages();
     assert_eq!(logged_messages, vec![get_expected_help_text()]);
@@ -366,7 +366,7 @@ mod test {
   #[test]
   fn should_output_help_when_cli_out_of_date() {
     let environment = TestEnvironment::new();
-    environment.add_remote_file_bytes("https://plugins.dprint.dev/cli.json", r#"{ "version": "0.1.0" }"#.as_bytes().to_vec());
+    environment.add_remote_file_bytes(crate::utils::LATEST_RELEASE_URL, r#"{ "tag_name": "0.1.0" }"#.as_bytes().to_vec());
     run_test_cli(vec!["--help"], &environment).unwrap();
     let logged_messages = environment.take_stdout_messages();
     assert_eq!(
@@ -556,6 +556,66 @@ mod test {
     run_test_cli(vec!["fmt"], &environment).unwrap();
     environment.take_stdout_messages();
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  fn configs_with_cached_native_plugins() -> TestEnvironment {
+    let environment = nested_configs_with_uncompiled_plugins();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("native"));
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    environment.take_stdout_messages();
+    environment.take_stderr_messages();
+    environment.take_wasm_compile_deadlines();
+    environment.write_file("/file.txt", "text").unwrap();
+    environment.write_file("/sub/file.txt", "text").unwrap();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", None);
+    environment
+  }
+
+  #[test]
+  fn should_count_corrupt_native_modules_before_formatting() {
+    let environment = configs_with_cached_native_plugins();
+    let mut corrupted = 0;
+    for entry in environment.dir_info(environment.get_cache_dir().join("plugins")).unwrap() {
+      if let crate::environment::DirEntry::File { path, .. } = entry
+        && path.extension().is_some_and(|extension| extension == "cwasm")
+      {
+        environment.write_file_bytes(path, b"corrupt").unwrap();
+        corrupted += 1;
+      }
+    }
+    assert_eq!(corrupted, 2);
+
+    for limit in ["0", "1"] {
+      environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some(limit));
+      let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
+      assert!(err.to_string().contains(&format!("would compile 2 plugins, more than the limit of {}", limit)));
+      assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
+      assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text");
+      assert!(environment.take_wasm_compile_deadlines().is_empty());
+      assert!(environment.take_stderr_messages().is_empty());
+    }
+
+    // Once allowed, recovery compiles from the cached Wasm modules and is
+    // announced before formatting, just like compilation on a cold cache.
+    environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some("2"));
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.take_wasm_compile_deadlines().len(), 2);
+    assert!(environment.take_stderr_messages()[0].starts_with("Compiling 2 plugins to native code to format these files:"));
+    environment.take_stdout_messages();
+  }
+
+  #[test]
+  fn should_use_valid_native_modules_with_a_zero_compile_limit() {
+    let environment = configs_with_cached_native_plugins();
+    environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some("0"));
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_formatted");
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+    assert!(environment.take_stderr_messages().is_empty());
+    environment.take_stdout_messages();
   }
 
   #[test]

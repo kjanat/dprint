@@ -426,7 +426,7 @@ mod test {
       let messages = communicator.messages.clone();
       dprint_core::async_runtime::spawn(async move {
         while let Some(Ok(message)) = rx.recv().await {
-          if let Err(_) = handle_stdout_message(message, &messages) {
+          if handle_stdout_message(message, &messages).is_err() {
             break;
           }
         }
@@ -553,7 +553,7 @@ mod test {
       },
       EditorMessageBody::CanFormatResponse(message_id, value) => match messages.take(message_id) {
         Some(MessageResponseChannel::CanFormat(channel)) => {
-          let _ignore = channel.send(Ok(if value == 1 { true } else { false }));
+          let _ignore = channel.send(Ok(value == 1));
         }
         Some(_) => unreachable!(),
         None => {}
@@ -882,7 +882,7 @@ mod test {
           // write a new file and make sure the service picks up the changes
           environment
             .write_file(
-              &PathBuf::from("./dprint.json"),
+              PathBuf::from("./dprint.json"),
               r#"{
                     "includes": ["**/*.txt"],
                     "test-plugin": {
@@ -1062,11 +1062,11 @@ mod test {
           )
           .add_includes("**/*");
       })
-      .write_file(&file_path1, "")
-      .write_file(&file_path2, "")
-      .write_file(&file_path3, "")
-      .write_file(&file_path4, "")
-      .write_file(&file_path5, "")
+      .write_file(file_path1, "")
+      .write_file(file_path2, "")
+      .write_file(file_path3, "")
+      .write_file(file_path4, "")
+      .write_file(file_path5, "")
       .build();
 
     let stdin = environment.stdin_writer();

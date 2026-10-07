@@ -13,7 +13,7 @@ As outlined in [plugins](/plugins), there are Wasm plugins and process plugins.
 
 Links:
 
-- [Wasm plugin development](https://github.com/dprint/dprint/blob/main/docs/wasm-plugin-development.md)
-- [Process plugin development](https://github.com/dprint/dprint/blob/main/docs/process-plugin-development.md)
+- [Wasm plugin development](https://github.com/kjanat/dprint/blob/HEAD/docs/wasm-plugin-development.md)
+- [Process plugin development](https://github.com/kjanat/dprint/blob/HEAD/docs/process-plugin-development.md)
 
-Note that plugins only need to conform to a general interface that doesn't prescribe a certain way of implementing the formatter. In Rust, you may want to use the `dprint-core` crate's [`formatting`](https://docs.rs/dprint-core/0.28.0/dprint_core/formatting/index.html) feature as it provides a better starting point for implementing a formatter. See an overview [here](https://github.com/dprint/dprint/blob/main/docs/overview.md)
+Note that plugins only need to conform to a general interface that doesn't prescribe a certain way of implementing the formatter. In Rust, you may want to use the `dprint-core` crate's [`formatting`](https://docs.rs/dprint-core/0.28.0/dprint_core/formatting/index.html) feature as it provides a better starting point for implementing a formatter. See an overview [here](https://github.com/kjanat/dprint/blob/HEAD/docs/overview.md)

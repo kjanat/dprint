@@ -280,7 +280,7 @@ mod test {
     let environment = TestEnvironment::new();
     assert_eq!(read_meta("missing", &environment), None);
     environment.mk_dir_all(plugins_dir(&environment)).unwrap();
-    environment.write_file(&plugins_dir(&environment).join("bad.json"), "{ not json").unwrap();
+    environment.write_file(plugins_dir(&environment).join("bad.json"), "{ not json").unwrap();
     assert_eq!(read_meta("bad", &environment), None);
   }
 
@@ -315,7 +315,7 @@ mod test {
     environment.write_file(&module_path, "module").unwrap();
     environment.write_file(native_module_path(&module_path), "compiled").unwrap();
     environment.mk_dir_all(process_dir_path("h", &environment)).unwrap();
-    environment.write_file(&process_dir_path("h", &environment).join("exe"), "bin").unwrap();
+    environment.write_file(process_dir_path("h", &environment).join("exe"), "bin").unwrap();
     environment.write_file(resolutions_path("h", &environment), "{}").unwrap();
 
     remove_entry("h", &environment);
@@ -323,7 +323,7 @@ mod test {
     assert!(read_meta("h", &environment).is_none());
     assert!(!environment.path_exists(&module_path));
     assert!(!environment.path_exists(native_module_path(&module_path)));
-    assert!(!environment.path_exists(&process_dir_path("h", &environment)));
+    assert!(!environment.path_exists(process_dir_path("h", &environment)));
     assert!(!environment.path_exists(resolutions_path("h", &environment)));
   }
 }

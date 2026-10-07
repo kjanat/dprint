@@ -120,6 +120,13 @@ pub async fn create_plugin<TEnvironment: Environment>(
             async move { loader.load_native().await }.boxed_local()
           }
         }),
+        load_cached_native: Box::new({
+          let loader = loader.clone();
+          move || {
+            let loader = loader.clone();
+            async move { loader.load_cached_native().await }.boxed_local()
+          }
+        }),
         wasm_module_path: cache_item.file_path.clone(),
         native_module_path: native_module_path(&cache_item.file_path),
         format_rate_path: format_rate_path(&cache_item.file_path),
@@ -169,6 +176,16 @@ struct WasmModuleLoader<TEnvironment: Environment> {
 }
 
 impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
+  async fn load_cached_native(&self) -> Result<Option<wasm::WasmModule>> {
+    let native_path = native_module_path(&self.file_path);
+    if !self.environment.path_exists(&native_path) {
+      return Ok(None);
+    }
+    load_compiled_wasm_module_in_background(&self.environment, native_path, &self.wasm_module_creator)
+      .await
+      .map(Some)
+  }
+
   async fn load_interpreted(&self) -> Result<wasm::InterpretedModule> {
     self
       .load_from_cache(|environment, file_path| wasm::InterpretedModule::new(&environment.read_file_bytes(file_path)?))

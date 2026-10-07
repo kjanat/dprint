@@ -4009,6 +4009,8 @@ mod test {
     assert_eq!(environment.read_file("./sub_folder/dprint.json").unwrap(), sub_before);
   }
 
+  type UpdateErrorHandler = Box<dyn FnOnce(&str)>;
+
   struct TestUpdateOptions {
     config_has_wasm: bool,
     config_has_wasm_checksum: bool,
@@ -4019,7 +4021,7 @@ mod test {
     expected_logs: Vec<String>,
     expected_urls: Vec<String>,
     always_update: bool,
-    on_error: Option<Box<dyn FnOnce(&str)>>,
+    on_error: Option<UpdateErrorHandler>,
     exit_code: i32,
   }
 
@@ -4093,7 +4095,7 @@ mod test {
     }
     if opts.config_has_process {
       builder.add_remote_process_plugin();
-      builder.add_remote_process_plugin_at_url("https://plugins.dprint.dev/test-plugin-3.json", &*NEW_PROCESS_PLUGIN_FILE);
+      builder.add_remote_process_plugin_at_url("https://plugins.dprint.dev/test-plugin-3.json", &NEW_PROCESS_PLUGIN_FILE);
     }
 
     builder

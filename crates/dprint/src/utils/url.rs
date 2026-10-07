@@ -431,9 +431,9 @@ impl RealUrlDownloader {
     if let Some(auth) = auth {
       request = request.set("Authorization", auth);
     }
-    let resp = match BoundedResolver::with_request_deadline(deadline, || request.call()) {
+    let resp = match BoundedResolver::with_request_deadline(deadline, || request.call().map_err(Box::new)) {
       Ok(resp) => resp,
-      Err(ureq::Error::Status(404, _)) => {
+      Err(err) if matches!(err.as_ref(), ureq::Error::Status(404, _)) => {
         return Ok(None);
       }
       Err(err) => {
@@ -607,7 +607,7 @@ mod test {
     }));
     let agent_store = AgentStore {
       agents: Default::default(),
-      logger: logger,
+      logger,
       no_proxy: NoProxy::from_string("dprint.dev"),
       proxy_url_provider: TestProxyProvider,
       unsafely_ignore_certificates: None,
@@ -1025,7 +1025,7 @@ kGUMOx8j0U5fU8eSLECGi0FxBA==
       Ok(child) => Some(child),
       Err(err) => {
         if err.kind() == ErrorKind::NotFound {
-          return None;
+          None
         } else {
           panic!("Failed running Deno: {:#}", err);
         }

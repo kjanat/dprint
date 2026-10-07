@@ -16,7 +16,7 @@ const    u    =     2;
 const u = 2;
 ```
 
-For a real world example, see [dprint-plugin-typescript/tests](https://github.com/dprint/dprint-plugin-typescript/tree/main/tests).
+For a real world example, see [dprint-plugin-typescript/tests](https://github.com/dprint/dprint-plugin-typescript/tree/HEAD/tests).
 
 ### Changing File Name
 

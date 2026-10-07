@@ -209,7 +209,7 @@ mod tests {
   #[test]
   fn it_parses_with_file_name() {
     let specs = parse_specs(
-      vec!["-- asdf.ts --", "== message ==", "start", "[expect]", "expected"].join("\n"),
+      ["-- asdf.ts --", "== message ==", "start", "[expect]", "expected"].join("\n"),
       &ParseSpecOptions { default_file_name: "test.ts" },
     );
 
@@ -233,7 +233,7 @@ mod tests {
   #[test]
   fn it_parses_with_config() {
     let specs = parse_specs(
-      vec![
+      [
         "-- asdf.ts --",
         "~~ test.test: other, lineWidth: 40 ~~",
         "== message ==",

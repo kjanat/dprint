@@ -278,7 +278,7 @@ where
   }
 }
 
-/** Tracing */
+// Tracing
 
 #[cfg(feature = "tracing")]
 #[derive(serde::Serialize)]

@@ -1,11 +1,16 @@
-#!/bin/sh
-# Adapted from Deno's install script at https://github.com/denoland/deno_install/blob/main/install.sh
+#!/usr/bin/env sh
+# Adapted from Deno's install script at https://github.com/denoland/deno_install/blob/HEAD/install.sh
 # All rights reserved. MIT license.
 
 set -e
 
 if ! command -v unzip >/dev/null; then
 	echo "Error: unzip is required to install dprint." 1>&2
+	exit 1
+fi
+
+if ! command -v jq >/dev/null; then
+	echo "Error: jq is required to resolve the dprint release repository." 1>&2
 	exit 1
 fi
 
@@ -48,10 +53,12 @@ if [ "${target%-linux}" != "$target" ]; then # check "-linux" suffix
 	fi
 fi
 
+# Resolve the permanent repository ID so downloads survive repository renames.
+repository_url=$(curl --fail --location --silent --show-error "https://api.github.com/repositories/1092062077" | jq --exit-status --raw-output '.html_url | strings')
 if [ $# -eq 0 ]; then
-	dprint_uri="https://github.com/dprint/dprint/releases/latest/download/dprint-${target}.zip"
+	dprint_uri="${repository_url}/releases/latest/download/dprint-${target}.zip"
 else
-	dprint_uri="https://github.com/dprint/dprint/releases/download/${1}/dprint-${target}.zip"
+	dprint_uri="${repository_url}/releases/download/${1}/dprint-${target}.zip"
 fi
 
 dprint_install="${DPRINT_INSTALL:-$HOME/.dprint}"

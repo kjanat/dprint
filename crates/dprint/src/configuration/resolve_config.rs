@@ -869,7 +869,7 @@ mod tests {
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],
             "includes": ["test"],
@@ -1264,7 +1264,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],
@@ -1346,7 +1346,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]
@@ -1389,7 +1389,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"]
@@ -1421,7 +1421,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm@local-checksum"]
@@ -1474,7 +1474,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": [
                 "https://dprint.dev/test.json",
@@ -1576,7 +1576,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": [
                 "https://dprint.dev/test.json"
@@ -1717,7 +1717,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
             "test": { "prop1": 1 }
@@ -1763,21 +1763,21 @@ lineWidth = 80
   fn should_handle_relative_local_extends() {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
             "test": { "prop1": 1 }
         }"#,
       )
       .write_file(
-        &PathBuf::from("/dir/test.json"),
+        PathBuf::from("/dir/test.json"),
         r#"{
             "extends": "../otherDir/test.json",
             "test": { "prop2": 2 }
         }"#,
       )
       .write_file(
-        &PathBuf::from("/otherDir/test.json"),
+        PathBuf::from("/otherDir/test.json"),
         r#"{
             "test": { "prop3": 3 }
         }"#,
@@ -1850,7 +1850,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {
@@ -1889,7 +1889,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json"
         }"#,
@@ -1931,7 +1931,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {
@@ -1978,7 +1978,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {}
@@ -2023,7 +2023,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {}
@@ -2070,7 +2070,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {
@@ -2128,7 +2128,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {
@@ -2168,7 +2168,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {}
@@ -2207,7 +2207,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/test.json",
             "test": {
@@ -2297,7 +2297,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "plugins": ["./testing/asdf.wasm"],
         }"#,
@@ -2315,13 +2315,13 @@ lineWidth = 80
   fn should_handle_relative_local_plugins_in_extends() {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "./other/test.json",
         }"#,
       )
       .write_file(
-        &PathBuf::from("/other/test.json"),
+        PathBuf::from("/other/test.json"),
         r#"{
             "projectType": "openSource", // test having this in base config
             "plugins": ["./testing/asdf.wasm"],
@@ -2341,7 +2341,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "plugins": ["./testing/asdf.wasm"],
         }"#,
@@ -2360,7 +2360,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "incremental": true,
             "plugins": ["./testing/asdf.wasm"],
@@ -2380,7 +2380,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "incremental": false,
             "plugins": ["./testing/asdf.wasm"],
@@ -2400,7 +2400,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r##"{
             "shebangs": {
               "#!/bin/sh": "sh",
@@ -2439,7 +2439,7 @@ lineWidth = 80
     );
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r##"{
             "extends": "https://dprint.dev/test.json",
             "shebangs": {
@@ -2472,7 +2472,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/base2.json"),
+        PathBuf::from("/base2.json"),
         r##"{
             "shebangs": {
               "#!/bin/sh": "base2",
@@ -2484,7 +2484,7 @@ lineWidth = 80
       .unwrap();
     environment
       .write_file(
-        &PathBuf::from("/base1.json"),
+        PathBuf::from("/base1.json"),
         r##"{
             "extends": "./base2.json",
             "shebangs": {
@@ -2496,7 +2496,7 @@ lineWidth = 80
       .unwrap();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r##"{
             "extends": "./base1.json",
             "shebangs": {
@@ -2527,7 +2527,7 @@ lineWidth = 80
       let environment = TestEnvironment::new();
       environment
         .write_file(
-          &PathBuf::from("/test.json"),
+          PathBuf::from("/test.json"),
           &format!(r##"{{ "shebangs": {}, "plugins": ["./testing/asdf.wasm"] }}"##, shebangs),
         )
         .unwrap();
@@ -2561,7 +2561,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r##"{
             "shebangs": {
               "#!/bin/sh": 5
@@ -2585,7 +2585,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "inherit": true,
             "plugins": ["./testing/asdf.wasm"],
@@ -4288,7 +4288,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
             "test": { "prop1": 1 }
@@ -4314,14 +4314,14 @@ lineWidth = 80
   fn should_not_allow_non_wasm_plugins_in_local_extends() {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
             "test": { "prop1": 1 }
         }"#,
       )
       .write_file(
-        &PathBuf::from("/dir/test.json"),
+        PathBuf::from("/dir/test.json"),
         r#"{
             "plugins": ["./test-plugin.json@checksum"]
         }"#,
@@ -4347,7 +4347,7 @@ lineWidth = 80
     let environment = TestEnvironment::new();
     environment
       .write_file(
-        &PathBuf::from("/test.json"),
+        PathBuf::from("/test.json"),
         r#"{
             "projectType": "openSource",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],

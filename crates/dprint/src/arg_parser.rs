@@ -1474,7 +1474,7 @@ mod test {
     let err = test_args(vec!["fmt", "--plugins", "test", "other.ts"]).err().unwrap();
     assert_eq!(
       err.to_string(),
-      concat!("test was specified as a plugin, but it doesn't look like one. Plugins must have a .wasm or .json extension.")
+      "test was specified as a plugin, but it doesn't look like one. Plugins must have a .wasm or .json extension."
     );
   }
 
@@ -1582,25 +1582,25 @@ mod test {
   fn skip_stable_format_disables_incremental() {
     // without --skip-stable-format, incremental follows what's specified
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt"]).unwrap();
-    assert_eq!(fmt_cmd.enable_stable_format, true);
+    assert!(fmt_cmd.enable_stable_format);
     assert_eq!(fmt_cmd.incremental, None);
 
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--incremental"]).unwrap();
-    assert_eq!(fmt_cmd.enable_stable_format, true);
+    assert!(fmt_cmd.enable_stable_format);
     assert_eq!(fmt_cmd.incremental, Some(true));
 
     // with --skip-stable-format, incremental is forced to false
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--skip-stable-format"]).unwrap();
-    assert_eq!(fmt_cmd.enable_stable_format, false);
+    assert!(!fmt_cmd.enable_stable_format);
     assert_eq!(fmt_cmd.incremental, Some(false));
 
     // even if --incremental is explicitly set, --skip-stable-format forces it to false
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--skip-stable-format", "--incremental"]).unwrap();
-    assert_eq!(fmt_cmd.enable_stable_format, false);
+    assert!(!fmt_cmd.enable_stable_format);
     assert_eq!(fmt_cmd.incremental, Some(false));
 
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--skip-stable-format", "--incremental=true"]).unwrap();
-    assert_eq!(fmt_cmd.enable_stable_format, false);
+    assert!(!fmt_cmd.enable_stable_format);
     assert_eq!(fmt_cmd.incremental, Some(false));
   }
 
@@ -1855,17 +1855,17 @@ mod test {
   #[test]
   fn staged_arg() {
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt"]).unwrap();
-    assert_eq!(fmt_cmd.only_staged, false);
+    assert!(!fmt_cmd.only_staged);
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--staged"]).unwrap();
-    assert_eq!(fmt_cmd.only_staged, true);
+    assert!(fmt_cmd.only_staged);
   }
 
   #[test]
   fn dirty_arg() {
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt"]).unwrap();
-    assert_eq!(fmt_cmd.only_dirty, false);
+    assert!(!fmt_cmd.only_dirty);
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--dirty"]).unwrap();
-    assert_eq!(fmt_cmd.only_dirty, true);
+    assert!(fmt_cmd.only_dirty);
   }
 
   #[test]
@@ -1877,11 +1877,11 @@ mod test {
   #[test]
   fn no_files_arg() {
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--staged"]).unwrap();
-    assert_eq!(fmt_cmd.only_staged, true);
-    assert_eq!(fmt_cmd.allow_no_files, true);
+    assert!(fmt_cmd.only_staged);
+    assert!(fmt_cmd.allow_no_files);
     let fmt_cmd = parse_fmt_sub_command(vec!["fmt", "--dirty"]).unwrap();
-    assert_eq!(fmt_cmd.only_dirty, true);
-    assert_eq!(fmt_cmd.allow_no_files, true);
+    assert!(fmt_cmd.only_dirty);
+    assert!(fmt_cmd.allow_no_files);
   }
 
   #[test]
@@ -2064,9 +2064,9 @@ mod test {
   #[test]
   fn check_fail_fast_arg() {
     let check_cmd = parse_check_sub_command(vec!["check"]).unwrap();
-    assert_eq!(check_cmd.fail_fast, false);
+    assert!(!check_cmd.fail_fast);
     let check_cmd = parse_check_sub_command(vec!["check", "--fail-fast"]).unwrap();
-    assert_eq!(check_cmd.fail_fast, true);
+    assert!(check_cmd.fail_fast);
   }
 
   #[test]
@@ -2119,19 +2119,19 @@ mod test {
   fn check_fail_fast_defaults_to_true_with_silent_log_level() {
     {
       let check_cmd = parse_check_sub_command(vec!["check"]).unwrap();
-      assert_eq!(check_cmd.fail_fast, false);
+      assert!(!check_cmd.fail_fast);
     }
     {
       let check_cmd = parse_check_sub_command(vec!["check", "--log-level=silent"]).unwrap();
-      assert_eq!(check_cmd.fail_fast, true);
+      assert!(check_cmd.fail_fast);
     }
     {
       let check_cmd = parse_check_sub_command(vec!["check", "--log-level=silent", "--fail-fast"]).unwrap();
-      assert_eq!(check_cmd.fail_fast, true);
+      assert!(check_cmd.fail_fast);
     }
     {
       let check_cmd = parse_check_sub_command(vec!["check", "--log-level=silent", "--fail-fast=false"]).unwrap();
-      assert_eq!(check_cmd.fail_fast, false);
+      assert!(!check_cmd.fail_fast);
     }
   }
 

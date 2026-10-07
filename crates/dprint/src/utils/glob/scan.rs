@@ -83,6 +83,14 @@ pub struct DirScanOutput {
 
 /// Walks `options.start_dir` and returns the files to format.
 pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: DirScanOptions) -> Result<DirScanOutput> {
+  scan_dir_with_file_system(environment, options, environment.scan_file_system())
+}
+
+fn scan_dir_with_file_system<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  options: DirScanOptions,
+  file_system: Arc<dyn tree_fucker::FileSystem>,
+) -> Result<DirScanOutput> {
   install_governor();
   let start_dir = options.start_dir.clone();
   let policy = Arc::new(DiscoveryPolicy {
@@ -91,7 +99,7 @@ pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: 
     found: Default::default(),
   });
   let scan = Scan::open(
-    environment.scan_file_system(),
+    file_system,
     start_dir.clone(),
     policy.clone(),
     ScanOptions {
@@ -99,6 +107,9 @@ pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: 
       crossing: DomainCrossing::Follow,
       // no time limit: the user is waiting for the result
       ceiling: Duration::MAX,
+      // Excluded files count toward listings too. Discovery must finish even
+      // when a directory exceeds the library's default entry limit.
+      entries_per_directory: usize::MAX,
       ..ScanOptions::default()
     },
   )
@@ -136,6 +147,10 @@ fn install_governor() {
     let _ = HostGovernor::install(HostConfig {
       foreground_duty: 1.0,
       domain_foreground_duty: 1.0,
+      // Preserve discovery of large directories: a listing is collected
+      // before filtering, so the library's tree memory limits don't apply.
+      in_flight_listing_bytes: u64::MAX,
+      accounted_memory_ceiling: u64::MAX,
       ..HostConfig::default()
     });
   });
@@ -314,5 +329,58 @@ impl<TEnvironment: Environment> ScanPolicy for DiscoveryPolicy<TEnvironment> {
       self.found.lock().file_paths.extend(file_paths);
     }
     self.context(context)
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+  use crate::environment::CanonicalizedPathBuf;
+  use crate::environment::TestEnvironment;
+  use crate::utils::GlobMatcherOptions;
+  use crate::utils::GlobPattern;
+  use crate::utils::GlobPatterns;
+  use tree_fucker::WatcherKind;
+  use tree_fucker::testing::FakeFileSystem;
+
+  #[test]
+  fn finds_matching_files_beyond_default_listing_limits() {
+    let environment = TestEnvironment::new();
+    let fs = FakeFileSystem::new(WatcherKind::None);
+    // More than both the default 250,000 entries and the 32 MiB listing cap.
+    // Nonmatching files must not prevent discovery of the one matching file.
+    for i in 0..250_001 {
+      fs.inject_child("", format!("{}.bin", i), EntryKind::File);
+    }
+    fs.inject_child("", "match.txt", EntryKind::File);
+    let base_dir = CanonicalizedPathBuf::new_for_testing("/fake");
+    let matcher = GlobMatcher::new(
+      GlobPatterns {
+        arg_includes: None,
+        config_includes: Some(vec![GlobPattern::new("**/*.txt".to_string(), base_dir.clone())]),
+        arg_excludes: None,
+        config_excludes: Vec::new(),
+        shebangs: Vec::new(),
+      },
+      &GlobMatcherOptions {
+        case_sensitive: true,
+        base_dir,
+      },
+    )
+    .unwrap();
+    let result = scan_dir_with_file_system(
+      &environment,
+      DirScanOptions {
+        start_dir: PathBuf::from("/fake"),
+        matcher: Arc::new(matcher),
+        gitignore: None,
+        discover_configs: false,
+        current_config_path: None,
+      },
+      Arc::new(fs),
+    )
+    .unwrap();
+    assert_eq!(result.file_paths, vec![PathBuf::from("/fake/match.txt")]);
+    assert!(result.config_files.is_empty());
   }
 }

@@ -380,11 +380,11 @@ mod test {
       drop(permit3);
 
       tokio::time::sleep(Duration::from_millis(20)).await;
-      assert_eq!(*notify_complete.borrow(), false);
+      assert!(!(*notify_complete.borrow()));
 
       drop(permit1);
       result.await.unwrap();
-      assert_eq!(*notify_complete.borrow(), true);
+      assert!(*notify_complete.borrow());
       drop(permit2);
     }
   }

@@ -6,6 +6,10 @@ use std::rc::Rc;
 use anyhow::Result;
 use deno_terminal::colors;
 use once_cell::sync::Lazy;
+use sys_traits::FsCanonicalize;
+use sys_traits::FsMetadata;
+use sys_traits::FsRead;
+use sys_traits::impls::RealSys;
 use thiserror::Error;
 
 use crate::AppError;
@@ -28,18 +32,19 @@ macro_rules! assert_contains {
 }
 
 // this file should automatically be built when building the workspace
+// These fixtures load before the mock environments that consume them exist.
 pub static TEST_PROCESS_PLUGIN_PATH: Lazy<PathBuf> = Lazy::new(|| {
   let exe_name = if cfg!(windows) { "test-process-plugin.exe" } else { "test-process-plugin" };
   let profile_name = if cfg!(debug_assertions) { "debug" } else { "release" };
   let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-  assert!(target_dir.exists());
+  assert!(RealSys.fs_exists_no_err(&target_dir));
   let file_path = target_dir.join(target_dir.join(env!("TARGET"))).join(profile_name).join(exe_name);
-  let file_path = if file_path.exists() {
+  let file_path = if RealSys.fs_exists_no_err(&file_path) {
     file_path
   } else {
     target_dir.join(profile_name).join(exe_name)
   };
-  std::fs::canonicalize(&file_path).unwrap_or_else(|err| {
+  RealSys.fs_canonicalize(&file_path).unwrap_or_else(|err| {
     panic!(
       "Maybe run `cargo build` in the root of the repository?\n\nCould not canonicalize {}: {:#}",
       file_path.display(),
@@ -49,9 +54,9 @@ pub static TEST_PROCESS_PLUGIN_PATH: Lazy<PathBuf> = Lazy::new(|| {
 });
 
 // Regenerate this by running `./rebuild.sh` in /crates/test-plugin
-pub static WASM_PLUGIN_BYTES: &'static [u8] = include_bytes!("../../test-plugin/test_plugin.wasm"); // 0.2.0
+pub static WASM_PLUGIN_BYTES: &[u8] = include_bytes!("../../test-plugin/test_plugin.wasm"); // 0.2.0
 /// This is an old v3 interface Wasm plugin at 0.1.0
-pub static WASM_PLUGIN_0_1_0_BYTES: &'static [u8] = include_bytes!("../../test-plugin/test_plugin_0_1_0.wasm");
+pub static WASM_PLUGIN_0_1_0_BYTES: &[u8] = include_bytes!("../../test-plugin/test_plugin_0_1_0.wasm");
 // cache these so it only has to be done once across all tests
 pub static PROCESS_PLUGIN_ZIP_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
   let buf: Vec<u8> = Vec::new();
@@ -68,7 +73,7 @@ pub static PROCESS_PLUGIN_ZIP_BYTES: Lazy<Vec<u8>> = Lazy::new(|| {
       options,
     )
     .unwrap();
-  let file_bytes = std::fs::read(&*TEST_PROCESS_PLUGIN_PATH).unwrap();
+  let file_bytes = RealSys.fs_read(&*TEST_PROCESS_PLUGIN_PATH).unwrap();
   zip.write_all(&file_bytes).unwrap();
   zip.finish().unwrap().into_inner()
 });
@@ -78,7 +83,7 @@ pub static PROCESS_PLUGIN_ZIP_CHECKSUM: Lazy<String> = Lazy::new(|| crate::utils
 /// stuff it into a per-platform npm tarball for the `pre_resolved_tarball`
 /// path (npm-installed process plugins ship the executable inside the
 /// tarball; dprint extracts the full tarball at setup time).
-pub static PROCESS_PLUGIN_BINARY_BYTES: Lazy<Vec<u8>> = Lazy::new(|| std::fs::read(&*TEST_PROCESS_PLUGIN_PATH).unwrap());
+pub static PROCESS_PLUGIN_BINARY_BYTES: Lazy<Vec<u8>> = Lazy::new(|| RealSys.fs_read(&*TEST_PROCESS_PLUGIN_PATH).unwrap().into_owned());
 
 /// Filename that a per-platform npm package would ship for the test process
 /// plugin's executable (`test-process-plugin.exe` on Windows, otherwise
@@ -193,7 +198,7 @@ impl Drop for TestAppError {
     if std::thread::panicking() || self.inner.exit_code <= 1 {
       return;
     }
-    if !self.asserted_exit_code.borrow().clone() {
+    if !*self.asserted_exit_code.borrow() {
       panic!("Exit code must be asserted. Was: {}", self.inner.exit_code);
     }
   }
@@ -208,7 +213,7 @@ pub fn run_test_cli_with_stdin(args: Vec<&str>, environment: &TestEnvironment, s
   args.insert(0, String::from(""));
   let plugin_cache = PluginCache::new(environment.clone());
   let plugin_resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
-  let args = parse_args(args, stdin_reader).map_err(|err| Into::<AppError>::into(err))?;
+  let args = parse_args(args, stdin_reader).map_err(Into::<AppError>::into)?;
   environment.set_stdout_machine_readable(args.is_stdout_machine_readable());
   environment.set_log_level(args.log_level);
 

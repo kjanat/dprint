@@ -499,7 +499,7 @@ mod test {
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -567,14 +567,14 @@ mod test {
     let file_path1 = "/file.txt";
     let file_path2 = "/file.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
     environment.set_max_threads(1); // ensure files are still formatted with only 1 core
     run_test_cli(vec!["fmt", "/file.*"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted_process");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted_process");
   }
 
   #[test]
@@ -589,9 +589,9 @@ mod test {
       .build();
     run_test_cli(vec!["fmt", "/sub-dir"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3");
   }
 
   #[test]
@@ -600,25 +600,25 @@ mod test {
     let file_path2 = "/sub dir/file with space.txt";
     let file_path3 = "/not-included.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
       .build();
     // include a blank line and a path containing spaces to ensure both are handled
     let test_std_in = TestStdInReader::from(format!("{}\n\n{}\n", file_path1, file_path2));
     run_test_cli_with_stdin(vec!["fmt", "--stdin-files"], &environment, test_std_in).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
     // wasn't in the list, so it's left untouched
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3");
   }
 
   #[test]
   fn should_format_no_files_when_stdin_files_is_empty() {
     let file_path1 = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "text")
+      .write_file(file_path1, "text")
       .build();
     let test_std_in = TestStdInReader::from(
       "
@@ -626,25 +626,25 @@ mod test {
     );
     run_test_cli_with_stdin(vec!["fmt", "--stdin-files"], &environment, test_std_in).unwrap();
     assert_eq!(environment.take_stdout_messages(), Vec::<String>::new());
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text");
   }
 
   #[test]
   fn should_check_no_files_when_stdin_files_is_empty() {
     let file_path1 = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "text")
+      .write_file(file_path1, "text")
       .build();
     let test_std_in = TestStdInReader::from("");
     run_test_cli_with_stdin(vec!["check", "--stdin-files"], &environment, test_std_in).unwrap();
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text");
   }
 
   #[test]
   fn should_check_files_from_stdin_files() {
     let file_path1 = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "text")
+      .write_file(file_path1, "text")
       .build();
     let test_std_in = TestStdInReader::from(format!("{}\n", file_path1));
     let error_message = run_test_cli_with_stdin(vec!["check", "--stdin-files", "--list-different"], &environment, test_std_in)
@@ -747,16 +747,16 @@ mod test {
     let file_path1 = "/file.txt";
     let file_path2 = "/file.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path1, "text_1")
-      .write_file(&file_path2, "text_2")
+      .write_file(file_path1, "text_1")
+      .write_file(file_path2, "text_2")
       .add_staged_file(file_path1)
       .build();
 
     environment.set_max_threads(1);
     run_test_cli(vec!["fmt", "--staged"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_1_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_2");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_1_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_2");
   }
 
   #[test]
@@ -764,16 +764,16 @@ mod test {
     let file_path1 = "/file.txt";
     let file_path2 = "/file.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path1, "text_1")
-      .write_file(&file_path2, "text_2")
+      .write_file(file_path1, "text_1")
+      .write_file(file_path2, "text_2")
       .add_dirty_file(file_path1)
       .build();
 
     environment.set_max_threads(1);
     run_test_cli(vec!["fmt", "--dirty"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_1_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_2");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_1_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_2");
   }
 
   #[test]
@@ -784,8 +784,8 @@ mod test {
       .with_local_config("./dprint.json", |c| {
         c.add_includes("**/*.txt_ps").add_remote_wasm_plugin().add_remote_process_plugin();
       })
-      .write_file(&file_path1, "text_1")
-      .write_file(&file_path2, "text_2")
+      .write_file(file_path1, "text_1")
+      .write_file(file_path2, "text_2")
       .add_dirty_file(file_path1)
       .add_dirty_file(file_path2)
       .build();
@@ -793,8 +793,8 @@ mod test {
     environment.set_max_threads(1);
     run_test_cli(vec!["fmt", "--dirty"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_2_formatted_process");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_2_formatted_process");
   }
 
   #[test]
@@ -805,8 +805,8 @@ mod test {
       .with_local_config("./dprint.json", |c| {
         c.add_includes("**/*.txt_ps").add_remote_wasm_plugin().add_remote_process_plugin();
       })
-      .write_file(&file_path1, "text_1")
-      .write_file(&file_path2, "text_2")
+      .write_file(file_path1, "text_1")
+      .write_file(file_path2, "text_2")
       .add_staged_file(file_path1)
       .add_staged_file(file_path2)
       .build();
@@ -814,8 +814,8 @@ mod test {
     environment.set_max_threads(1);
     run_test_cli(vec!["fmt", "--staged"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_2_formatted_process");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_2_formatted_process");
   }
 
   #[test]
@@ -823,11 +823,11 @@ mod test {
     // this file name is mentioned in test-process-plugin's PluginInfo
     let file_path1 = "/test-process-plugin-exact-file";
     let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
-      .write_file(&file_path1, "text")
+      .write_file(file_path1, "text")
       .build();
     run_test_cli(vec!["fmt", "*"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted_process");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted_process");
   }
 
   #[test]
@@ -838,12 +838,12 @@ mod test {
       .with_default_config(|c| {
         c.add_local_wasm_plugin();
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .initialize()
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -896,23 +896,23 @@ mod test {
   fn should_format_calling_process_plugin_with_wasm_plugin_and_no_plugin_exists() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "plugin: format this text")
+      .write_file(file_path, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "plugin: format this text_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "plugin: format this text_formatted");
   }
 
   #[test]
   fn should_format_calling_process_plugin_with_wasm_plugin_and_process_plugin_exists() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path, "plugin: format this text")
+      .write_file(file_path, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(
-      environment.read_file(&file_path).unwrap(),
+      environment.read_file(file_path).unwrap(),
       "plugin: format this text_formatted_process_formatted"
     );
   }
@@ -922,17 +922,17 @@ mod test {
     let file_path1 = "/file1.txt";
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path1, "plugin-config: format this text")
-      .write_file(&file_path2, "plugin: format this text")
+      .write_file(file_path1, "plugin-config: format this text")
+      .write_file(file_path2, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "/*.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     assert_eq!(
-      environment.read_file(&file_path1).unwrap(),
+      environment.read_file(file_path1).unwrap(),
       "plugin-config: format this text_custom_config_formatted"
     );
     assert_eq!(
-      environment.read_file(&file_path2).unwrap(),
+      environment.read_file(file_path2).unwrap(),
       "plugin: format this text_formatted_process_formatted"
     );
   }
@@ -954,23 +954,23 @@ mod test {
   fn should_format_calling_other_plugin_with_process_plugin_and_no_plugin_exists() {
     let file_path = "/file.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin()
-      .write_file(&file_path, "plugin: format this text")
+      .write_file(file_path, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "plugin: format this text_formatted_process");
+    assert_eq!(environment.read_file(file_path).unwrap(), "plugin: format this text_formatted_process");
   }
 
   #[test]
   fn should_format_calling_wasm_plugin_with_process_plugin_and_wasm_plugin_exists() {
     let file_path = "/file.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path, "plugin: format this text")
+      .write_file(file_path, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(
-      environment.read_file(&file_path).unwrap(),
+      environment.read_file(file_path).unwrap(),
       "plugin: format this text_formatted_formatted_process"
     );
   }
@@ -980,17 +980,17 @@ mod test {
     let file_path1 = "/file1.txt_ps";
     let file_path2 = "/file2.txt_ps";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
-      .write_file(&file_path1, "plugin-config: format this text")
-      .write_file(&file_path2, "plugin: format this text")
+      .write_file(file_path1, "plugin-config: format this text")
+      .write_file(file_path2, "plugin: format this text")
       .build();
     run_test_cli(vec!["fmt", "*.txt_ps"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     assert_eq!(
-      environment.read_file(&file_path1).unwrap(),
+      environment.read_file(file_path1).unwrap(),
       "plugin-config: format this text_custom_config_formatted_process"
     );
     assert_eq!(
-      environment.read_file(&file_path2).unwrap(),
+      environment.read_file(file_path2).unwrap(),
       "plugin: format this text_formatted_formatted_process"
     );
   }
@@ -1012,11 +1012,11 @@ mod test {
   fn should_format_when_specifying_dot_slash_paths() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
     run_test_cli(vec!["fmt", "./file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -1024,13 +1024,13 @@ mod test {
     let file_path = "/file.txt";
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "text")
-      .write_file(&file_path2, "text")
+      .write_file(file_path, "text")
+      .write_file(file_path2, "text")
       .build();
     run_test_cli(vec!["fmt", "./**/*.txt", "--excludes", "./file2.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text");
   }
 
   #[test]
@@ -1187,15 +1187,15 @@ mod test {
                     }"#,
           );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "/file1.txt", "/file2.txt_ps"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_custom-formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_custom-formatted2");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_custom-formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_custom-formatted2");
   }
 
   #[test]
@@ -1378,18 +1378,18 @@ mod test {
             }"#,
         );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
       .write_file("./excludes/file1.txt", "text4")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/sub_dir/dprint.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_custom-formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_custom-formatted2");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3_other-ending");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_custom-formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_custom-formatted2");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3_other-ending");
   }
 
   #[test]
@@ -1409,7 +1409,7 @@ mod test {
     run_test_cli(vec!["fmt", "-c", "/config.json", "/file1.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_custom-formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_custom-formatted");
   }
 
   #[test]
@@ -1445,8 +1445,8 @@ mod test {
         c.add_remote_wasm_plugin()
           .add_config_section("test-plugin", r#"{ "ending": "custom-formatted" }"#);
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
 
     run_test_cli(
@@ -1457,8 +1457,8 @@ mod test {
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_custom-formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_custom-formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_custom-formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_custom-formatted");
   }
 
   #[test]
@@ -1564,25 +1564,25 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
-      .write_file(&file_path4, "text4")
-      .write_file(&file_path5, "text5")
-      .write_file(&file_path6, "plugin: text6")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
+      .write_file(file_path4, "text4")
+      .write_file(file_path5, "text5")
+      .write_file(file_path6, "plugin: text6")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(6)]);
     // associations are additive, so the test plugin still matches its default `.txt` extension
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_wasm");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_wasm");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3_ps");
-    assert_eq!(environment.read_file(&file_path4).unwrap(), "text4_ps");
-    assert_eq!(environment.read_file(&file_path5).unwrap(), "text5_wasm");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_wasm");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_wasm");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3_ps");
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text4_ps");
+    assert_eq!(environment.read_file(file_path5).unwrap(), "text5_wasm");
     // this will request formatting a .txt_ps file, but should be caught be the associations
-    assert_eq!(environment.read_file(&file_path6).unwrap(), "plugin: text6_wasm_wasm");
+    assert_eq!(environment.read_file(file_path6).unwrap(), "plugin: text6_wasm_wasm");
   }
 
   #[test]
@@ -1655,23 +1655,23 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
-      .write_file(&file_path4, "text4")
-      .write_file(&file_path5, "text5")
-      .write_file(&file_path6, "plugin: text6")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
+      .write_file(file_path4, "text4")
+      .write_file(file_path5, "text5")
+      .write_file(file_path6, "plugin: text6")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(6)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_wasm_ps");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_wasm_ps");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3_wasm_ps");
-    assert_eq!(environment.read_file(&file_path4).unwrap(), "text4_wasm_ps");
-    assert_eq!(environment.read_file(&file_path5).unwrap(), "text5_wasm_ps");
-    assert_eq!(environment.read_file(&file_path6).unwrap(), "plugin: text6_wasm_ps_wasm_ps_ps");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_wasm_ps");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_wasm_ps");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3_wasm_ps");
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text4_wasm_ps");
+    assert_eq!(environment.read_file(file_path5).unwrap(), "text5_wasm_ps");
+    assert_eq!(environment.read_file(file_path6).unwrap(), "plugin: text6_wasm_ps_wasm_ps_ps");
   }
 
   #[test]
@@ -1700,17 +1700,17 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     // the additive plugin matches the file name, but doesn't claim the file from the wasm plugin
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_wasm_ps");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_wasm_ps");
     // not matched by the additive plugin
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_wasm");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_wasm");
   }
 
   #[test]
@@ -1739,13 +1739,13 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_ps_wasm");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_ps_wasm");
   }
 
   #[test]
@@ -1773,14 +1773,14 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     // no other plugin claims the file, so the additive plugin formats it on its own
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_ps");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_ps");
   }
 
   #[test]
@@ -1811,13 +1811,13 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_wasm_ps");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_wasm_ps");
   }
 
   #[test]
@@ -1847,13 +1847,13 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_wasm_ps");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_wasm_ps");
   }
 
   #[test]
@@ -1888,7 +1888,7 @@ mod test {
             }"##,
           );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
+      .write_file(script_path, "#!/bin/sh\ntext")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
@@ -1896,7 +1896,7 @@ mod test {
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     // the additive plugin matching by path doesn't stop the shebang from
     // routing the file to the plugin that claims it
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_wasm_ps");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_wasm_ps");
   }
 
   #[test]
@@ -1923,14 +1923,14 @@ mod test {
             }"#,
           );
       })
-      .write_file(&file_path, "text")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json", "--skip-stable-format"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     // associations say which files the additive plugin matches, but never make it claim one
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_wasm_ps");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_wasm_ps");
   }
 
   #[test]
@@ -1949,21 +1949,21 @@ mod test {
           }"##,
         );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
-      .write_file(&bash_path, "#!/usr/bin/env bash\ntext2")
+      .write_file(script_path, "#!/bin/sh\ntext")
+      .write_file(bash_path, "#!/usr/bin/env bash\ntext2")
       // no shebang, so it should be left alone
-      .write_file(&no_shebang_path, "text3")
+      .write_file(no_shebang_path, "text3")
       // has an extension the plugin doesn't match, so the shebang is ignored
-      .write_file(&has_ext_path, "#!/bin/sh\ntext4")
+      .write_file(has_ext_path, "#!/bin/sh\ntext4")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&bash_path).unwrap(), "#!/usr/bin/env bash\ntext2_formatted");
-    assert_eq!(environment.read_file(&no_shebang_path).unwrap(), "text3");
-    assert_eq!(environment.read_file(&has_ext_path).unwrap(), "#!/bin/sh\ntext4");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(bash_path).unwrap(), "#!/usr/bin/env bash\ntext2_formatted");
+    assert_eq!(environment.read_file(no_shebang_path).unwrap(), "text3");
+    assert_eq!(environment.read_file(has_ext_path).unwrap(), "#!/bin/sh\ntext4");
   }
 
   #[test]
@@ -1982,26 +1982,23 @@ mod test {
         );
       })
       // matches the more specific `deno run` entry (wasm plugin)
-      .write_file(&run_path, "#!/usr/bin/env deno run --allow-read\ntext")
+      .write_file(run_path, "#!/usr/bin/env deno run --allow-read\ntext")
       // only matches the `deno` entry (process plugin)
-      .write_file(&bare_path, "#!/usr/bin/env deno --version\ntext")
+      .write_file(bare_path, "#!/usr/bin/env deno --version\ntext")
       // `runtest` is not a word boundary match for `deno run`, so falls back to `deno`
-      .write_file(&runtest_path, "#!/usr/bin/env deno runtest\ntext")
+      .write_file(runtest_path, "#!/usr/bin/env deno runtest\ntext")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
+    assert_eq!(environment.read_file(run_path).unwrap(), "#!/usr/bin/env deno run --allow-read\ntext_formatted");
     assert_eq!(
-      environment.read_file(&run_path).unwrap(),
-      "#!/usr/bin/env deno run --allow-read\ntext_formatted"
-    );
-    assert_eq!(
-      environment.read_file(&bare_path).unwrap(),
+      environment.read_file(bare_path).unwrap(),
       "#!/usr/bin/env deno --version\ntext_formatted_process"
     );
     assert_eq!(
-      environment.read_file(&runtest_path).unwrap(),
+      environment.read_file(runtest_path).unwrap(),
       "#!/usr/bin/env deno runtest\ntext_formatted_process"
     );
   }
@@ -2020,13 +2017,13 @@ mod test {
         );
       })
       .write_file(
-        &script_path,
+        script_path,
         "#!/bin/sh
 text",
       )
       // extensionless files are discovered even when includes is specified
       .write_file(
-        &other_path,
+        other_path,
         "#!/bin/sh
 text2",
       )
@@ -2036,12 +2033,12 @@ text2",
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     assert_eq!(
-      environment.read_file(&script_path).unwrap(),
+      environment.read_file(script_path).unwrap(),
       "#!/bin/sh
 text_formatted"
     );
     assert_eq!(
-      environment.read_file(&other_path).unwrap(),
+      environment.read_file(other_path).unwrap(),
       "#!/bin/sh
 text2_formatted"
     );
@@ -2064,17 +2061,17 @@ text2_formatted"
           }"##,
           );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
+      .write_file(script_path, "#!/bin/sh\ntext")
       // excluded by a negated include pattern
-      .write_file(&vendor_path, "#!/bin/sh\ntext2")
-      .write_file(&other_path, "#!/bin/sh\ntext3")
+      .write_file(vendor_path, "#!/bin/sh\ntext2")
+      .write_file(other_path, "#!/bin/sh\ntext3")
       .build();
 
     // cli patterns restrict the files
     run_test_cli(vec!["fmt", "--config", "/config.json", "scripts/**"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&other_path).unwrap(), "#!/bin/sh\ntext3");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(other_path).unwrap(), "#!/bin/sh\ntext3");
 
     let err = run_test_cli(vec!["fmt", "--config", "/config.json", "--includes-override", "**/*.txt"], &environment)
       .err()
@@ -2084,8 +2081,8 @@ text2_formatted"
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&other_path).unwrap(), "#!/bin/sh\ntext3_formatted");
-    assert_eq!(environment.read_file(&vendor_path).unwrap(), "#!/bin/sh\ntext2");
+    assert_eq!(environment.read_file(other_path).unwrap(), "#!/bin/sh\ntext3_formatted");
+    assert_eq!(environment.read_file(vendor_path).unwrap(), "#!/bin/sh\ntext2");
   }
 
   #[test]
@@ -2101,12 +2098,12 @@ text2_formatted"
           }"##,
         );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
+      .write_file(script_path, "#!/bin/sh\ntext")
       .build();
 
     run_test_cli(vec!["fmt", "--incremental"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
 
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--incremental", "--log-level=debug"], &environment).unwrap();
@@ -2122,7 +2119,7 @@ text2_formatted"
     run_test_cli(vec!["fmt", "--incremental", "--log-level=debug"], &environment).unwrap();
     assert!(!environment.take_stderr_messages().iter().any(|msg| msg.contains(no_change_msg)));
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted_formatted_process");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted_formatted_process");
   }
 
   #[test]
@@ -2159,23 +2156,23 @@ text2_formatted"
       .with_local_config("/no_inherit/dprint.json", |c| {
         c.add_remote_wasm_plugin();
       })
-      .write_file(&root_path, "#!/bin/sh\ntext")
-      .write_file(&inherited_path, "#!/bin/sh\ntext")
-      .write_file(&overridden_sh_path, "#!/bin/sh\ntext")
-      .write_file(&overridden_bash_path, "#!/bin/bash\ntext")
-      .write_file(&not_inherited_path, "#!/bin/sh\ntext")
-      .write_file(&not_inherited_txt_path, "text")
+      .write_file(root_path, "#!/bin/sh\ntext")
+      .write_file(inherited_path, "#!/bin/sh\ntext")
+      .write_file(overridden_sh_path, "#!/bin/sh\ntext")
+      .write_file(overridden_bash_path, "#!/bin/bash\ntext")
+      .write_file(not_inherited_path, "#!/bin/sh\ntext")
+      .write_file(not_inherited_txt_path, "text")
       .build();
 
     run_test_cli(vec!["fmt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(4)]);
-    assert_eq!(environment.read_file(&root_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&inherited_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&overridden_sh_path).unwrap(), "#!/bin/sh\ntext");
-    assert_eq!(environment.read_file(&overridden_bash_path).unwrap(), "#!/bin/bash\ntext_formatted");
-    assert_eq!(environment.read_file(&not_inherited_path).unwrap(), "#!/bin/sh\ntext");
-    assert_eq!(environment.read_file(&not_inherited_txt_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(root_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(inherited_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(overridden_sh_path).unwrap(), "#!/bin/sh\ntext");
+    assert_eq!(environment.read_file(overridden_bash_path).unwrap(), "#!/bin/bash\ntext_formatted");
+    assert_eq!(environment.read_file(not_inherited_path).unwrap(), "#!/bin/sh\ntext");
+    assert_eq!(environment.read_file(not_inherited_txt_path).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -2200,15 +2197,15 @@ text2_formatted"
           );
       })
       // matched by the wasm plugin's associations, so the shebang isn't used
-      .write_file(&script_path, "#!/bin/sh\ntext")
-      .write_file(&other_path, "#!/bin/sh\ntext2")
+      .write_file(script_path, "#!/bin/sh\ntext")
+      .write_file(other_path, "#!/bin/sh\ntext2")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&other_path).unwrap(), "#!/bin/sh\ntext2_formatted_process");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(other_path).unwrap(), "#!/bin/sh\ntext2_formatted_process");
   }
 
   #[test]
@@ -2224,15 +2221,15 @@ text2_formatted"
           }"##,
         );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
-      .write_file(&file_path, "text")
+      .write_file(script_path, "#!/bin/sh\ntext")
+      .write_file(file_path, "text")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext");
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -2249,17 +2246,17 @@ text2_formatted"
           }"##,
         );
       })
-      .write_file(&script_path, "#!/bin/sh\ntext")
-      .write_file(&crlf_path, "#!/bin/sh\r\ntext")
-      .write_file(&dotfile_path, "#!/bin/sh\ntext")
+      .write_file(script_path, "#!/bin/sh\ntext")
+      .write_file(crlf_path, "#!/bin/sh\r\ntext")
+      .write_file(dotfile_path, "#!/bin/sh\ntext")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-    assert_eq!(environment.read_file(&script_path).unwrap(), "#!/bin/sh\ntext_formatted");
-    assert_eq!(environment.read_file(&crlf_path).unwrap(), "#!/bin/sh\r\ntext_formatted");
-    assert_eq!(environment.read_file(&dotfile_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(script_path).unwrap(), "#!/bin/sh\ntext_formatted");
+    assert_eq!(environment.read_file(crlf_path).unwrap(), "#!/bin/sh\r\ntext_formatted");
+    assert_eq!(environment.read_file(dotfile_path).unwrap(), "#!/bin/sh\ntext_formatted");
   }
 
   #[test]
@@ -2285,13 +2282,13 @@ text2_formatted"
           );
       })
       .write_file(
-        &script_path,
+        script_path,
         "#!/bin/sh
 text",
       )
       // excluded by a negated association pattern on its real path
       .write_file(
-        &excluded_path,
+        excluded_path,
         "#!/bin/sh
 text2",
       )
@@ -2301,12 +2298,12 @@ text2",
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(
-      environment.read_file(&script_path).unwrap(),
+      environment.read_file(script_path).unwrap(),
       "#!/bin/sh
 text_formatted"
     );
     assert_eq!(
-      environment.read_file(&excluded_path).unwrap(),
+      environment.read_file(excluded_path).unwrap(),
       "#!/bin/sh
 text2"
     );
@@ -2387,15 +2384,15 @@ text2"
             }"#,
         );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_wasm");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2"); // ignored
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_wasm");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2"); // ignored
   }
 
   #[test]
@@ -2415,17 +2412,17 @@ text2"
             }"#,
         );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_wasm"); // default extension kept
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_wasm"); // added via associations
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3"); // not matched
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_wasm"); // default extension kept
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_wasm"); // added via associations
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3"); // not matched
   }
 
   #[test]
@@ -2445,15 +2442,15 @@ text2"
             }"#,
         );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text"); // default `.txt` cancelled by `!**/*.txt`
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_wasm"); // added via associations
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text"); // default `.txt` cancelled by `!**/*.txt`
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_wasm"); // added via associations
   }
 
   #[test]
@@ -2483,23 +2480,23 @@ text2"
             }"#,
           );
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
-      .write_file(&file_path4, "text4")
-      .write_file(&file_path5, "text5")
-      .write_file(&file_path6, "text6")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
+      .write_file(file_path4, "text4")
+      .write_file(file_path5, "text5")
+      .write_file(file_path6, "text6")
       .build();
 
     run_test_cli(vec!["fmt", "--config", "/config.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(4)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3_formatted");
-    assert_eq!(environment.read_file(&file_path4).unwrap(), "text4_formatted_process");
-    assert_eq!(environment.read_file(&file_path5).unwrap(), "text5_formatted");
-    assert_eq!(environment.read_file(&file_path6).unwrap(), "text6_formatted_process");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3_formatted");
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text4_formatted_process");
+    assert_eq!(environment.read_file(file_path5).unwrap(), "text5_formatted");
+    assert_eq!(environment.read_file(file_path6).unwrap(), "text6_formatted_process");
   }
 
   #[test]
@@ -2872,7 +2869,7 @@ text2"
       .with_local_config("/test/other/dprint.json", |c| {
         c.add_includes("asdf/**/*.txt").add_remote_wasm_plugin();
       })
-      .write_file(&file_path, "text1")
+      .write_file(file_path, "text1")
       .set_cwd("/test/other/")
       .initialize()
       .build();
@@ -2880,7 +2877,7 @@ text2"
     run_test_cli(vec!["fmt", "--", "/test/other/asdf/file1.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text1_formatted");
   }
 
   #[test]
@@ -3788,8 +3785,8 @@ text2"
     run_test_cli(vec!["fmt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
   }
 
   #[test]
@@ -3812,8 +3809,8 @@ text2"
       run_test_cli(vec!["fmt"], &environment).unwrap();
 
       assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-      assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
-      assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
+      assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
+      assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
     }
   }
 
@@ -3842,8 +3839,8 @@ text2"
     let file_path2 = "/file2.txt";
     for includes in [Some("**/*.txt"), None] {
       let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-        .write_file(&file_path1, "text1")
-        .write_file(&file_path2, "text2")
+        .write_file(file_path1, "text1")
+        .write_file(file_path2, "text2")
         .with_default_config(|c| {
           c.add_remote_wasm_plugin();
           if let Some(includes) = includes {
@@ -3855,8 +3852,8 @@ text2"
       run_test_cli(vec!["fmt", "/file1.txt"], &environment).unwrap();
 
       assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-      assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
-      assert_eq!(environment.read_file(&file_path2).unwrap(), "text2");
+      assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
+      assert_eq!(environment.read_file(file_path2).unwrap(), "text2");
     }
   }
 
@@ -3866,9 +3863,9 @@ text2"
     let file_path2 = "/file2.txt";
     let file_path3 = "/file3.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
+      .write_file(file_path1, "text1")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
       .with_default_config(|c| {
         c.add_excludes("/file1.txt").add_remote_wasm_plugin();
       })
@@ -3878,9 +3875,9 @@ text2"
     run_test_cli(vec!["fmt", "--excludes", "/file2.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3_formatted");
   }
 
   #[test]
@@ -3888,8 +3885,8 @@ text2"
     let file_path1 = "/file1.txt";
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text1")
+      .write_file(file_path2, "text2")
       .with_default_config(|c| {
         c.add_excludes("/file1.txt").add_remote_wasm_plugin();
       })
@@ -3899,15 +3896,15 @@ text2"
     run_test_cli(vec!["fmt", "--excludes-override", "/file2.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2");
   }
 
   #[test]
   fn should_support_clearing_config_excludes_with_cli_excludes_override_arg() {
     let file_path1 = "/file1.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .with_default_config(|c| {
         c.add_excludes("/file1.txt").add_remote_wasm_plugin();
       })
@@ -3917,7 +3914,7 @@ text2"
     run_test_cli(vec!["fmt", "--excludes-override="], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
   }
 
   #[test]
@@ -3971,7 +3968,7 @@ text2"
   fn should_not_format_explicitly_specified_file_when_excluded() {
     let file_path1 = "/file1.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .with_default_config(|c| {
         c.add_excludes("/file1.txt").add_remote_wasm_plugin();
       })
@@ -4042,10 +4039,10 @@ text2"
     let file_path3 = "/sub/file3.txt";
     let file_path4 = "/sub/file4.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
-      .write_file(&file_path2, "text2")
-      .write_file(&file_path3, "text3")
-      .write_file(&file_path4, "text4")
+      .write_file(file_path1, "text1")
+      .write_file(file_path2, "text2")
+      .write_file(file_path3, "text3")
+      .write_file(file_path4, "text4")
       .with_default_config(|c| {
         c.add_includes("/sub/**/*.txt").add_excludes("/sub/file4.txt").add_remote_wasm_plugin();
       })
@@ -4054,10 +4051,10 @@ text2"
     run_test_cli(vec!["fmt", "--excludes", "/sub/file3.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text3");
-    assert_eq!(environment.read_file(&file_path4).unwrap(), "text4");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text3");
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text4");
   }
 
   #[test]
@@ -4065,8 +4062,8 @@ text2"
     let file_path1 = "/sub/file1.txt";
     let file_path2 = "/sub/file2.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text1")
+      .write_file(file_path2, "text2")
       .with_default_config(|c| {
         c.add_includes("/sub/**/*.txt").add_remote_wasm_plugin();
       })
@@ -4075,8 +4072,8 @@ text2"
     run_test_cli(vec!["fmt", "/sub/file2.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2_formatted");
   }
 
   #[test]
@@ -4084,8 +4081,8 @@ text2"
     let file_path1 = "/file1.txt";
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
-      .write_file(&file_path1, "text1")
-      .write_file(&file_path2, "text2")
+      .write_file(file_path1, "text1")
+      .write_file(file_path2, "text2")
       .with_default_config(|c| {
         c.add_includes("/file2.txt").add_excludes("/file1.txt").add_remote_wasm_plugin();
       })
@@ -4098,8 +4095,8 @@ text2"
     .unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text2");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text2");
   }
 
   #[test]
@@ -4124,11 +4121,11 @@ text2"
     run_test_cli(vec!["fmt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text");
-    assert_eq!(environment.read_file(&sub_dir_file_path2).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&sub_dir_file_path3).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text");
+    assert_eq!(environment.read_file(sub_dir_file_path2).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(sub_dir_file_path3).unwrap(), "text");
   }
 
   #[test]
@@ -4181,7 +4178,7 @@ text2"
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -4195,13 +4192,13 @@ text2"
           config_file.add_remote_wasm_plugin().add_includes("**/*.txt");
         })
         .initialize()
-        .write_file(&file_path, "text")
+        .write_file(file_path, "text")
         .build();
       environment.set_cwd("/test/other/");
       run_test_cli(vec!["fmt"], &environment).unwrap();
       assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
       assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
-      assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
+      assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
     }
   }
 
@@ -4234,19 +4231,26 @@ text2"
       assert_eq!(compiled_modules.len(), 1);
       environment.write_file_bytes(&compiled_modules[0], b"broken").unwrap();
     };
-    let compiling = vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string()];
+    let compiling = |bytes| {
+      vec![
+        format!("Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 ({} bytes).", bytes),
+        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
+      ]
+    };
 
     // there's nothing to format, so the plugin isn't loaded
     break_compiled_module();
+    environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some("0"));
     run_test_cli(vec!["fmt"], &environment).unwrap();
     run_test_cli(vec!["check"], &environment).unwrap();
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", None);
 
     // a changed file loads it
     environment.write_file(file_path, "changed").unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.read_file(file_path).unwrap(), "changed_formatted");
-    assert_eq!(environment.take_stderr_messages(), compiling);
+    assert_eq!(environment.take_stderr_messages(), compiling(7));
 
     // and so does a configuration it hasn't resolved before
     break_compiled_module();
@@ -4259,7 +4263,7 @@ text2"
     environment.write_file(file_path, "text").unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.read_file(file_path).unwrap(), "text_custom");
-    assert_eq!(environment.take_stderr_messages(), compiling);
+    assert_eq!(environment.take_stderr_messages(), compiling(4));
     environment.clear_logs();
 
     // which it then knows without loading it
@@ -4276,7 +4280,7 @@ text2"
       .with_default_config(|c| {
         c.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .initialize()
       .build();
 
@@ -4284,18 +4288,18 @@ text2"
     run_test_cli(vec!["fmt", "--incremental"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
 
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--incremental", "--log-level=debug"], &environment).unwrap();
     assert_eq!(environment.take_stderr_messages().iter().any(|msg| msg.contains(no_change_msg)), true);
 
     // update the file and ensure it's formatted
-    environment.write_file(&file_path1, "asdf").unwrap();
+    environment.write_file(file_path1, "asdf").unwrap();
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--incremental"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "asdf_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "asdf_formatted");
 
     // update the global config and ensure it's formatted
     environment
@@ -4328,7 +4332,7 @@ text2"
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--incremental"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "asdf_formatted_custom-formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "asdf_formatted_custom-formatted");
 
     // Try this a few times. There was a bug where the config hashmap was being serialized causing
     // random order and the hash to be new each time.
@@ -4504,13 +4508,13 @@ text2"
       .with_default_config(|c| {
         c.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .build();
 
     // first run with a valid config -- caches the file as formatted
     run_test_cli(vec!["fmt", "--incremental"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
 
     // now introduce a config diagnostic (unknown property)
     environment
@@ -4555,13 +4559,13 @@ text2"
         c.add_remote_wasm_plugin().set_incremental(true);
       })
       .initialize()
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .build();
 
     run_test_cli(vec!["fmt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
 
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--log-level=debug"], &environment).unwrap();
@@ -4622,7 +4626,7 @@ text2"
   fn incremental_should_error_for_unstable_format() {
     let file_path1 = "/file1.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "unstable_fmt_true")
+      .write_file(file_path1, "unstable_fmt_true")
       .build();
 
     let result = run_test_cli(vec!["fmt", "--incremental"], &environment).err().unwrap();
@@ -4644,7 +4648,7 @@ text2"
   fn incremental_should_error_for_unstable_format_that_errors() {
     let file_path1 = "/file1.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "unstable_fmt_then_error")
+      .write_file(file_path1, "unstable_fmt_then_error")
       .build();
 
     let result = run_test_cli(vec!["fmt", "--incremental"], &environment).err().unwrap();
@@ -4671,7 +4675,7 @@ text2"
       .with_default_config(|c| {
         c.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, "text1_formatted")
+      .write_file(file_path1, "text1_formatted")
       .initialize()
       .build();
 
@@ -4696,14 +4700,14 @@ text2"
       .with_default_config(|c| {
         c.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, "text1")
+      .write_file(file_path1, "text1")
       .initialize()
       .build();
 
     run_test_cli(vec!["fmt", "--incremental=false"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
 
     environment.clear_logs();
     run_test_cli(vec!["fmt", "--incremental=false", "--log-level=debug"], &environment).unwrap();
@@ -4714,13 +4718,13 @@ text2"
   fn allow_skipping_stable_format() {
     let file_path1 = "/file1.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path1, "unstable_fmt_true")
+      .write_file(file_path1, "unstable_fmt_true")
       .build();
 
     run_test_cli(vec!["fmt", "--skip-stable-format", "*.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "unstable_fmt_false_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "unstable_fmt_false_formatted");
   }
 
   #[test]
@@ -4754,7 +4758,7 @@ text2"
   fn should_not_output_when_no_files_need_formatting_for_check() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "text_formatted")
+      .write_file(file_path, "text_formatted")
       .build();
     run_test_cli(vec!["check", "/file.txt"], &environment).unwrap();
   }
@@ -4865,21 +4869,21 @@ text2"
   fn should_fail_on_change_when_files_formatted() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "const t=4;")
+      .write_file(file_path, "const t=4;")
       .build();
     let err = run_test_cli(vec!["fmt", "--fail-on-change", "/file.txt"], &environment).unwrap_err();
     err.assert_exit_code(20);
     assert_eq!(err.to_string(), get_singular_check_text());
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     // file should still be formatted
-    assert_eq!(environment.read_file(&file_path).unwrap(), "const t=4;_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "const t=4;_formatted");
   }
 
   #[test]
   fn should_not_fail_on_change_when_no_files_formatted() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "text_formatted")
+      .write_file(file_path, "text_formatted")
       .build();
     run_test_cli(vec!["fmt", "--fail-on-change", "/file.txt"], &environment).unwrap();
     assert!(environment.take_stdout_messages().is_empty());
@@ -4889,11 +4893,11 @@ text2"
   fn should_handle_bom() {
     let file_path = "/file.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-      .write_file(&file_path, "\u{FEFF}text")
+      .write_file(file_path, "\u{FEFF}text")
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "\u{FEFF}text_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "\u{FEFF}text_formatted");
   }
 
   #[test]
@@ -5374,24 +5378,24 @@ text_formatted"
       .with_local_config("/sub_dir/more/dprint.json", |config| {
         config.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, "plugin: plugin: format this text")
-      .write_file(&file_path2, "plugin: plugin: format this other text")
-      .write_file(&file_path3, "ignored")
-      .write_file(&file_path4, "text")
-      .write_file(&file_path5, "ignored")
+      .write_file(file_path1, "plugin: plugin: format this text")
+      .write_file(file_path2, "plugin: plugin: format this other text")
+      .write_file(file_path3, "ignored")
+      .write_file(file_path4, "text")
+      .write_file(file_path5, "ignored")
       .build();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
     assert_eq!(
-      environment.read_file(&file_path1).unwrap(),
+      environment.read_file(file_path1).unwrap(),
       "plugin: plugin: format this text_formatted_formatted_process_formatted"
     );
     assert_eq!(
-      environment.read_file(&file_path2).unwrap(),
+      environment.read_file(file_path2).unwrap(),
       "plugin: plugin: format this other text_custom-formatted1_custom-formatted2_custom-formatted1"
     );
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "ignored");
-    assert_eq!(environment.read_file(&file_path4).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "ignored");
+    assert_eq!(environment.read_file(file_path4).unwrap(), "text_formatted");
   }
 
   #[test]
@@ -5411,16 +5415,16 @@ text_formatted"
       .with_local_config("/sub_dir/nested/dprint.json", |config| {
         config.set_inherit(true);
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text")
-      .write_file(&file_path3, "text")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
+      .write_file(file_path3, "text")
       .build();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_root");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_sub");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_root");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_sub");
     // the nested config inherits the merged ancestor config (sub_dir, then root)
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text_sub");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text_sub");
   }
 
   #[test]
@@ -5435,16 +5439,16 @@ text_formatted"
       .with_local_config("/sub_dir/dprint.json", |config| {
         config.set_inherit(true);
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text")
-      .write_file(&file_path3, "text")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
+      .write_file(file_path3, "text")
       .build();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_formatted");
     // the ancestor's "**/skip" exclude is inherited and still matches in the nested scope
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text");
   }
 
   #[test]
@@ -5460,8 +5464,8 @@ text_formatted"
       .with_local_config("/sub_dir/dprint.json", |config| {
         config.add_config_section("test-plugin", r#"{ "ending": "sub" }"#);
       })
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
       .build();
     let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
     assert_eq!(
@@ -5489,20 +5493,20 @@ text_formatted"
         config.set_inherit(true).add_remote_process_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "text")
-      .write_file(&file_path2, "text")
-      .write_file(&file_path3, "text")
+      .write_file(file_path1, "text")
+      .write_file(file_path2, "text")
+      .write_file(file_path3, "text")
       .build();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(3)]);
     // the process plugin is only used in the nested scope, so it's extracted lazily there
     assert_eq!(environment.take_stderr_messages(), vec!["Extracting zip for test-process-plugin"]);
     // only the wasm plugin in the root scope
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text_formatted");
     // the nested scope inherits the wasm plugin
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "text_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "text_formatted");
     // ...and additionally has the process plugin it specified (handles .txt_ps)
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "text_formatted_process");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "text_formatted_process");
   }
 
   #[test]
@@ -5517,16 +5521,16 @@ text_formatted"
       .with_local_config("/sub_dir/more/dprint.json", |config| {
         config.add_remote_process_plugin();
       })
-      .write_file(&file_path1, "here1")
-      .write_file(&file_path2, "here2")
-      .write_file(&file_path3, "here3")
+      .write_file(file_path1, "here1")
+      .write_file(file_path2, "here2")
+      .write_file(file_path3, "here3")
       .build();
     // previously this was erroring in the sub directory
     run_test_cli(vec!["fmt", "**/*.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "here1_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "here2_formatted");
-    assert_eq!(environment.read_file(&file_path3).unwrap(), "here3");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "here1_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "here2_formatted");
+    assert_eq!(environment.read_file(file_path3).unwrap(), "here3");
 
     // now try with a pattern that doesn't match any file in any scope and it should error
     let err = run_test_cli(vec!["fmt", "**/*.no_matching"], &environment).unwrap_err();
@@ -5606,7 +5610,7 @@ text_formatted"
       .with_local_config("/sub_dir/dprint.json", |config| {
         config.add_remote_wasm_plugin().add_remote_process_plugin();
       })
-      .write_file(&file_path1, "format this text")
+      .write_file(file_path1, "format this text")
       .build();
     let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
     assert_eq!(
@@ -5624,7 +5628,7 @@ text_formatted"
       .with_local_config("/dprint.json", |config| {
         config.add_remote_wasm_plugin();
       })
-      .write_file(&file_path1, &format!("format_to_empty {}", "a".repeat(400)))
+      .write_file(file_path1, format!("format_to_empty {}", "a".repeat(400)))
       .build();
     let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
     assert_eq!(err.to_string(), "Had 1 error formatting.");
@@ -5648,13 +5652,13 @@ text_formatted"
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
       // these will both go to stderr actually
-      .write_file(&file_path1, "stdout: hi stdout")
-      .write_file(&file_path2, "stderr: hi stderr")
+      .write_file(file_path1, "stdout: hi stdout")
+      .write_file(file_path2, "stderr: hi stderr")
       .build();
     run_test_cli(vec!["fmt", "*.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "stdout: hi stdout_formatted");
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "stderr: hi stderr_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "stdout: hi stdout_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "stderr: hi stderr_formatted");
     assert_eq!(
       {
         let mut messages = environment.take_stderr_messages();
@@ -5671,7 +5675,7 @@ text_formatted"
     let file_path1 = "/file1.txt";
     {
       let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-        .write_file(&file_path1, "hello")
+        .write_file(file_path1, "hello")
         .build();
       environment.set_env_var("DPRINT_CONFIG_DISCOVERY", Some("false"));
       {
@@ -5679,7 +5683,7 @@ text_formatted"
         err.assert_exit_code(11);
         assert_eq!(
           err.to_string(),
-          concat!("Config discovery was disabled and no plugins (--plugins <url/path>) and/or config (--config <path>) was specified.",)
+          "Config discovery was disabled and no plugins (--plugins <url/path>) and/or config (--config <path>) was specified."
         );
       }
       // override env
@@ -5691,7 +5695,7 @@ text_formatted"
     // specified config
     {
       let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
-        .write_file(&file_path1, "hello")
+        .write_file(file_path1, "hello")
         .build();
       run_test_cli(vec!["fmt", "--config-discovery=false", "--config", "dprint.json"], &environment).unwrap();
       assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
@@ -5706,7 +5710,7 @@ text_formatted"
             .add_config_section("test-plugin", r#"{ "ending": "custom-formatted1" }"#);
         })
         .initialize()
-        .write_file(&file_path1, "hello")
+        .write_file(file_path1, "hello")
         .build();
       run_test_cli(
         vec!["fmt", "--config-discovery=false", "--plugins", "https://plugins.dprint.dev/test-plugin.wasm"],
@@ -5715,7 +5719,7 @@ text_formatted"
       .unwrap();
       assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
       // should ignore the test-plugin config
-      assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+      assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
     }
   }
 
@@ -5734,24 +5738,24 @@ text_formatted"
           .add_config_section("test-plugin", r#"{ "ending": "custom-formatted1" }"#);
       })
       .initialize()
-      .write_file(&file_path1, "hello")
-      .write_file(&file_path2, "hello2")
+      .write_file(file_path1, "hello")
+      .write_file(file_path2, "hello2")
       .build();
     environment.set_env_var("DPRINT_CONFIG_DISCOVERY", Some("ignore-descendants"));
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
     // should ignore the config in this sub folder
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "hello2_formatted");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "hello2_formatted");
 
     // now try via cli flag
     environment.set_env_var("DPRINT_CONFIG_DISCOVERY", None);
     run_test_cli(vec!["fmt", "--config-discovery=ignore-descendants"], &environment).unwrap();
 
-    environment.write_file(&file_path2, "hello2").unwrap();
+    environment.write_file(file_path2, "hello2").unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path2).unwrap(), "hello2_custom-formatted1");
+    assert_eq!(environment.read_file(file_path2).unwrap(), "hello2_custom-formatted1");
   }
 
   #[test]
@@ -5763,11 +5767,11 @@ text_formatted"
         config_file.add_remote_wasm_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     run_test_cli(vec!["fmt", "--config-discovery=global"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
   }
 
   #[test]
@@ -5776,7 +5780,7 @@ text_formatted"
     let environment = TestEnvironmentBuilder::new()
       .add_remote_wasm_plugin()
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     let err = run_test_cli(vec!["fmt", "--config-discovery=global"], &environment).unwrap_err();
     err.assert_exit_code(11);
@@ -5795,12 +5799,12 @@ text_formatted"
         config_file.add_remote_wasm_plugin().add_includes("**/*.txt");
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     environment.set_confirm_results(vec![Ok(Some(true))]);
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
     let stderr_messages = environment.take_stderr_messages();
     let prompt_message = stderr_messages.iter().find(|msg| msg.contains("You're not in a dprint project"));
     assert!(prompt_message.is_some(), "Expected prompt message not found in stderr");
@@ -5818,13 +5822,13 @@ text_formatted"
         config_file.add_remote_wasm_plugin().add_includes("**/*.txt");
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     environment.set_confirm_results(vec![Ok(Some(false))]);
     let err = run_test_cli(vec!["fmt"], &environment).unwrap_err();
     err.assert_exit_code(11);
     assert_eq!(err.to_string(), "Confirmation cancelled.");
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello");
     let stderr_messages = environment.take_stderr_messages();
     let prompt_message = stderr_messages.iter().find(|msg| msg.contains("You're not in a dprint project"));
     assert!(prompt_message.is_some(), "Expected prompt message not found in stderr");
@@ -5842,11 +5846,11 @@ text_formatted"
         config_file.add_remote_wasm_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     run_test_cli(vec!["fmt", "."], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
   }
 
   #[test]
@@ -5858,11 +5862,11 @@ text_formatted"
         config_file.add_remote_wasm_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     run_test_cli(vec!["fmt", "**"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
   }
 
   #[test]
@@ -5874,7 +5878,7 @@ text_formatted"
         config_file.add_remote_wasm_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     environment.set_terminal_interactive(false);
     let err = run_test_cli(vec!["fmt"], &environment).unwrap_err();
@@ -5883,7 +5887,7 @@ text_formatted"
       err.to_string(),
       "Did not format directory without configuration file. Run `dprint fmt .` or `dprint fmt --config-discovery=global` to bypass this error."
     );
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello");
   }
 
   #[test]
@@ -5895,11 +5899,11 @@ text_formatted"
         config_file.add_remote_wasm_plugin();
       })
       .initialize()
-      .write_file(&file_path1, "hello")
+      .write_file(file_path1, "hello")
       .build();
     run_test_cli(vec!["fmt", "--config-discovery=global"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "hello_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "hello_formatted");
   }
 
   // ---- npm: plugin specifiers ----
@@ -5934,7 +5938,7 @@ text_formatted"
 
     // tarball should be extracted under the registry-scoped cache dir
     let extract_dir = environment.get_cache_dir().join("npm").join("registry.npmjs.org").join("test-plugin@1.0.0");
-    assert!(environment.path_exists(&extract_dir.join("plugin.wasm")));
+    assert!(environment.path_exists(extract_dir.join("plugin.wasm")));
 
     let _ = environment.take_stderr_messages(); // drain wasm-compile progress
   }
@@ -6146,7 +6150,7 @@ text_formatted"
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process", packument.to_string().into_bytes());
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz", tarball);
 
-    let err = run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).err().expect("expected an error");
+    let err = run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).expect_err("expected an error");
     err.assert_exit_code(12);
     let msg = format!("{err:#}");
     assert!(msg.contains("Network references aren't allowed"), "got: {msg}");
