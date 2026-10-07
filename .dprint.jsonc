@@ -22,6 +22,14 @@
     "spaceAroundPipe": true,
     "spaceAfterSeparator": true
   },
+  "typescript": {
+    "module.sortImportDeclarations": "maintain",
+    "module.sortExportDeclarations": "maintain",
+    "exportDeclaration.sortNamedExports": "maintain",
+    "exportDeclaration.sortTypeOnlyExports": "none",
+    "importDeclaration.sortNamedImports": "maintain",
+    "importDeclaration.sortTypeOnlyImports": "none"
+  },
   "excludes": [
     "website/playground/dist",
     "website/_site",

@@ -11,9 +11,7 @@ export function addInstallTabsEvent() {
   const tabs = document.querySelectorAll(".os-tab");
   const cmdText = document.getElementById("cmd-text");
   const copyBtn = document.getElementById("copy-btn");
-  if (tabs.length === 0 || cmdText == null) {
-    return; // not on the home page
-  }
+  if (tabs.length === 0 || cmdText == null) return; // not on the home page
 
   tabs.forEach(function(tab) {
     tab.addEventListener("click", function() {
@@ -22,26 +20,29 @@ export function addInstallTabsEvent() {
       });
       tab.classList.add("active");
       const os = tab.getAttribute("data-os");
-      if (commands[os] != null) {
-        cmdText.textContent = commands[os];
-      }
-      if (copyBtn != null) {
-        copyBtn.textContent = "copy";
-      }
+      if (commands[os] != null) cmdText.textContent = commands[os];
+      if (copyBtn != null) copyBtn.textContent = "copy";
     });
   });
 
   if (copyBtn != null) {
     let copyTimeout;
-    copyBtn.addEventListener("click", function() {
-      if (navigator.clipboard != null) {
-        navigator.clipboard.writeText(cmdText.textContent).catch(function() {});
-      }
-      copyBtn.textContent = "copied ✓";
+    copyBtn.addEventListener("click", async function() {
       clearTimeout(copyTimeout);
-      copyTimeout = setTimeout(function() {
-        copyBtn.textContent = "copy";
-      }, 1600);
+      copyBtn.disabled = true;
+      const command = cmdText.textContent;
+      try {
+        if (navigator.clipboard == null) throw new Error("Clipboard is unavailable.");
+        await navigator.clipboard.writeText(command);
+        if (cmdText.textContent === command) copyBtn.textContent = "copied ✓";
+      } catch {
+        if (cmdText.textContent === command) copyBtn.textContent = "copy failed";
+      } finally {
+        copyBtn.disabled = false;
+        copyTimeout = setTimeout(function() {
+          copyBtn.textContent = "copy";
+        }, 1600);
+      }
     });
   }
 }

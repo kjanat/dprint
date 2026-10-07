@@ -1,6 +1,6 @@
+import { getLatestPluginVersion } from "./plugin-repository.js";
+
 // Replaces plugin links with the latest version.
-const pluginInfoUrl = "https://plugins.dprint.dev/info.json";
-const schemaVersion = 4;
 
 // Pre-compute quoted placeholder URLs at module load time
 const pluginPlaceholders = new Map([
@@ -24,37 +24,26 @@ const pluginPlaceholders = new Map([
   ["\"https://plugins.dprint.dev/jolars/fatou-vx.x.x.wasm\"", "jolars/fatou"],
 ]);
 
-export function replacePluginUrls() {
+export const replacePluginUrls = () => {
   const elements = getPluginUrlElements();
-  if (elements.length > 0) {
-    getPluginInfo().then((pluginUrls) => {
-      for (const element of elements) {
-        const pluginName = pluginPlaceholders.get(element.textContent);
-        const url = pluginUrls.get(pluginName);
-        if (url != null) {
-          element.textContent = "\"" + url + "\"";
-        } else if (pluginName != null) {
-          // some plugins (ex. jakebailey/gofumpt) aren't listed in info.json, so
-          // fall back to the plugin's own latest.json to resolve the newest url
-          getLatestPluginUrl(pluginName).then((fallbackUrl) => {
-            if (fallbackUrl != null) {
-              element.textContent = "\"" + fallbackUrl + "\"";
-            }
-          });
-        }
-      }
+  for (const element of elements) {
+    const pluginName = pluginPlaceholders.get(element.textContent);
+    getLatestPluginUrl(pluginName).then((url) => {
+      element.textContent = "\"" + url + "\"";
+    }).catch((err) => {
+      console.error("Error updating plugin URLs.", err);
     });
   }
-}
+};
 
-function getLatestPluginUrl(pluginName) {
-  return fetch("https://plugins.dprint.dev/" + pluginName + "/latest.json")
-    .then((response) => (response.ok ? response.json() : null))
-    .then((data) => (data == null ? null : data.url))
-    .catch(() => null);
-}
+const getLatestPluginUrl = async (pluginName) => {
+  const version = await getLatestPluginVersion(pluginName);
+  const pluginPath = pluginName.replace(/^dprint-plugin-/, "").replace("/dprint-plugin-", "/");
+  const tag = pluginName.includes("/") ? "v" + version : version;
+  return "https://plugins.dprint.dev/" + pluginPath + "-" + tag + ".wasm";
+};
 
-function getPluginUrlElements() {
+const getPluginUrlElements = () => {
   const stringElements = document.getElementsByClassName("hljs-string");
   const result = [];
   for (let i = 0; i < stringElements.length; i++) {
@@ -64,20 +53,4 @@ function getPluginUrlElements() {
     }
   }
   return result;
-}
-
-function getPluginInfo() {
-  return fetch(pluginInfoUrl)
-    .then((response) => response.json())
-    .then((data) => {
-      if (data.schemaVersion !== schemaVersion) {
-        throw new Error("Expected schema version " + schemaVersion + ", but found " + data.schemaVersion);
-      }
-
-      const result = new Map();
-      for (const pluginInfo of data.latest) {
-        result.set(pluginInfo.name, pluginInfo.url);
-      }
-      return result;
-    });
-}
+};

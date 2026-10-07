@@ -1,5 +1,7 @@
+import { getPluginSchemaUrl } from "./plugin-repository.js";
+
 // generates the plugin config table
-export function replaceConfigTable() {
+const replaceConfigTable = () => {
   const items = getPluginConfigTableItems();
   if (items.length > 0) {
     items.forEach(function(item) {
@@ -13,9 +15,7 @@ export function replaceConfigTable() {
           try {
             // title
             const propertyTitle = document.createElement("h2");
-            if (isOfficial && property.name === "preferSingleLine") {
-              property.name += " (Very Experimental)";
-            }
+            if (isOfficial && property.name === "preferSingleLine") property.name += " (Very Experimental)";
             propertyTitle.textContent = property.name;
             propertyContainer.appendChild(propertyTitle);
 
@@ -39,9 +39,7 @@ export function replaceConfigTable() {
 
                 if (definition != null) {
                   const definitionDiv = document.createElement("div");
-                  if (definition.description !== property.description) {
-                    addDescription(definitionDiv, definition);
-                  }
+                  if (definition.description !== property.description) addDescription(definitionDiv, definition);
                   addInfoContainer(definitionDiv, definition);
                   propertyNameLi.appendChild(definitionDiv);
                 }
@@ -110,89 +108,76 @@ export function replaceConfigTable() {
           }
           return value.toString();
         }
+      }).catch((err) => {
+        console.error("Error loading plugin configuration.", err);
+        item.element.textContent = "Unable to load configuration information. Please try again later.";
       });
     });
   }
-}
+};
 
 function getPluginConfigTableItems() {
   const result = [];
   const elements = document.getElementsByClassName("plugin-config-table");
   for (let i = 0; i < elements.length; i++) {
     const element = elements.item(i);
-    result.push({
-      element,
-      url: element.dataset.url,
-    });
+    const { url } = element.dataset;
+    result.push({ element, url });
   }
   return result;
 }
 
-function getDprintPluginConfig(configSchemaUrl) {
-  return fetch(configSchemaUrl).then((response) => {
-    return response.json();
-  }).then((json) => {
-    const properties = {};
-    let order = 0;
+const getDprintPluginConfig = async (configSchemaUrl) => {
+  const response = await fetch(await getPluginSchemaUrl(configSchemaUrl));
+  if (!response.ok) throw new Error("Error fetching plugin configuration: HTTP " + response.status);
+  const json = await response.json();
+  const properties = {};
+  let order = 0;
+  for (const propertyName of Object.keys(json.properties)) {
+    if (propertyName === "$schema" || propertyName === "deno" || propertyName === "locked") continue;
+    const property = json.properties[propertyName];
 
-    for (const propertyName of Object.keys(json.properties)) {
-      if (propertyName === "$schema" || propertyName === "deno" || propertyName === "locked") {
-        continue;
-      }
-      const property = json.properties[propertyName];
+    if (property["$ref"]) {
+      const derivedPropName = property["$ref"].replace("#/definitions/", "");
 
-      if (property["$ref"]) {
-        const derivedPropName = property["$ref"].replace("#/definitions/", "");
+      const lastSegment = propertyName.split(".").pop();
+      let parentProperty;
+      if (derivedPropName !== propertyName && derivedPropName in json.properties) parentProperty = derivedPropName;
+      else if (lastSegment !== propertyName && lastSegment in json.properties) parentProperty = lastSegment;
 
-        const lastSegment = propertyName.split(".").pop();
-        let parentProperty;
-        if (derivedPropName !== propertyName && derivedPropName in json.properties) {
-          parentProperty = derivedPropName;
-        } else if (lastSegment !== propertyName && lastSegment in json.properties) {
-          parentProperty = lastSegment;
-        }
-
-        const definition = json.definitions[derivedPropName];
-        if (parentProperty) {
-          ensurePropertyName(parentProperty);
-          const isSameDefinition = property["$ref"] === json.properties[parentProperty]["$ref"];
-          properties[parentProperty].astSpecificProperties.push({
-            propertyName,
-            definition: isSameDefinition ? null : definition,
-          });
-        } else {
-          setDefinitionForPropertyName(propertyName, definition);
-        }
-      } else {
-        ensurePropertyName(propertyName);
-        properties[propertyName] = Object.assign(properties[propertyName], property);
-        properties[propertyName].order = order++;
-        properties[propertyName].name = propertyName;
-      }
-    }
-
-    const propertyArray = [];
-    const propertyKeys = Object.keys(properties);
-    for (let i = 0; i < propertyKeys.length; i++) {
-      const propName = propertyKeys[i];
-      propertyArray.push(properties[propName]);
-    }
-    propertyArray.sort((a, b) => a.order - b.order);
-    return propertyArray;
-
-    function setDefinitionForPropertyName(propertyName, definition) {
+      const definition = json.definitions[derivedPropName];
+      if (parentProperty) {
+        ensurePropertyName(parentProperty);
+        const isSameDefinition = property["$ref"] === json.properties[parentProperty]["$ref"];
+        properties[parentProperty].astSpecificProperties.push({
+          propertyName,
+          definition: isSameDefinition ? null : definition,
+        });
+      } else setDefinitionForPropertyName(propertyName, definition);
+    } else {
       ensurePropertyName(propertyName);
-      properties[propertyName] = Object.assign(properties[propertyName], definition);
+      properties[propertyName] = Object.assign(properties[propertyName], property);
       properties[propertyName].order = order++;
       properties[propertyName].name = propertyName;
     }
+  }
+  const propertyArray = [];
+  const propertyKeys = Object.keys(properties);
+  for (let i = 0; i < propertyKeys.length; i++) {
+    const propName = propertyKeys[i];
+    propertyArray.push(properties[propName]);
+  }
+  propertyArray.sort((a, b) => a.order - b.order);
+  return propertyArray;
+  function setDefinitionForPropertyName(propertyName, definition) {
+    ensurePropertyName(propertyName);
+    properties[propertyName] = Object.assign(properties[propertyName], definition);
+    properties[propertyName].order = order++;
+    properties[propertyName].name = propertyName;
+  }
+  function ensurePropertyName(propertyName) {
+    if (properties[propertyName] == null) properties[propertyName] = { astSpecificProperties: [] };
+  }
+};
 
-    function ensurePropertyName(propertyName) {
-      if (properties[propertyName] == null) {
-        properties[propertyName] = {
-          astSpecificProperties: [],
-        };
-      }
-    }
-  });
-}
+export { replaceConfigTable };

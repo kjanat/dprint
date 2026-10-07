@@ -27,7 +27,7 @@ $Repository = Invoke-RestMethod 'https://api.github.com/repositories/1092062077'
 $RepositoryUrl = $Repository.html_url
 $DprintUri = $Version ? "$RepositoryUrl/releases/download/$Version/dprint-${Target}.zip" : "$RepositoryUrl/releases/latest/download/dprint-${Target}.zip"
 
-if (!Test-Path $BinDir) { New-Item $BinDir -ItemType Directory | Out-Null }
+if (!(Test-Path $BinDir)) { New-Item $BinDir -ItemType Directory | Out-Null }
 
 # stop any running dprint editor services
 Stop-Process -Name "dprint" -Erroraction 'silentlycontinue'
