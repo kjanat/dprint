@@ -61,7 +61,7 @@ url                 = "=2.5.4"
 # configuration, the files it formats) without compiling it to native code
 # (see `plugins/implementations/wasm/interpreter.rs`)
 wasmi               = { version = "=2.0.0", default-features = false, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
-webpki-roots        = "=0.26.7"
+webpki-roots        = "=1.0.9"
 which               = "=8.0.0"
 zip                 = "=2.4.1"
 
