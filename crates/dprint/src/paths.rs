@@ -102,6 +102,10 @@ impl FilesPathsByPlugins {
   pub fn all_file_paths(&self) -> impl Iterator<Item = &PathBuf> {
     self.0.values().flatten()
   }
+
+  pub fn plugin_names(&self) -> impl Iterator<Item = &PluginNames> {
+    self.0.keys()
+  }
 }
 
 pub fn get_file_paths_by_plugins(

@@ -363,13 +363,7 @@ mod test {
     assert_eq!(environment.take_stdout_messages(), vec![final_output]);
     let mut stderr_messages = environment.take_stderr_messages();
     stderr_messages.sort();
-    assert_eq!(
-      stderr_messages,
-      vec![
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
-        "Extracting zip for test-process-plugin"
-      ]
-    );
+    assert_eq!(stderr_messages, vec!["Extracting zip for test-process-plugin"]);
   }
 
   #[test]
@@ -391,13 +385,7 @@ mod test {
     assert_eq!(environment.take_stdout_messages(), vec![final_output]);
     let mut stderr_messages = environment.take_stderr_messages();
     stderr_messages.sort();
-    assert_eq!(
-      stderr_messages,
-      vec![
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
-        "Extracting zip for test-process-plugin"
-      ]
-    );
+    assert_eq!(stderr_messages, vec!["Extracting zip for test-process-plugin"]);
   }
 
   enum MessageResponseChannel {

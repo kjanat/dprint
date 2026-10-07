@@ -205,6 +205,9 @@ pub fn create_pools_import_object<TEnvironment: Environment>(
   }
 }
 
+pub use v4::LogFn;
+pub use v4::write_output;
+
 pub fn get_current_plugin_schema_version(module: &wasmtime::Module) -> Result<PluginSchemaVersion> {
   plugin_schema_version_from_exports(module.exports().map(|export| export.name()))
 }

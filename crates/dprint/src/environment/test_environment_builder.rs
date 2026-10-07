@@ -293,8 +293,11 @@ impl TestEnvironmentBuilder {
     builder
   }
 
+  /// Sets up the plugins and compiles the Wasm ones, as a run that formatted
+  /// with them would.
   pub fn initialize(&mut self) -> &mut Self {
     test_helpers::run_test_cli(vec!["license"], &self.environment).unwrap(); // cause initialization
+    self.environment.compile_cached_wasm_plugins();
     self.environment.clear_logs();
     self
   }

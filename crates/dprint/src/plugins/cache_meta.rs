@@ -18,7 +18,7 @@ use std::hash::Hasher;
 /// should invalidate existing entries. Folded into each entry's signature so a
 /// bump simply orphans old entries (they stay on disk until `clear-cache`)
 /// rather than busting the whole cache.
-const PLUGIN_CACHE_SCHEMA_VERSION: usize = 10;
+const PLUGIN_CACHE_SCHEMA_VERSION: usize = 11;
 
 /// Size + modification time of a local file, captured at setup. A cache hit
 /// requires every stamp to still match (cheap stat, no read/hash).
@@ -85,11 +85,11 @@ impl PluginCacheMeta {
     is_file_name.then(|| plugins_dir(environment).join(file_name))
   }
 
-  /// The on-disk file path of this entry's artifact: the compiled module for
-  /// wasm plugins, or the executable within the extract dir for process plugins.
+  /// The on-disk file path of this entry's artifact: the module for wasm
+  /// plugins, or the executable within the extract dir for process plugins.
   pub fn artifact_file_path(&self, hash: &str, environment: &impl Environment) -> PathBuf {
     match self.plugin_kind {
-      PluginKind::Wasm => wasm_artifact_path(hash, self.source_checksum.as_deref(), environment),
+      PluginKind::Wasm => wasm_module_path(hash, self.source_checksum.as_deref(), environment),
       PluginKind::Process => {
         let sub_path = self.executable_sub_path.as_deref().unwrap_or_default();
         process_dir_path(hash, environment).join(sub_path)
@@ -144,19 +144,19 @@ pub fn write_meta(hash: &str, meta: &PluginCacheMeta, environment: &impl Environ
 }
 
 /// Removes an entry's sidecar and artifact(s). Kind-agnostic: deletes the meta
-/// json, the wasm artifact, and the process extract dir, ignoring whichever
-/// don't exist.
+/// json, the wasm modules with their native code, and the process extract dir,
+/// ignoring whichever don't exist.
 pub fn remove_entry(hash: &str, environment: &impl Environment) {
   if let Some(meta) = read_meta(hash, environment)
     && meta.plugin_kind == PluginKind::Wasm
   {
-    let _ = environment.remove_file(meta.artifact_file_path(hash, environment));
+    remove_wasm_module(&meta.artifact_file_path(hash, environment), environment);
     if let Some(path) = meta.previous_module_file_path(environment) {
-      let _ = environment.remove_file(path);
+      remove_wasm_module(&path, environment);
     }
   }
   let _ = environment.remove_file(meta_path(hash, environment));
-  let _ = environment.remove_file(wasm_artifact_path(hash, None, environment));
+  remove_wasm_module(&wasm_module_path(hash, None, environment), environment);
   let _ = environment.remove_file(resolutions_path(hash, environment));
   environment.try_remove_dir_all(process_dir_path(hash, environment));
 }
@@ -171,19 +171,31 @@ pub fn plugins_dir(environment: &impl Environment) -> PathBuf {
   environment.get_cache_dir().join("plugins")
 }
 
-/// Destination for a wasm plugin's compiled artifact.
-/// Where a Wasm plugin's compiled module is kept. Each build of the plugin
-/// (by the checksum of the file it was set up from) has a file of its own,
-/// so a module is never replaced by another build: a process that loads a
-/// plugin later than it read the entry loads the build it read about, or
-/// finds it gone. Entries set up before the checksum was recorded use the
-/// name without it.
-pub fn wasm_artifact_path(hash: &str, source_checksum: Option<&str>, environment: &impl Environment) -> PathBuf {
+/// Where a Wasm plugin's module is kept. Each build of the plugin (by the
+/// checksum of the file it was set up from) has a file of its own, so a
+/// module is never replaced by another build: a process that loads a plugin
+/// later than it read the entry loads the build it read about, or finds it
+/// gone. Entries set up before the checksum was recorded use the name
+/// without it.
+pub fn wasm_module_path(hash: &str, source_checksum: Option<&str>, environment: &impl Environment) -> PathBuf {
   let file_name = match source_checksum {
-    Some(checksum) => format!("{hash}-{}.cwasm", &checksum[..checksum.len().min(16)]),
-    None => format!("{hash}.cwasm"),
+    Some(checksum) => format!("{hash}-{}.wasm", &checksum[..checksum.len().min(16)]),
+    None => format!("{hash}.wasm"),
   };
   plugins_dir(environment).join(file_name)
+}
+
+/// Where the native code compiled from a Wasm plugin's module is kept: next
+/// to the module, as a file of the same build. It's written the first time
+/// the plugin formats.
+pub fn native_module_path(module_path: &Path) -> PathBuf {
+  module_path.with_extension("cwasm")
+}
+
+/// Removes a Wasm plugin's module and the native code compiled from it.
+pub fn remove_wasm_module(module_path: &Path, environment: &impl Environment) {
+  let _ = environment.remove_file(module_path);
+  let _ = environment.remove_file(native_module_path(module_path));
 }
 
 /// What the plugin resolved configurations to (see `PluginResolutionCache`).
@@ -271,14 +283,18 @@ mod test {
     let mut meta = make_meta("sig");
     meta.source_checksum = Some("0123456789abcdef0123".to_string());
     write_meta("h", &meta, &environment).unwrap();
-    let module_path = wasm_artifact_path("h", Some("0123456789abcdef0123"), &environment);
-    assert_eq!(module_path, plugins_dir(&environment).join("h-0123456789abcdef.cwasm"));
-    environment.write_file(&module_path, "compiled").unwrap();
+    let module_path = wasm_module_path("h", Some("0123456789abcdef0123"), &environment);
+    assert_eq!(module_path, plugins_dir(&environment).join("h-0123456789abcdef.wasm"));
+    let native_path = native_module_path(&module_path);
+    assert_eq!(native_path, plugins_dir(&environment).join("h-0123456789abcdef.cwasm"));
+    environment.write_file(&module_path, "module").unwrap();
+    environment.write_file(&native_path, "compiled").unwrap();
 
     remove_entry("h", &environment);
 
     assert!(read_meta("h", &environment).is_none());
     assert!(!environment.path_exists(&module_path));
+    assert!(!environment.path_exists(&native_path));
   }
 
   #[test]
@@ -287,7 +303,9 @@ mod test {
     let dir = plugins_dir(&environment);
     environment.mk_dir_all(&dir).unwrap();
     write_meta("h", &make_meta("sig"), &environment).unwrap();
-    environment.write_file(&wasm_artifact_path("h", None, &environment), "compiled").unwrap();
+    let module_path = wasm_module_path("h", None, &environment);
+    environment.write_file(&module_path, "module").unwrap();
+    environment.write_file(native_module_path(&module_path), "compiled").unwrap();
     environment.mk_dir_all(process_dir_path("h", &environment)).unwrap();
     environment.write_file(&process_dir_path("h", &environment).join("exe"), "bin").unwrap();
     environment.write_file(resolutions_path("h", &environment), "{}").unwrap();
@@ -295,7 +313,8 @@ mod test {
     remove_entry("h", &environment);
 
     assert!(read_meta("h", &environment).is_none());
-    assert!(!environment.path_exists(&wasm_artifact_path("h", None, &environment)));
+    assert!(!environment.path_exists(&module_path));
+    assert!(!environment.path_exists(native_module_path(&module_path)));
     assert!(!environment.path_exists(&process_dir_path("h", &environment)));
     assert!(!environment.path_exists(resolutions_path("h", &environment)));
   }

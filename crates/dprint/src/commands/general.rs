@@ -418,6 +418,80 @@ mod test {
     assert_eq!(environment.take_stdout_messages().len(), 0);
   }
 
+  /// A configuration file with the test plugin, and one in a subdirectory
+  /// with its other release, neither compiled yet.
+  fn nested_configs_with_uncompiled_plugins() -> TestEnvironment {
+    TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .add_remote_wasm_0_1_0_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .with_local_config("/sub/dprint.json", |config| {
+        config.add_plugin("https://plugins.dprint.dev/test-plugin-0.1.0.wasm");
+      })
+      .write_file("/file.txt", "text")
+      .write_file("/sub/file.txt", "text")
+      .build()
+  }
+
+  #[test]
+  fn should_list_files_without_compiling_plugins() {
+    let environment = nested_configs_with_uncompiled_plugins();
+    run_test_cli(vec!["output-file-paths"], &environment).unwrap();
+    let mut file_paths = environment.take_stdout_messages();
+    file_paths.sort();
+    assert_eq!(file_paths, vec!["/file.txt", "/sub/file.txt"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+  }
+
+  #[test]
+  fn should_stop_before_compiling_more_plugins_than_the_limit() {
+    let environment = nested_configs_with_uncompiled_plugins();
+    environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some("1"));
+    let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "Formatting these files would compile 2 plugins, more than the limit of 1. ",
+        "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n",
+        "  test-plugin 0.2.0\n",
+        "  test-plugin 0.1.0"
+      )
+    );
+    // nothing was compiled or formatted
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text");
+  }
+
+  #[test]
+  fn should_say_how_many_plugins_it_compiles() {
+    let environment = nested_configs_with_uncompiled_plugins();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    environment.take_stdout_messages();
+    let mut messages = environment.take_stderr_messages();
+    assert_eq!(messages.remove(0), "Compiling up to 2 plugins to format these files.");
+    // then each plugin's own line, in whichever order they start
+    messages.sort();
+    assert_eq!(
+      messages,
+      vec![
+        "Compiling https://plugins.dprint.dev/test-plugin-0.1.0.wasm",
+        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+      ]
+    );
+
+    // nothing to compile the next time
+    environment.write_file("/file.txt", "text").unwrap();
+    environment.write_file("/sub/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    environment.take_stdout_messages();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
   #[test]
   fn should_output_resolved_file_paths_when_using_backslashes() {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()

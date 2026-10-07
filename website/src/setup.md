@@ -97,9 +97,15 @@ By default, dprint only runs for a short period of time and so it will try to ta
 
 Finding the files to format doesn't use these threads. dprint scans directories with [tree-fucker](https://github.com/kjanat/tree-fucker), which limits how much file system work runs at once across the whole process.
 
+## Compiling Wasm Plugins
+
+dprint compiles a Wasm plugin to native code the first time the plugin formats a file, and caches the result. Everything before that runs the plugin in an interpreter: getting its plugin info, resolving its configuration, finding the files it formats, and its configuration diagnostics. These take milliseconds, so commands that don't format, like `dprint output-file-paths` and `dprint config update`, never compile a plugin.
+
+Compiling a plugin takes up to seconds of every core. Before formatting, dprint counts the plugins that formatting the files would compile. When that's more than one, it says how many. When it's more than 50, it stops before compiling any, and lists them. Set `DPRINT_MAX_PLUGIN_COMPILES` to allow more (ex. `DPRINT_MAX_PLUGIN_COMPILES=100`).
+
 ## Stalled Plugin Setup
 
-The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds, which is also what it looks like when it gets no CPU time at all), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
+dprint compiles a Wasm plugin in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds, which is also what it looks like when it gets no CPU time at all), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
 
 Each attempt also has a time limit however much CPU time it gets, of twice the CPU time all its steps may use, and the compile as a whole (waiting for a free compile process, the attempts and the retries) has twice that, after which dprint gives up on the plugin. The limits grow with the plugin's size, up to 10 minutes in all: the largest plugins compile in about 13 seconds on one thread, so a compile that takes longer than that is stuck rather than large. If a module genuinely needs longer, set `DPRINT_WASM_COMPILE_TIMEOUT` to the number of seconds it may take in all (ex. `DPRINT_WASM_COMPILE_TIMEOUT=1800`), which also works to give it less. A compile is stopped as soon as nothing waits for it anymore.
 

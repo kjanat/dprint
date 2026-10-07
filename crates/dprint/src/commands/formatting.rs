@@ -109,6 +109,7 @@ pub async fn output_format_times<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
+  scopes.check_planned_compiles()?;
   let durations: Arc<Mutex<Vec<(PathBuf, u128)>>> = Arc::new(Mutex::new(Vec::new()));
 
   for scope_and_paths in scopes.into_iter() {
@@ -162,6 +163,7 @@ pub async fn check<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
+  scopes.check_planned_compiles()?;
   let not_formatted_files_count = Arc::new(AtomicCounter::default());
   let list_different = cmd.list_different;
   let output_json = cmd.json;
@@ -371,6 +373,7 @@ pub async fn format<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
+  scopes.check_planned_compiles()?;
 
   let formatted_files_count = Arc::new(AtomicCounter::default());
   for scope_and_paths in scopes.into_iter() {
@@ -5162,7 +5165,7 @@ text_formatted"
       .build();
     environment.add_remote_file_redirect(original_url, redirected_url);
     run_test_cli(vec!["fmt", "*.*"], &environment).unwrap();
-    assert_eq!(environment.take_stderr_messages(), vec![format!("Compiling {}", redirected_url)]);
+    assert_eq!(environment.take_stderr_messages(), vec![format!("Compiling {}", original_url)]);
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
   }
 

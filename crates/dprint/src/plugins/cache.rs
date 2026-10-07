@@ -24,9 +24,10 @@ use super::cache_meta::plugins_dir;
 use super::cache_meta::process_dir_path;
 use super::cache_meta::read_meta;
 use super::cache_meta::remove_entry;
+use super::cache_meta::remove_wasm_module;
 use super::cache_meta::resolutions_path;
 use super::cache_meta::to_unix_millis;
-use super::cache_meta::wasm_artifact_path;
+use super::cache_meta::wasm_module_path;
 use super::cache_meta::write_meta;
 use super::implementations::SetupPluginDest;
 use super::implementations::SetupPluginOptions;
@@ -308,7 +309,7 @@ where
       .clone()
       .ok_or_else(|| anyhow::anyhow!("Internal error: registry resolve did not compute a checksum"))?;
 
-    // warm the compiled cache under the resolved path's key so the first
+    // warm the plugin cache under the resolved path's key so the first
     // `dprint fmt` is a hit (the key ignores the checksum, so writing it to
     // config afterward still matches).
     let resolved_specifier = NpmSpecifier {
@@ -391,7 +392,7 @@ where
     };
 
     // stamp the source file *before* reading it, so an edit during our read is
-    // caught next run (the stored stamp predates the bytes we compile).
+    // caught next run (the stored stamp predates the bytes we set up).
     let primary_stamp = self.stamp_for(&local_path);
     let file_bytes = self.environment.read_file_bytes(&local_path)?;
     let plugin_kind = source_reference
@@ -431,7 +432,7 @@ where
     };
 
     // stamp a local source *before* reading it, so an edit during our read is
-    // caught next run (the stored stamp predates the bytes we compile). Remote
+    // caught next run (the stored stamp predates the bytes we set up). Remote
     // sources can't change underneath us and don't get stamps.
     let primary_stamp = source_reference.path_source.maybe_local_path().and_then(|p| self.stamp_for(p));
 
@@ -552,7 +553,7 @@ where
     // the Wasm plugin entry this one replaces, if any
     let previous_meta = read_meta(hash, &self.environment).filter(|meta| meta.plugin_kind == PluginKind::Wasm);
     let dest = SetupPluginDest {
-      wasm_file_path: wasm_artifact_path(hash, Some(&source_checksum), &self.environment),
+      wasm_file_path: wasm_module_path(hash, Some(&source_checksum), &self.environment),
       process_dir_path: process_dir_path(hash, &self.environment),
     };
     let setup_result = setup_plugin(
@@ -585,7 +586,7 @@ where
     if let Some(previous_meta) = &previous_meta {
       let previous_module_path = previous_meta.artifact_file_path(hash, &self.environment);
       if previous_module_path == setup_result.file_path {
-        // the same build compiled again
+        // the same build set up again
         meta.previous_module_file_name = previous_meta.previous_module_file_name.clone();
       } else {
         meta.previous_module_file_name = previous_module_path.file_name().map(|name| name.to_string_lossy().into_owned());
@@ -602,7 +603,7 @@ where
     write_meta(hash, &meta, &self.environment)?;
     for path in stale_module_paths {
       // best effort, as on Windows it can't be removed while being read
-      let _ = self.environment.remove_file(&path);
+      remove_wasm_module(&path, &self.environment);
     }
 
     Ok(PluginCacheItem {
@@ -828,13 +829,13 @@ mod test {
     let plugin_source = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
+    let expected_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
 
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
     assert_eq!(file_path, expected_file_path);
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
-    // a second request is a cache hit — no recompile
+    // a second request is a cache hit — nothing is set up again
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
     assert_eq!(file_path, expected_file_path);
     assert!(environment.take_stderr_messages().is_empty());
@@ -868,10 +869,10 @@ mod test {
 
     let checksum = plugin_cache.resolve_remote_for_add(&plugin_source).await?;
     assert_eq!(checksum, expected);
-    // it compiled while warming the cache
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    // it was set up while warming the cache, which doesn't compile it
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
-    // the later resolve is a pure cache hit — no recompile
+    // the later resolve is a pure cache hit — nothing is set up again
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
     assert_eq!(item.info.name, "test-plugin");
     assert!(environment.take_stderr_messages().is_empty(), "resolve should have been a cache hit");
@@ -926,11 +927,11 @@ mod test {
     let plugin_source = PluginSourceReference::new_local(original_file_path.clone());
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
+    let expected_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
 
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
     assert_eq!(file_path, expected_file_path);
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
     // cache hit on repeat; stamps were recorded for the local file
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
@@ -941,25 +942,25 @@ mod test {
     assert_eq!(stamps.len(), 1);
     assert_eq!(stamps[0].path, "/test.wasm");
 
-    // changing the file invalidates the cache and recompiles. The new build's
+    // changing the file invalidates the cache and sets it up again. The new build's
     // module is a file of its own (so a process that read the entry before
     // never loads it), and the previous build's module is kept for such a
     // process.
     environment.write_file_bytes(&original_file_path, &WASM_PLUGIN_0_1_0_BYTES).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
-    let second_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)), &environment);
+    let second_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)), &environment);
     assert_eq!(item.file_path, second_file_path);
     assert_eq!(item.info.version, "0.1.0");
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert!(environment.path_exists(&file_path));
 
     // the next build removes the one before the previous
     let third_build = [WASM_PLUGIN_0_1_0_BYTES, &[0x00, 0x05, 0x04, b't', b'e', b's', b't']].concat();
     environment.write_file_bytes(&original_file_path, &third_build).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
-    let third_file_path = wasm_artifact_path(&hash, Some(&get_sha256_checksum(&third_build)), &environment);
+    let third_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(&third_build)), &environment);
     assert_eq!(item.file_path, third_file_path);
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert!(!environment.path_exists(&file_path));
     assert!(environment.path_exists(&second_file_path));
 
@@ -984,13 +985,13 @@ mod test {
     let plugin_cache = PluginCache::new(environment.clone());
     let source = PluginSourceReference::new_local(path.clone());
     plugin_cache.get_plugin_cache_item(&source).await?;
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
     // rewrite the same bytes at a newer time
     environment.set_fs_time(2000);
     environment.write_file_bytes(&path, &WASM_PLUGIN_BYTES).unwrap();
     plugin_cache.get_plugin_cache_item(&source).await?;
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /test.wasm"]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
     // no change now → cache hit
     plugin_cache.get_plugin_cache_item(&source).await?;
@@ -1014,7 +1015,7 @@ mod test {
       checksum: None,
     };
 
-    // seed the npm extract dir and the compiled artifact + sidecar as if a
+    // seed the npm extract dir and the module + sidecar as if a
     // previous resolve had run
     let extract_dir = environment.get_cache_dir().join("npm").join("registry.npmjs.org").join("@dprint__test@1.0.0");
     environment.mk_dir_all(&extract_dir).unwrap();
@@ -1022,9 +1023,9 @@ mod test {
 
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let artifact = wasm_artifact_path(&hash, None, &environment);
+    let artifact = wasm_module_path(&hash, None, &environment);
     environment.mk_dir_all(plugins_dir(&environment)).unwrap();
-    environment.write_file(&artifact, "compiled").unwrap();
+    environment.write_file(&artifact, "module").unwrap();
     write_meta(&hash, &make_wasm_meta(&cache_key, "test-plugin", "1.0.0", &environment), &environment)?;
 
     plugin_cache.forget(&plugin_source).await?;
@@ -1261,7 +1262,7 @@ mod test {
     let extract_dir = environment.get_cache_dir().join("npm").join("registry.npmjs.org").join("some-plugin@1.0.0");
     assert!(environment.path_exists(&extract_dir.join("plugin.wasm")));
 
-    // drain the wasm-compile log so it doesn't fail the drop check
+    // drain the log so it doesn't fail the drop check
     let _ = environment.take_stderr_messages();
 
     // poison the remote endpoints — a second resolve must hit the cache, not refetch

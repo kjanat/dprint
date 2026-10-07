@@ -374,6 +374,9 @@ OPTIONS:
 ENVIRONMENT VARIABLES:
   DPRINT_MAX_THREADS   Limit the number of threads dprint uses for
                        formatting (ex. DPRINT_MAX_THREADS=4).
+  DPRINT_MAX_PLUGIN_COMPILES
+                       The most Wasm plugins a run compiles to native code
+                       before it formats (default 50).
   DPRINT_CACHE_DIR     Directory to store the dprint cache. Note that this
                        directory may be periodically deleted by the CLI.
   DPRINT_CONFIG_DIR    Global config directory to store a global dprint.json file.

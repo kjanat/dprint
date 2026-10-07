@@ -607,6 +607,50 @@ pub struct PluginsScopeAndPathsCollection<TEnvironment: Environment> {
 }
 
 impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
+  /// Counts the plugins that formatting the files compiles to native code,
+  /// before any is: the Wasm plugins that format any of the files and aren't
+  /// compiled yet. Unchanged files aren't formatted, so this is the most it
+  /// compiles.
+  ///
+  /// Above the limit, nothing is formatted and it's an error. Otherwise, more
+  /// than one gets a warning with the count, as compiling one takes up to
+  /// seconds of every core.
+  pub fn check_planned_compiles(&self) -> Result<()> {
+    let mut planned: Vec<&Rc<PluginWrapper>> = Vec::new();
+    for scope_and_paths in &self.inner {
+      for plugin_names in scope_and_paths.file_paths_by_plugins.plugin_names() {
+        for name in plugin_names.names() {
+          let Some(plugin) = scope_and_paths.scope.plugins.get(name).map(|plugin| &plugin.plugin) else {
+            continue;
+          };
+          if !planned.iter().any(|planned| Rc::ptr_eq(planned, plugin)) && plugin.compiles_to_format() {
+            planned.push(plugin);
+          }
+        }
+      }
+    }
+    let limit = max_plugin_compiles(&self.environment);
+    if planned.len() > limit {
+      bail!(
+        concat!(
+          "Formatting these files would compile {} plugins, more than the limit of {}. ",
+          "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n{}"
+        ),
+        planned.len(),
+        limit,
+        planned
+          .iter()
+          .map(|plugin| format!("  {} {}", plugin.info().name, plugin.info().version))
+          .collect::<Vec<_>>()
+          .join("\n"),
+      );
+    }
+    if planned.len() > 1 {
+      log_warn!(self.environment, "Compiling up to {} plugins to format these files.", planned.len());
+    }
+    Ok(())
+  }
+
   pub fn ensure_valid_for_cli_args(&self, cli_args: &CliArgs) -> Result<()> {
     for scope in &self.inner {
       scope.scope.ensure_valid_for_cli_args(cli_args)?;
@@ -1028,6 +1072,28 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
       result.extend(scope?);
     }
     Ok(result)
+  }
+}
+
+/// The most plugins a format run compiles to native code, unless
+/// `DPRINT_MAX_PLUGIN_COMPILES` allows more.
+const DEFAULT_MAX_PLUGIN_COMPILES: usize = 50;
+
+fn max_plugin_compiles(environment: &impl Environment) -> usize {
+  let Some(value) = environment.env_var("DPRINT_MAX_PLUGIN_COMPILES") else {
+    return DEFAULT_MAX_PLUGIN_COMPILES;
+  };
+  match value.to_str().and_then(|value| value.trim().parse::<usize>().ok()) {
+    Some(limit) => limit,
+    None => {
+      log_warn!(
+        environment,
+        "Ignoring DPRINT_MAX_PLUGIN_COMPILES={}: it's not a number. Using {}.",
+        value.to_string_lossy(),
+        DEFAULT_MAX_PLUGIN_COMPILES
+      );
+      DEFAULT_MAX_PLUGIN_COMPILES
+    }
   }
 }
 

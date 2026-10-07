@@ -48,6 +48,11 @@ impl PluginWrapper {
     self.plugin.built_in()
   }
 
+  /// Whether formatting with the plugin first compiles it to native code.
+  pub fn compiles_to_format(&self) -> bool {
+    self.plugin.compiles_to_format()
+  }
+
   /// Name of the plugin a configuration file refers to for this one (see
   /// [`referenced_plugin_name`]).
   pub fn referenced_plugin_name(&self) -> &str {

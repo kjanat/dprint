@@ -1,6 +1,7 @@
 mod compile;
 mod compile_worker;
 mod instance;
+mod interpreter;
 mod load_instance;
 mod plugin;
 mod setup_wasm_plugin;
@@ -11,6 +12,7 @@ pub use compile_worker::CompileControl;
 pub use compile_worker::compile_supervised;
 pub use compile_worker::run_compile_worker;
 use instance::*;
+pub use interpreter::InterpretedModule;
 pub use load_instance::WASM_PLUGIN_THREAD_STACK_SIZE;
 pub use load_instance::WasmModule;
 pub use load_instance::WasmModuleCreator;

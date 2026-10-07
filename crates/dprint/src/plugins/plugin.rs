@@ -90,6 +90,12 @@ pub trait Plugin {
   fn built_in(&self) -> Option<&'static BuiltInFormatter> {
     None
   }
+
+  /// Whether the plugin is compiled to native code before it formats, which
+  /// takes up to seconds of every core.
+  fn compiles_to_format(&self) -> bool {
+    false
+  }
 }
 
 /// Name of the plugin a configuration file refers to for `plugin`. For a
