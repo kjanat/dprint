@@ -4,12 +4,12 @@ import { getPluginSchemaUrl } from "./plugin-repository.js";
 const replaceConfigTable = () => {
   const items = getPluginConfigTableItems();
   if (items.length > 0) {
-    items.forEach(function(item) {
+    items.forEach((item) => {
       getDprintPluginConfig(item.url).then((properties) => {
         const isOfficial = new URL(item.url).pathname.startsWith("/dprint/");
         const element = item.element;
-        element.innerHTML = "<p>This information was auto generated from <a href=\"" + item.url + "\">" + item.url + "</a>.</p>";
-        properties.forEach(function(property) {
+        element.innerHTML = `<p>This information was auto generated from <a href="${item.url}">${item.url}</a>.</p>`;
+        properties.forEach((property) => {
           const propertyContainer = document.createElement("div");
           element.appendChild(propertyContainer);
           try {
@@ -30,7 +30,7 @@ const replaceConfigTable = () => {
               const astSpecificPropertyNamesContainer = document.createElement("ul");
               propertyContainer.appendChild(astSpecificPropertyNamesContainer);
 
-              property.astSpecificProperties.forEach(function({ propertyName, definition }) {
+              property.astSpecificProperties.forEach(({ propertyName, definition }) => {
                 const propertyNameLi = document.createElement("li");
 
                 const labelSpan = document.createElement("span");
@@ -67,14 +67,14 @@ const replaceConfigTable = () => {
           propertyContainer.appendChild(infoContainer);
 
           if (property.oneOf) {
-            property.oneOf.forEach(function(oneOf) {
+            property.oneOf.forEach((oneOf) => {
               const oneOfContainer = document.createElement("li");
               infoContainer.appendChild(oneOfContainer);
               const prefix = document.createElement("strong");
               prefix.textContent = valueToText(oneOf.const);
               oneOfContainer.appendChild(prefix);
               if (oneOf.description != null && oneOf.description.length > 0) {
-                oneOfContainer.append(" - " + oneOf.description);
+                oneOfContainer.append(` - ${oneOf.description}`);
               }
               if (oneOf.const === property.default) {
                 oneOfContainer.append(" (Default)");
@@ -100,13 +100,10 @@ const replaceConfigTable = () => {
         }
 
         function valueToText(value) {
-          if (typeof value === "string") {
-            return "\"" + value + "\"";
-          }
-          if (value == null) {
+          if (value === undefined) {
             return "<not specified>";
           }
-          return value.toString();
+          return JSON.stringify(value);
         }
       }).catch((err) => {
         console.error("Error loading plugin configuration.", err);
@@ -129,7 +126,7 @@ function getPluginConfigTableItems() {
 
 const getDprintPluginConfig = async (configSchemaUrl) => {
   const response = await fetch(await getPluginSchemaUrl(configSchemaUrl));
-  if (!response.ok) throw new Error("Error fetching plugin configuration: HTTP " + response.status);
+  if (!response.ok) throw new Error(`Error fetching plugin configuration: HTTP ${response.status}`);
   const json = await response.json();
   const properties = {};
   let order = 0;
@@ -137,8 +134,8 @@ const getDprintPluginConfig = async (configSchemaUrl) => {
     if (propertyName === "$schema" || propertyName === "deno" || propertyName === "locked") continue;
     const property = json.properties[propertyName];
 
-    if (property["$ref"]) {
-      const derivedPropName = property["$ref"].replace("#/definitions/", "");
+    if (property.$ref) {
+      const derivedPropName = property.$ref.replace("#/definitions/", "");
 
       const lastSegment = propertyName.split(".").pop();
       let parentProperty;
@@ -148,7 +145,7 @@ const getDprintPluginConfig = async (configSchemaUrl) => {
       const definition = json.definitions[derivedPropName];
       if (parentProperty) {
         ensurePropertyName(parentProperty);
-        const isSameDefinition = property["$ref"] === json.properties[parentProperty]["$ref"];
+        const isSameDefinition = property.$ref === json.properties[parentProperty].$ref;
         properties[parentProperty].astSpecificProperties.push({
           propertyName,
           definition: isSameDefinition ? null : definition,
