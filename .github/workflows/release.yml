@@ -19,11 +19,11 @@ jobs:
     name: release
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions: { contents: write }
     steps:
       - name: Clone repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          token: "${{ secrets.GH_DPRINTBOT_PAT }}"
+        with: { token: "${{ secrets.GH_DPRINTBOT_PAT }}" }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
       - name: Bump version and tag
@@ -31,7 +31,18 @@ jobs:
           GITHUB_TOKEN: "${{ secrets.GH_DPRINTBOT_PAT }}"
           GH_WORKFLOW_ACTOR: "${{ github.actor }}"
           RELEASE_SUFFIX: "${{ github.event.inputs.suffix || (github.repository_owner != 'dprint' && github.repository_owner || '') }}"
-        run: |-
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git config user.name "${{ github.actor }}"
-          f=crates/dprint/Cargo.toml; v=$(yq .package.version $f); IFS=.- read -r a b c _ <<<"$v"; [ "${{ github.event.inputs.releaseKind }}" = minor ] && b=$((b+1)) c=0 || c=$((c+1)); v=$a.$b.$c${RELEASE_SUFFIX:+-$RELEASE_SUFFIX}; yq -i ".package.version = \"$v\"" $f; cargo update --workspace; git add .; git commit -m "$v"; git push -u origin HEAD; git tag "$v"; git push origin "$v"
+          RELEASE_KIND: "${{ github.event.inputs.releaseKind }}"
+          f: crates/dprint/Cargo.toml
+        run: git config user.email "${GITHUB_ACTOR}@users.noreply.github.com";
+          git config user.name "${GITHUB_ACTOR}";
+          v=$(yq .package.version "${f}");
+          IFS=.- read -r a b c _ <<<"${v}";
+          [[ "${RELEASE_KIND}" = minor ]] && b=$((b+1)) c=0 || c=$((c+1));
+          v="${a}.${b}.${c}${RELEASE_SUFFIX:+-$RELEASE_SUFFIX}";
+          yq -i ".package.version = \"${v}\"" "${f}";
+          cargo update --workspace;
+          git add .;
+          git commit -m "${v}";
+          git push -u origin HEAD;
+          git tag "${v}";
+          git push origin "${v}"
