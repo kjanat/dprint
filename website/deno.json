@@ -19,5 +19,9 @@
     "npm:@parcel/watcher",
     "npm:core-js-pure",
     "npm:core-js"
-  ]
+  ],
+  "lint": {
+    "exclude": ["**/dist", "**/_site"]
+  },
+  "exclude": ["**/dist", "**/_site"]
 }

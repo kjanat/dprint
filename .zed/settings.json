@@ -16,7 +16,7 @@
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"] // https://github.com/kjanat/zed-typescript
     },
     "JavaScript": {
       "format_on_save": "on",
@@ -25,7 +25,7 @@
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"] // https://github.com/kjanat/zed-typescript
     },
     "TSX": {
       "formatter": { "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } },
@@ -33,13 +33,22 @@
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"] // https://github.com/kjanat/zed-typescript
     },
     "Markdown": {
       "language_servers": ["!markdownlint", "rumdl", "..."]
     }
   },
   "lsp": {
+    "deno": {
+      "settings": {
+        "deno": {
+          "enable": true,
+          "enablePaths": ["./website", "./website/playground"],
+          "config": "./website/deno.json"
+        }
+      }
+    },
     "biome": {
       "settings": {
         // "config_path": "./biome.jsonc",

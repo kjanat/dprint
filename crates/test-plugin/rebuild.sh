@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 rustup target add wasm32-unknown-unknown
 # the plugin prints to stdout/stderr via wasi, whose imports newer versions of
 # rust-lld won't leave undefined without this

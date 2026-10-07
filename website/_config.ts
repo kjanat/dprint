@@ -10,16 +10,17 @@ await copyConfigSchema();
 
 const site = lume({
   src: "./src",
-  location: new URL("https://dprint.dev"),
+  location: new URL("https://dprint.kjanat.dev"),
 }, {
   markdown: {
     options: {
       linkify: true,
     },
-    plugins: [[anchor, {
-      level: 2,
-      permalink: anchor.permalink.headerLink(),
-    }]],
+    plugins: [(md) =>
+      anchor(md, {
+        level: 2,
+        permalink: anchor.permalink.headerLink(),
+      })],
   },
 });
 
@@ -50,8 +51,12 @@ const hashedAssets = new Map<string, string>();
 site.process([".css", ".js"], async (pages) => {
   for (const page of pages) {
     const url = page.data.url;
+    const content = page.content;
+    if (content === undefined) {
+      throw new Error(`Cannot hash asset without content: ${url}`);
+    }
     const dot = url.lastIndexOf(".");
-    const hashedUrl = `${url.slice(0, dot)}.${await shortHash(page.content!)}${url.slice(dot)}`;
+    const hashedUrl = `${url.slice(0, dot)}.${await shortHash(content)}${url.slice(dot)}`;
     hashedAssets.set(url, hashedUrl);
     page.data.url = hashedUrl;
   }
@@ -70,7 +75,7 @@ site.process([".html"], (pages) => {
 export default site;
 
 async function shortHash(content: string | Uint8Array): Promise<string> {
-  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : new Uint8Array(content);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -79,11 +84,10 @@ async function shortHash(content: string | Uint8Array): Promise<string> {
 }
 
 async function copyConfigSchema() {
-  // the config schema is generated from the configuration types in the
-  // dprint-config-model crate, which keeps the published copy up to date
-  // (see its `the_published_schema_is_the_generated_one` test). Pull it in
-  // here so it's served at https://dprint.dev/schemas/v0.json. This copy is
-  // gitignored.
+  // the config schema is generated from the configuration types in the dprint-config-model crate,
+  // which keeps the published copy up to date (see its `the_published_schema_is_the_generated_one` test).
+  // Pull it in here so it's served at https://dprint.kjanat.dev/schemas/v0.json.
+  // This copy is gitignored.
   const source = new URL("../crates/config-model/schema/v0.json", import.meta.url);
   const destDir = new URL("./src/assets/schemas/", import.meta.url);
   await Deno.mkdir(destDir, { recursive: true });

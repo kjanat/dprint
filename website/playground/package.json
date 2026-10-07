@@ -4,10 +4,10 @@
   "private": true,
   "homepage": "https://dprint.kjanat.dev/playground",
   "scripts": {
-    "dev": "vite",
-    "test": "deno test",
     "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "deno test"
   },
   "browserslist": {
     "production": [

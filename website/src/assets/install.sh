@@ -14,8 +14,8 @@ if ! command -v jq >/dev/null; then
 	exit 1
 fi
 
-if [ "${OS}" = "Windows_NT" ]; then
-	case "${PROCESSOR_ARCHITECTURE}" in
+if [ "${OS:-}" = "Windows_NT" ]; then
+	case "${PROCESSOR_ARCHITECTURE:-}" in
 		ARM64) target="aarch64-pc-windows-msvc" ;;
 		*) target="x86_64-pc-windows-msvc" ;;
 	esac
@@ -25,14 +25,16 @@ else
 		"Darwin arm64") target="aarch64-apple-darwin" ;;
 		# Termux reports "Linux aarch64"/"Linux x86_64" but uses Android's bionic libc, so check uname -o.
 		"Linux aarch64")
-			if [ "$(uname -o 2>/dev/null)" = "Android" ]; then
+			operating_system=$(uname -o 2>/dev/null || true)
+			if [ "${operating_system}" = "Android" ]; then
 				target="aarch64-linux-android"
 			else
 				target="aarch64-unknown-linux"
 			fi
 			;;
 		"Linux x86_64")
-			if [ "$(uname -o 2>/dev/null)" = "Android" ]; then
+			operating_system=$(uname -o 2>/dev/null || true)
+			if [ "${operating_system}" = "Android" ]; then
 				target="x86_64-linux-android"
 			else
 				target="x86_64-unknown-linux"
@@ -55,9 +57,9 @@ fi
 
 # Resolve the permanent repository ID so downloads survive repository renames.
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-	repository_json=$(curl --fail --location --silent --show-error --header "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repositories/1092062077")
+	repository_json=$(curl -fsSL --header "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repositories/1092062077")
 else
-	repository_json=$(curl --fail --location --silent --show-error "https://api.github.com/repositories/1092062077")
+	repository_json=$(curl -fsSL "https://api.github.com/repositories/1092062077")
 fi
 repository_url=$(printf '%s\n' "${repository_json}" | jq --exit-status --raw-output '.html_url | strings')
 if [ $# -eq 0 ]; then
@@ -80,6 +82,7 @@ zip="${exe}.zip"
 # append .exe for Windows
 case "${target}" in
 	*-pc-windows-msvc) exe="${exe}.exe" ;;
+	*) ;;
 esac
 
 # download
@@ -99,8 +102,8 @@ if command -v dprint >/dev/null; then
 	echo "Run 'dprint --help' to get started"
 else
 	case "${SHELL}" in
-	/bin/zsh) shell_profile=".zshrc" ;;
-	*) shell_profile=".bash_profile" ;;
+		/bin/zsh) shell_profile=".zshrc" ;;
+		*) shell_profile=".bash_profile" ;;
 	esac
 	echo "Manually add the directory to your \$HOME/${shell_profile} (or similar)"
 	echo "  export DPRINT_INSTALL=\"${dprint_install}\""
