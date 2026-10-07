@@ -53,7 +53,7 @@ tokio-util = { version = "=0.7.11" }
 toml_edit = "=0.25.15"
 tower-lsp = "=0.20.0"
 # scans directories for files to format (see `src/utils/glob/scan.rs`)
-tree-fucker = { git = "https://github.com/kjanat/tree-fucker", rev = "28d79974f48186d8f519b787a28974d14a782325" }
+tree-fucker = { git = "https://github.com/kjanat/tree-fucker", rev = "9da9bd0e2adb4800a0b6b47e0bc723e3f75be871" }
 twox-hash = "=2.1.0"
 ureq = { version = "=2.12.1", features = ["gzip", "socks-proxy", "tls"], default-features = false }
 url = "=2.5.4"

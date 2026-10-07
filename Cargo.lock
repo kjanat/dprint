@@ -3053,7 +3053,7 @@ dependencies = [
 [[package]]
 name = "tree-fucker"
 version = "0.1.0"
-source = "git+https://github.com/kjanat/tree-fucker?rev=28d79974f48186d8f519b787a28974d14a782325#28d79974f48186d8f519b787a28974d14a782325"
+source = "git+https://github.com/kjanat/tree-fucker?rev=9da9bd0e2adb4800a0b6b47e0bc723e3f75be871#9da9bd0e2adb4800a0b6b47e0bc723e3f75be871"
 dependencies = [
  "futures-channel",
  "futures-core",
