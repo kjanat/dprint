@@ -83,11 +83,100 @@ pub trait InitializedWasmPluginInstance {
   ) -> FormatResult;
 }
 
-pub fn create_wasm_plugin_instance(store: Store, instance: WasmInstance) -> Result<Box<dyn InitializedWasmPluginInstance>> {
-  match instance.version() {
-    PluginSchemaVersion::V3 => Ok(Box::new(v3::InitializedWasmPluginInstanceV3::new(store, instance)?)),
-    PluginSchemaVersion::V4 => Ok(Box::new(v4::InitializedWasmPluginInstanceV4::new(store, instance)?)),
+/// A plugin instance's exported functions and memory. The plugin protocol
+/// (see `v3.rs` and `v4.rs`) runs on top of this, so it works the same on
+/// every engine that runs plugins: wasmtime for native code, and wasmi to
+/// interpret a plugin that isn't compiled (see `interpreter.rs`).
+///
+/// The protocol's exported functions only take and return `u32`s.
+pub trait PluginExports {
+  fn has_function(&mut self, name: &str) -> bool;
+  /// Calls an exported function that returns nothing.
+  fn call(&mut self, name: &str, params: &[u32]) -> Result<()>;
+  /// Calls an exported function that returns a `u32`.
+  fn call_u32(&mut self, name: &str, params: &[u32]) -> Result<u32>;
+  fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()>;
+  fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()>;
+  /// The token the host functions check while the plugin formats.
+  fn set_token(&mut self, token: Arc<dyn CancellationToken>);
+}
+
+/// The most parameters an exported function of the protocol takes.
+pub const MAX_EXPORT_PARAMS: usize = 3;
+
+/// Creates the protocol for a plugin's schema version on top of its exports.
+pub fn create_plugin_instance<TExports: PluginExports + Send + 'static>(
+  version: PluginSchemaVersion,
+  exports: TExports,
+) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
+  match version {
+    PluginSchemaVersion::V3 => Ok(Box::new(v3::InitializedWasmPluginInstanceV3::new(exports)?)),
+    PluginSchemaVersion::V4 => Ok(Box::new(v4::InitializedWasmPluginInstanceV4::new(exports))),
   }
+}
+
+/// A native plugin instance's exports, run by wasmtime.
+struct NativeExports {
+  store: Store,
+  instance: WasmInstance,
+  memory: Memory,
+}
+
+impl NativeExports {
+  fn function(&mut self, name: &str) -> Result<wasmtime::Func> {
+    match self.instance.get_function(&mut self.store, name) {
+      Some(func) => Ok(func),
+      None => bail!("Could not find export '{}' in plugin.", name),
+    }
+  }
+
+  fn call_with_results(&mut self, name: &str, params: &[u32], results: &mut [wasmtime::Val]) -> Result<()> {
+    let func = self.function(name)?;
+    let mut values = [wasmtime::Val::I32(0); MAX_EXPORT_PARAMS];
+    for (value, param) in values.iter_mut().zip(params) {
+      *value = wasmtime::Val::I32(*param as i32);
+    }
+    Ok(func.call(&mut self.store, &values[..params.len()], results)?)
+  }
+}
+
+impl PluginExports for NativeExports {
+  fn has_function(&mut self, name: &str) -> bool {
+    self.instance.get_function(&mut self.store, name).is_some()
+  }
+
+  fn call(&mut self, name: &str, params: &[u32]) -> Result<()> {
+    self.call_with_results(name, params, &mut [])
+  }
+
+  fn call_u32(&mut self, name: &str, params: &[u32]) -> Result<u32> {
+    let mut results = [wasmtime::Val::I32(0)];
+    self.call_with_results(name, params, &mut results)?;
+    match results[0].i32() {
+      Some(value) => Ok(value as u32),
+      None => bail!("Expected export '{}' to return an i32.", name),
+    }
+  }
+
+  fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
+    Ok(self.memory.read(&self.store, offset, bytes)?)
+  }
+
+  fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
+    Ok(self.memory.write(&mut self.store, offset, bytes)?)
+  }
+
+  fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
+    self.store.data_mut().set_token(token);
+  }
+}
+
+pub fn create_wasm_plugin_instance(mut store: Store, instance: WasmInstance) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
+  let memory = instance
+    .get_memory(&mut store, "memory")
+    .ok_or_else(|| anyhow::anyhow!("Could not find memory export in plugin."))?;
+  let version = instance.version();
+  create_plugin_instance(version, NativeExports { store, instance, memory })
 }
 
 /// Builds a linker whose host functions are no-ops. Used when the plugin doesn't
@@ -117,9 +206,13 @@ pub fn create_pools_import_object<TEnvironment: Environment>(
 }
 
 pub fn get_current_plugin_schema_version(module: &wasmtime::Module) -> Result<PluginSchemaVersion> {
-  fn from_exports(module: &wasmtime::Module) -> Result<u32> {
-    for export in module.exports() {
-      let name = export.name();
+  plugin_schema_version_from_exports(module.exports().map(|export| export.name()))
+}
+
+/// The plugin schema version a module's exports say it has.
+pub fn plugin_schema_version_from_exports<'a>(export_names: impl Iterator<Item = &'a str>) -> Result<PluginSchemaVersion> {
+  fn from_exports<'a>(export_names: impl Iterator<Item = &'a str>) -> Result<u32> {
+    for name in export_names {
       if matches!(name, "get_plugin_schema_version") {
         // not exactly correct, but practically ok because this has been returning v3 for many years
         return Ok(3);
@@ -133,7 +226,7 @@ pub fn get_current_plugin_schema_version(module: &wasmtime::Module) -> Result<Pl
     bail!("Error determining plugin schema version. Are you sure this is a dprint plugin? If so, maybe try upgrading dprint.");
   }
 
-  let plugin_schema_version = from_exports(module)?;
+  let plugin_schema_version = from_exports(export_names)?;
   match plugin_schema_version {
     3 => Ok(PluginSchemaVersion::V3),
     4 => Ok(PluginSchemaVersion::V4),

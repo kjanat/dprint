@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use anyhow::anyhow;
-use anyhow::bail;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::configuration::GlobalConfiguration;
@@ -24,17 +22,13 @@ use serde::Serialize;
 use wasmtime::Caller;
 use wasmtime::Engine;
 use wasmtime::Memory;
-use wasmtime::TypedFunc;
-use wasmtime::WasmParams;
-use wasmtime::WasmResults;
 
 use crate::plugins::FormatConfig;
 use crate::plugins::implementations::wasm::WasmHostFormatSender;
-use crate::plugins::implementations::wasm::WasmInstance;
 
 use super::InitializedWasmPluginInstance;
 use super::Linker;
-use super::Store;
+use super::PluginExports;
 use super::WasmHostState;
 
 enum WasmFormatResult {
@@ -46,9 +40,9 @@ enum WasmFormatResult {
 #[derive(Clone, Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 struct SyncPluginInfo {
   #[serde(flatten)]
-  pub info: PluginInfo,
+  info: PluginInfo,
   #[serde(flatten)]
-  pub file_matching: FileMatchingInfo,
+  file_matching: FileMatchingInfo,
 }
 
 #[derive(Default)]
@@ -231,15 +225,15 @@ fn host_get_error_text(mut caller: Caller<'_, WasmHostState>) -> u32 {
   len as u32
 }
 
-pub struct InitializedWasmPluginInstanceV3 {
-  wasm_functions: WasmFunctions,
+pub struct InitializedWasmPluginInstanceV3<TExports: PluginExports> {
+  wasm_functions: WasmFunctions<TExports>,
   buffer_size: usize,
   current_config_id: FormatConfigId,
 }
 
-impl InitializedWasmPluginInstanceV3 {
-  pub fn new(store: Store, instance: WasmInstance) -> Result<Self> {
-    let mut wasm_functions = WasmFunctions::new(store, instance)?;
+impl<TExports: PluginExports> InitializedWasmPluginInstanceV3<TExports> {
+  pub fn new(exports: TExports) -> Result<Self> {
+    let mut wasm_functions = WasmFunctions { exports };
     let buffer_size = wasm_functions.get_wasm_memory_buffer_size()?;
     Ok(Self {
       wasm_functions,
@@ -367,7 +361,7 @@ impl InitializedWasmPluginInstanceV3 {
   }
 }
 
-impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
+impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3<TExports> {
   fn plugin_info(&mut self) -> Result<PluginInfo> {
     self.sync_plugin_info().map(|i| i.info)
   }
@@ -410,7 +404,7 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
     if range.is_some() && range != Some(0..file_bytes.len()) {
       return Ok(None); // not supported for v3
     }
-    self.wasm_functions.instance.set_token(&mut self.wasm_functions.store, token);
+    self.wasm_functions.exports.set_token(token);
     self.ensure_config(config).map_err(FormatError::new)?;
     match self.inner_format_text(file_path, file_bytes, override_config) {
       Ok(inner) => inner,
@@ -419,142 +413,104 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
   }
 }
 
-struct WasmFunctions {
-  store: Store,
-  instance: WasmInstance,
-  memory: Memory,
+struct WasmFunctions<TExports: PluginExports> {
+  exports: TExports,
 }
 
-impl WasmFunctions {
-  pub fn new(mut store: Store, instance: WasmInstance) -> Result<Self> {
-    let memory = instance
-      .get_memory(&mut store, "memory")
-      .ok_or_else(|| anyhow!("Could not find memory export in plugin."))?;
-    Ok(WasmFunctions { instance, memory, store })
-  }
-
+impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn set_global_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_global_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_global_config", &[])
   }
 
   #[inline]
   pub fn set_plugin_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_plugin_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_plugin_config", &[])
   }
 
   #[inline]
   pub fn get_plugin_info(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_plugin_info")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_plugin_info")
   }
 
   #[inline]
   pub fn get_license_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_license_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_license_text")
   }
 
   #[inline]
   pub fn get_resolved_config(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_resolved_config")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_resolved_config")
   }
 
   #[inline]
   pub fn get_config_diagnostics(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_config_diagnostics")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_config_diagnostics")
   }
 
   #[inline]
   pub fn set_override_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_override_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_override_config", &[])
   }
 
   #[inline]
   pub fn set_file_path(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_file_path")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_file_path", &[])
   }
 
   #[inline]
   pub fn format(&mut self) -> Result<WasmFormatResult> {
-    let func = self.get_export::<(), u32>("format")?;
-    Ok(func.call(&mut self.store, ()).map(|value| u8_to_format_result(value as u8))?)
+    let value = self.exports.call_u32("format", &[])?;
+    Ok(u8_to_format_result(value as u8))
   }
 
   #[inline]
   pub fn get_formatted_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_formatted_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_formatted_text")
   }
 
   #[inline]
   pub fn get_error_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_error_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_error_text")
   }
 
   #[inline]
   pub fn clear_shared_bytes(&mut self, capacity: usize) -> Result<()> {
-    let func = self.get_export::<u32, ()>("clear_shared_bytes")?;
-    Ok(func.call(&mut self.store, capacity as u32)?)
+    self.exports.call("clear_shared_bytes", &[capacity as u32])
   }
 
   #[inline]
   pub fn get_wasm_memory_buffer_size(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_wasm_memory_buffer_size")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_wasm_memory_buffer_size")
   }
 
   #[inline]
   pub fn get_wasm_memory_buffer_ptr(&mut self) -> Result<u32> {
-    let func = self.get_export::<(), u32>("get_wasm_memory_buffer")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call_u32("get_wasm_memory_buffer", &[])
   }
 
   #[inline]
   pub fn set_buffer_with_shared_bytes(&mut self, offset: usize, length: usize) -> Result<()> {
-    let func = self.get_export::<(u32, u32), ()>("set_buffer_with_shared_bytes")?;
-    Ok(func.call(&mut self.store, (offset as u32, length as u32))?)
+    self.exports.call("set_buffer_with_shared_bytes", &[offset as u32, length as u32])
   }
 
   #[inline]
   pub fn add_to_shared_bytes_from_buffer(&mut self, length: usize) -> Result<()> {
-    let func = self.get_export::<u32, ()>("add_to_shared_bytes_from_buffer")?;
-    Ok(func.call(&mut self.store, length as u32)?)
+    self.exports.call("add_to_shared_bytes_from_buffer", &[length as u32])
   }
 
   #[inline]
   fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.write(&mut self.store, offset, bytes)?;
-    Ok(())
+    self.exports.write_memory(offset, bytes)
   }
 
   #[inline]
   fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.read(&self.store, offset, bytes)?;
-    Ok(())
+    self.exports.read_memory(offset, bytes)
   }
 
-  fn get_export<P, R>(&mut self, name: &str) -> Result<TypedFunc<P, R>>
-  where
-    P: WasmParams,
-    R: WasmResults,
-  {
-    match self.instance.get_function(&mut self.store, name) {
-      Some(func) => match func.typed::<P, R>(&self.store) {
-        Ok(typed_func) => Ok(typed_func),
-        Err(err) => bail!("Error creating function '{}'. Message: {:#}", name, err),
-      },
-      None => bail!("Could not find export in plugin with name '{}'.", name),
-    }
+  fn call_len(&mut self, name: &str) -> Result<usize> {
+    Ok(self.exports.call_u32(name, &[])? as usize)
   }
 }
 

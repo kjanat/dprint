@@ -27,10 +27,6 @@ impl WasmInstance {
     self.version
   }
 
-  pub fn set_token(&self, store: &mut Store, token: std::sync::Arc<dyn dprint_core::plugins::CancellationToken>) {
-    store.data_mut().set_token(token);
-  }
-
   pub fn get_memory(&self, store: &mut Store, name: &str) -> Option<Memory> {
     self.inner.get_memory(store, name)
   }

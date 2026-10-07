@@ -6,7 +6,6 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use anyhow::bail;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::configuration::GlobalConfiguration;
@@ -27,18 +26,14 @@ use dprint_core::plugins::wasm::JsonResponse;
 use wasmtime::Caller;
 use wasmtime::Engine;
 use wasmtime::Memory;
-use wasmtime::TypedFunc;
-use wasmtime::WasmParams;
-use wasmtime::WasmResults;
 
 use crate::environment::Environment;
 use crate::plugins::FormatConfig;
 use crate::plugins::implementations::wasm::WasmHostFormatSender;
-use crate::plugins::implementations::wasm::WasmInstance;
 
 use super::InitializedWasmPluginInstance;
 use super::Linker;
-use super::Store;
+use super::PluginExports;
 use super::WasmHostState;
 
 enum WasmFormatResult {
@@ -119,36 +114,44 @@ fn env_mut<'a>(caller: &'a mut Caller<'_, WasmHostState>) -> &'a mut ImportObjec
 
 fn fd_write(mut caller: Caller<'_, WasmHostState>, fd: u32, iovs_ptr: u32, iovs_len: u32, nwritten_ptr: u32) -> u32 {
   let memory = env(&caller).memory.unwrap();
-  let log = env(&caller).log.clone();
+  let (memory, state) = memory.data_and_store_mut(&mut caller);
+  let WasmHostState::V4(state) = state else {
+    unreachable!("expected v4 host state");
+  };
+  write_output(memory, &state.log, fd, iovs_ptr, iovs_len, nwritten_ptr)
+}
 
+/// The `fd_write` import: logs what the plugin writes to stdout or stderr.
+/// Returns the WASI error code, which is 0 on success.
+pub fn write_output(memory: &mut [u8], log: &LogFn, fd: u32, iovs_ptr: u32, iovs_len: u32, nwritten_ptr: u32) -> u32 {
+  /// The range of `len` bytes at `offset`, if it's in the memory.
+  fn range(memory: &[u8], offset: usize, len: usize) -> Option<std::ops::Range<usize>> {
+    let end = offset.checked_add(len)?;
+    (end <= memory.len()).then_some(offset..end)
+  }
+
+  if !matches!(fd, 1 | 2) {
+    return 1; // unsupported fd
+  }
   let mut total_written: u32 = 0;
-  for i in 0..iovs_len {
-    let iovec_offset = (iovs_ptr + i * 8) as usize;
-    let mut iovec = [0u8; 8];
-    if memory.read(&caller, iovec_offset, &mut iovec).is_err() {
+  for i in 0..iovs_len as usize {
+    let Some(iovec) = range(memory, (iovs_ptr as usize).saturating_add(i.saturating_mul(8)), 8) else {
       return 1;
-    }
+    };
+    let iovec = &memory[iovec];
     let buf_addr = u32::from_le_bytes(iovec[0..4].try_into().unwrap());
     let buf_len = u32::from_le_bytes(iovec[4..8].try_into().unwrap());
-
-    let mut bytes = vec![0u8; buf_len as usize];
-    if memory.read(&caller, buf_addr as usize, &mut bytes).is_err() {
+    let Some(buf) = range(memory, buf_addr as usize, buf_len as usize) else {
       return 1;
-    }
-
-    if matches!(fd, 1 | 2) {
-      log(&String::from_utf8_lossy(&bytes));
-    } else {
-      return 1; // unsupported fd
-    }
-
-    total_written += buf_len;
+    };
+    log(&String::from_utf8_lossy(&memory[buf]));
+    total_written = total_written.saturating_add(buf_len);
   }
 
-  if memory.write(&mut caller, nwritten_ptr as usize, &total_written.to_le_bytes()).is_err() {
+  let Some(nwritten) = range(memory, nwritten_ptr as usize, 4) else {
     return 1;
-  }
-
+  };
+  memory[nwritten].copy_from_slice(&total_written.to_le_bytes());
   0
 }
 
@@ -252,18 +255,17 @@ fn host_has_cancelled(caller: Caller<'_, WasmHostState>) -> i32 {
   if env(&caller).token.as_ref().is_cancelled() { 1 } else { 0 }
 }
 
-pub struct InitializedWasmPluginInstanceV4 {
-  wasm_functions: WasmFunctions,
+pub struct InitializedWasmPluginInstanceV4<TExports: PluginExports> {
+  wasm_functions: WasmFunctions<TExports>,
   registered_config_ids: HashSet<FormatConfigId>,
 }
 
-impl InitializedWasmPluginInstanceV4 {
-  pub fn new(store: Store, instance: WasmInstance) -> Result<Self> {
-    let wasm_functions = WasmFunctions::new(store, instance)?;
-    Ok(Self {
-      wasm_functions,
+impl<TExports: PluginExports> InitializedWasmPluginInstanceV4<TExports> {
+  pub fn new(exports: TExports) -> Self {
+    Self {
+      wasm_functions: WasmFunctions { exports },
       registered_config_ids: HashSet::new(),
-    })
+    }
   }
 
   fn register_config(&mut self, config: &FormatConfig) -> Result<()> {
@@ -374,7 +376,7 @@ impl InitializedWasmPluginInstanceV4 {
   }
 }
 
-impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV4 {
+impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmPluginInstanceV4<TExports> {
   fn plugin_info(&mut self) -> Result<PluginInfo> {
     let len = self.wasm_functions.get_plugin_info()?;
     let json_bytes = self.receive_bytes(len)?;
@@ -434,7 +436,7 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV4 {
     } else {
       None
     };
-    self.wasm_functions.instance.set_token(&mut self.wasm_functions.store, token);
+    self.wasm_functions.exports.set_token(token);
     self.ensure_config(config).map_err(FormatError::new)?;
     match self.inner_format_text(file_path, file_bytes, range, config, override_config.as_deref()) {
       Ok(inner) => inner,
@@ -443,160 +445,108 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV4 {
   }
 }
 
-struct WasmFunctions {
-  store: Store,
-  instance: WasmInstance,
-  memory: Memory,
+struct WasmFunctions<TExports: PluginExports> {
+  exports: TExports,
 }
 
-impl WasmFunctions {
-  pub fn new(mut store: Store, instance: WasmInstance) -> Result<Self> {
-    let memory = instance
-      .get_memory(&mut store, "memory")
-      .ok_or_else(|| anyhow!("Could not find memory export in plugin."))?;
-    Ok(WasmFunctions { instance, memory, store })
-  }
-
+impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn register_config(&mut self, config_id: FormatConfigId) -> Result<()> {
-    let func = self.get_export::<u32, ()>("register_config")?;
-    Ok(func.call(&mut self.store, config_id.as_raw())?)
+    self.exports.call("register_config", &[config_id.as_raw()])
   }
 
   #[inline]
   pub fn get_plugin_info(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_plugin_info")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_plugin_info", &[])
   }
 
   #[inline]
   pub fn get_license_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_license_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_license_text", &[])
   }
 
   #[inline]
   pub fn check_config_updates(&mut self) -> Result<Option<usize>> {
-    let maybe_func = self.get_maybe_export::<(), u32>("check_config_updates")?;
-    match maybe_func {
-      Some(func) => Ok(Some(func.call(&mut self.store, ()).map(|value| value as usize)?)),
-      None => Ok(None), // ignore, the plugin doesn't have this defined
+    if !self.exports.has_function("check_config_updates") {
+      return Ok(None); // ignore, the plugin doesn't have this defined
     }
+    self.call_len("check_config_updates", &[]).map(Some)
   }
 
   #[inline]
   pub fn get_resolved_config(&mut self, config_id: FormatConfigId) -> Result<usize> {
-    let func = self.get_export::<u32, u32>("get_resolved_config")?;
-    Ok(func.call(&mut self.store, config_id.as_raw()).map(|value| value as usize)?)
+    self.call_len("get_resolved_config", &[config_id.as_raw()])
   }
 
   #[inline]
   pub fn get_config_diagnostics(&mut self, config_id: FormatConfigId) -> Result<usize> {
-    let func = self.get_export::<u32, u32>("get_config_diagnostics")?;
-    Ok(func.call(&mut self.store, config_id.as_raw()).map(|value| value as usize)?)
+    self.call_len("get_config_diagnostics", &[config_id.as_raw()])
   }
 
   #[inline]
   pub fn get_config_file_matching(&mut self, config_id: FormatConfigId) -> Result<usize> {
-    let func = self.get_export::<u32, u32>("get_config_file_matching")?;
-    Ok(func.call(&mut self.store, config_id.as_raw()).map(|value| value as usize)?)
+    self.call_len("get_config_file_matching", &[config_id.as_raw()])
   }
 
   #[inline]
   pub fn set_override_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_override_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_override_config", &[])
   }
 
   #[inline]
   pub fn set_file_path(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_file_path")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_file_path", &[])
   }
 
   #[inline]
   pub fn format(&mut self, config_id: FormatConfigId) -> Result<WasmFormatResult> {
-    let func = self.get_export::<u32, u32>("format")?;
-    Ok(func.call(&mut self.store, config_id.as_raw()).map(|value| u8_to_format_result(value as u8))?)
+    let value = self.exports.call_u32("format", &[config_id.as_raw()])?;
+    Ok(u8_to_format_result(value as u8))
   }
 
   #[inline]
   pub fn format_range(&mut self, config_id: FormatConfigId, range: std::ops::Range<usize>) -> Result<WasmFormatResult> {
-    let maybe_func = self.get_maybe_export::<(u32, u32, u32), u32>("format_range")?;
-    match maybe_func {
-      Some(func) => Ok(
-        func
-          .call(&mut self.store, (config_id.as_raw(), range.start as u32, range.end as u32))
-          .map(|value| u8_to_format_result(value as u8))?,
-      ),
-      None => {
-        // not supported
-        Ok(WasmFormatResult::NoChange)
-      }
+    if !self.exports.has_function("format_range") {
+      return Ok(WasmFormatResult::NoChange); // not supported
     }
+    let value = self
+      .exports
+      .call_u32("format_range", &[config_id.as_raw(), range.start as u32, range.end as u32])?;
+    Ok(u8_to_format_result(value as u8))
   }
 
   #[inline]
   pub fn get_formatted_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_formatted_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_formatted_text", &[])
   }
 
   #[inline]
   pub fn get_error_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_error_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_error_text", &[])
   }
 
   #[inline]
   pub fn clear_shared_bytes(&mut self, capacity: usize) -> Result<u32> {
-    let func = self.get_export::<u32, u32>("clear_shared_bytes")?;
-    Ok(func.call(&mut self.store, capacity as u32)?)
+    self.exports.call_u32("clear_shared_bytes", &[capacity as u32])
   }
 
   #[inline]
   pub fn get_shared_bytes_ptr(&mut self) -> Result<u32> {
-    let func = self.get_export::<(), u32>("get_shared_bytes_ptr")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call_u32("get_shared_bytes_ptr", &[])
   }
 
   #[inline]
   fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.write(&mut self.store, offset, bytes)?;
-    Ok(())
+    self.exports.write_memory(offset, bytes)
   }
 
   #[inline]
   fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.read(&self.store, offset, bytes)?;
-    Ok(())
+    self.exports.read_memory(offset, bytes)
   }
 
-  fn get_export<P, R>(&mut self, name: &str) -> Result<TypedFunc<P, R>>
-  where
-    P: WasmParams,
-    R: WasmResults,
-  {
-    match self.get_maybe_export(name)? {
-      Some(export) => Ok(export),
-      None => bail!("Could not find export '{}' in plugin.", name),
-    }
-  }
-
-  fn get_maybe_export<P, R>(&mut self, name: &str) -> Result<Option<TypedFunc<P, R>>>
-  where
-    P: WasmParams,
-    R: WasmResults,
-  {
-    match self.instance.get_function(&mut self.store, name) {
-      Some(func) => match func.typed::<P, R>(&self.store) {
-        Ok(typed_func) => Ok(Some(typed_func)),
-        Err(err) => bail!("Error creating function '{}'. Message: {:#}", name, err),
-      },
-      None => Ok(None),
-    }
+  fn call_len(&mut self, name: &str, params: &[u32]) -> Result<usize> {
+    Ok(self.exports.call_u32(name, params)? as usize)
   }
 }
 
