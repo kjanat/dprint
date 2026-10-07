@@ -1,16 +1,18 @@
 # dprint
 
+<!--
 [![npm](https://img.shields.io/npm/v/dprint.svg)](https://www.npmjs.com/package/dprint)
 [![crates.io](https://img.shields.io/crates/v/dprint.svg)](https://crates.io/crates/dprint)
 [![Homebrew](https://img.shields.io/badge/dynamic/json.svg?url=https://formulae.brew.sh/api/formula/dprint.json&query=$.versions.stable&label=homebrew)](https://formulae.brew.sh/formula/dprint)
+-->
 
 Monorepo for dprint—a pluggable and configurable code formatting platform.
 
 ## Links
 
-- [Overview](https://dprint.dev/overview)
-- [Getting Started](https://dprint.dev/install)
-- [Playground](https://dprint.dev/playground)
+- [Overview](https://dprint.kjanat.dev/overview)
+- [Getting Started](https://dprint.kjanat.dev/install)
+- [Playground](https://dprint.kjanat.dev/playground)
 
 ## Plugins
 
