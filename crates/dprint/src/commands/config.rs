@@ -998,6 +998,8 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     plugin_resolver,
     ResolvePluginsScopeAndPathsOptions {
       skip_traversal: config_discovery.is_global(),
+      // updates the plugins of every config file, whether it has files or not
+      skip_scopes_without_files: false,
     },
   )
   .await?;
@@ -1258,6 +1260,8 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     plugin_resolver,
     ResolvePluginsScopeAndPathsOptions {
       skip_traversal: config_discovery.is_global(),
+      // updates the plugins of every config file, whether it has files or not
+      skip_scopes_without_files: false,
     },
   )
   .await?;

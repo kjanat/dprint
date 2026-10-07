@@ -15,7 +15,7 @@ base64 = "=0.22.1"
 clap = "=4.6.6"
 clap_complete = "=4.6.9"
 console_static_text = "=0.9.0"
-crossterm = "=0.27.0"  # manually retest everything when bumping this crate
+crossterm = "=0.27.0" # manually retest everything when bumping this crate
 deno_npmrc = "=0.9.0"
 deno_semver = "=0.10.1"
 deno_terminal = "=0.2.3"
@@ -91,13 +91,30 @@ workspace = true
 # uncached "Compiling <plugin>" step ~3.5x slower on a 4 core machine.
 # most targets: native Cranelift codegen.
 [target."cfg(not(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\")))".dependencies]
-wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "parallel-compilation", "runtime", "std", "anyhow", "demangle", "addr2line"] }
+wasmtime = { version = "=43.0.2", default-features = false, features = [
+  "cranelift",
+  "parallel-compilation",
+  "runtime",
+  "std",
+  "anyhow",
+  "demangle",
+  "addr2line",
+] }
 # powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
 # lacks the signal-based traps native code needs, so these compile to Pulley
 # bytecode (still via Cranelift) and interpret it. the `pulley` feature adds the
 # bytecode emitter; the interpreter is already part of `runtime`.
 [target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
-wasmtime = { version = "=43.0.2", default-features = false, features = ["cranelift", "parallel-compilation", "runtime", "std", "anyhow", "demangle", "addr2line", "pulley"] }
+wasmtime = { version = "=43.0.2", default-features = false, features = [
+  "cranelift",
+  "parallel-compilation",
+  "runtime",
+  "std",
+  "anyhow",
+  "demangle",
+  "addr2line",
+  "pulley",
+] }
 [target."cfg(unix)".dependencies]
 signal-hook = "=0.3.18"
 

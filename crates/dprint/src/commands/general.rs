@@ -130,7 +130,10 @@ pub async fn output_file_paths<TEnvironment: Environment>(
     &cmd.patterns,
     environment,
     plugin_resolver,
-    ResolvePluginsScopeAndPathsOptions { skip_traversal: false },
+    ResolvePluginsScopeAndPathsOptions {
+      skip_traversal: false,
+      skip_scopes_without_files: true,
+    },
   )
   .await?;
   let file_paths = scopes.iter().flat_map(|x| x.file_paths_by_plugins.all_file_paths());
@@ -182,7 +185,11 @@ pub async fn incremental_state<TEnvironment: Environment>(
     &FilePatternArgs::default(),
     environment,
     plugin_resolver,
-    ResolvePluginsScopeAndPathsOptions { skip_traversal: false },
+    ResolvePluginsScopeAndPathsOptions {
+      skip_traversal: false,
+      // every config file is part of the state, whether it has files or not
+      skip_scopes_without_files: false,
+    },
   )
   .await?;
 
@@ -288,6 +295,7 @@ mod test {
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::test_helpers::get_expected_help_text;
+  use crate::test_helpers::get_singular_formatted_text;
   use crate::test_helpers::run_test_cli;
 
   #[test]
@@ -433,6 +441,58 @@ mod test {
       .write_file("/file.txt", "text")
       .write_file("/sub/file.txt", "text")
       .build()
+  }
+
+  /// A configuration file with files, and one in a subdirectory without any
+  /// whose plugin can't be downloaded.
+  fn nested_config_without_files() -> TestEnvironment {
+    TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .with_local_config("/sub/dprint.json", |config| {
+        config.add_includes("**/*.txt").add_plugin("https://plugins.dprint.dev/not-found.wasm");
+      })
+      .write_file("/file.txt", "text")
+      .write_file("/sub/file.md", "text")
+      .initialize()
+      .build()
+  }
+
+  #[test]
+  fn should_not_resolve_the_plugins_of_a_config_without_files() {
+    let environment = nested_config_without_files();
+    for args in [vec!["output-file-paths"], vec!["output-file-paths", "**/*.txt"]] {
+      run_test_cli(args, &environment).unwrap();
+      assert_eq!(environment.take_stdout_messages(), vec!["/file.txt"]);
+      // the plugin that can't be downloaded was never asked for
+      assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    }
+
+    run_test_cli(vec!["fmt", "**/*.txt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_say_a_config_without_files_has_no_files() {
+    let environment = nested_config_without_files();
+    let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
+    err.assert_exit_code(14);
+    assert_eq!(
+      err.to_string(),
+      concat!(
+        "No files found to format with the specified plugins at /sub. You may want to try using ",
+        "`dprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
+      )
+    );
+    // nothing was formatted
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
+
+    run_test_cli(vec!["fmt", "--allow-no-files"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]

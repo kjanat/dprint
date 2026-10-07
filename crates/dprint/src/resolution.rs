@@ -604,6 +604,9 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 pub struct PluginsScopeAndPathsCollection<TEnvironment: Environment> {
   environment: TEnvironment,
   inner: Vec<PluginsScopeAndPaths<TEnvironment>>,
+  /// The base directories of the scopes that found no files, whose plugins
+  /// weren't resolved (see `ResolvePluginsScopeAndPathsOptions`).
+  base_paths_without_files: Vec<CanonicalizedPathBuf>,
 }
 
 impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
@@ -682,6 +685,9 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
               scope.file_paths_by_plugins.ensure_not_empty(&config.origin.base_path)?;
             }
           }
+          if let Some(base_path) = self.base_paths_without_files.first() {
+            return Err(NoFilesFoundError { base_path: base_path.clone() }.into());
+          }
         }
       }
     }
@@ -709,6 +715,10 @@ pub struct PluginsScopeAndPaths<TEnvironment: Environment> {
 
 pub struct ResolvePluginsScopeAndPathsOptions {
   pub skip_traversal: bool,
+  /// Leaves out the scopes that found no files, without resolving their
+  /// plugins. Commands that only work on the files found set this, so a
+  /// plugin is never downloaded or set up for a scope with nothing to format.
+  pub skip_scopes_without_files: bool,
 }
 
 pub async fn resolve_plugins_scope_and_paths<TEnvironment: Environment>(
@@ -724,6 +734,7 @@ pub async fn resolve_plugins_scope_and_paths<TEnvironment: Environment>(
     environment,
     plugin_resolver,
     skip_traversal: options.skip_traversal,
+    skip_scopes_without_files: options.skip_scopes_without_files,
   };
 
   resolver.resolve_for_config().await
@@ -735,46 +746,76 @@ struct PluginsAndPathsResolver<'a, TEnvironment: Environment> {
   environment: &'a TEnvironment,
   plugin_resolver: &'a Rc<PluginResolver<TEnvironment>>,
   skip_traversal: bool,
+  skip_scopes_without_files: bool,
 }
 
 impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
+  /// Finds every config scope and its files first, without touching a
+  /// plugin. Only then resolves the plugins of the scopes, so setting up
+  /// plugins never competes with the scan, and the scopes that found no files
+  /// can be left out before any of their plugins is downloaded or set up.
   pub async fn resolve_for_config(&'a self) -> Result<PluginsScopeAndPathsCollection<TEnvironment>> {
     let config = Rc::new(resolve_config_from_args(self.args, self.environment).await?);
     let config_discovery = self.args.config_discovery(self.environment);
-    // finding the files doesn't need the plugins, so load them at the same time
-    let (scope, glob_output) = future::join(resolve_plugins_scope(config.clone(), self.environment, self.plugin_resolver), async {
-      if self.skip_traversal {
-        Ok(GlobOutput::default())
-      } else {
-        get_and_resolve_file_paths(&config, self.patterns, config_discovery, self.environment).await
-      }
-    })
-    .await;
-    let scope = scope?;
-    let mut glob_output = glob_output?;
+    let mut glob_output = if self.skip_traversal {
+      GlobOutput::default()
+    } else {
+      get_and_resolve_file_paths(&config, self.patterns, config_discovery, self.environment).await?
+    };
     let root_config_path = config.origin.source.maybe_local_path().cloned();
 
-    // resolve specified paths that are outside the config's directory
-    // against the config file found in their own directory tree or the
-    // user's global config file
+    // specified paths outside the config's directory use the config file
+    // found in their own directory tree, or the user's global config file
     let outside_scopes = self
       .resolve_outside_base_paths(&mut glob_output, &config, config_discovery, root_config_path.clone())
       .await?;
 
-    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, self.environment)?;
-
-    let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
+    let mut scopes = vec![ScopeFiles {
+      config: config.clone(),
+      file_paths: glob_output.file_paths,
+    }];
     let patterns = Rc::new(self.patterns.clone());
-    result.extend(
+    scopes.extend(
       self
-        .resolve_for_sub_configs(glob_output.config_files, config.clone(), config_discovery, root_config_path.clone(), patterns)
+        .resolve_for_sub_configs(glob_output.config_files, config.clone(), config_discovery, root_config_path, patterns)
         .await?,
     );
-    result.extend(outside_scopes);
+    scopes.extend(outside_scopes);
+
+    let mut base_paths_without_files = Vec::new();
+    if self.skip_scopes_without_files {
+      scopes.retain(|scope| {
+        if !scope.file_paths.is_empty() {
+          return true;
+        }
+        log_debug!(
+          self.environment,
+          "Not resolving the plugins of {} because it found no files.",
+          scope.config.origin.source.display()
+        );
+        base_paths_without_files.push(scope.config.origin.base_path.clone());
+        false
+      });
+    }
+
+    let resolved = future::join_all(scopes.into_iter().map(|scope| async move {
+      let plugins_scope = resolve_plugins_scope(scope.config, self.environment, self.plugin_resolver).await?;
+      let file_paths_by_plugins = get_file_paths_by_plugins(&plugins_scope.plugin_name_maps, scope.file_paths, self.environment)?;
+      Ok::<_, anyhow::Error>(PluginsScopeAndPaths {
+        scope: plugins_scope,
+        file_paths_by_plugins,
+      })
+    }))
+    .await;
+    let mut result = Vec::with_capacity(resolved.len());
+    for scope in resolved {
+      result.push(scope?);
+    }
 
     Ok(PluginsScopeAndPathsCollection {
       environment: self.environment.clone(),
       inner: result,
+      base_paths_without_files,
     })
   }
 
@@ -788,7 +829,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config: &Rc<ResolvedConfig>,
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     let outside_base_paths = std::mem::take(&mut glob_output.outside_base_paths);
     if outside_base_paths.is_empty() {
       return Ok(Vec::new());
@@ -874,7 +915,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config: &Rc<ResolvedConfig>,
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     // carry the negated patterns along so exclusions specified on the
     // command line keep applying in the new scope, but only resolve the
     // grouped paths so files matched by the other args don't get formatted
@@ -928,7 +969,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     let mut rebased_config = (**config).clone();
     rebased_config.origin.base_path = base_path;
     self
@@ -962,7 +1003,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     log_debug!(self.environment, "Analyzing config file {}", config_file_path.display());
     let config_file_path = self.environment.canonicalize(&config_file_path)?;
     if Some(&config_file_path) == root_config_path.as_ref() {
@@ -998,7 +1039,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> LocalBoxFuture<'a, Result<Vec<PluginsScopeAndPaths<TEnvironment>>>> {
+  ) -> LocalBoxFuture<'a, Result<Vec<ScopeFiles>>> {
     async move {
       let mut config = if is_descendant_config {
         // a nested config that opts into inheriting merges in the ancestor config
@@ -1025,23 +1066,17 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
-    // finding the files doesn't need the plugins, so load them at the same time
-    let (scope, glob_output) = future::join(
-      resolve_plugins_scope(config.clone(), self.environment, self.plugin_resolver),
-      get_and_resolve_file_paths(&config, &patterns, config_discovery, self.environment),
-    )
-    .await;
-    let scope = scope?;
-    let mut glob_output = glob_output?;
+  ) -> Result<Vec<ScopeFiles>> {
+    let mut glob_output = get_and_resolve_file_paths(&config, &patterns, config_discovery, self.environment).await?;
     // the root scope already handled paths outside this config's directory
     glob_output.outside_base_paths.clear();
-    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, self.environment)?;
-
-    let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
+    let mut result = vec![ScopeFiles {
+      config: config.clone(),
+      file_paths: glob_output.file_paths,
+    }];
     result.extend(
       self
-        .resolve_for_sub_configs(glob_output.config_files, config.clone(), config_discovery, root_config_path, patterns)
+        .resolve_for_sub_configs(glob_output.config_files, config, config_discovery, root_config_path, patterns)
         .await?,
     );
     Ok(result)
@@ -1056,7 +1091,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     let scopes = future::join_all(config_file_paths.into_iter().map(|config_file_path| {
       self.resolve_for_sub_config(
         config_file_path,
@@ -1073,6 +1108,12 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     }
     Ok(result)
   }
+}
+
+/// A config scope and the files found for it, before its plugins are resolved.
+struct ScopeFiles {
+  config: Rc<ResolvedConfig>,
+  file_paths: Vec<PathBuf>,
 }
 
 /// The most plugins a format run compiles to native code, unless

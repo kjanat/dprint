@@ -105,7 +105,10 @@ pub async fn output_format_times<TEnvironment: Environment>(
     &cmd.patterns,
     environment,
     plugin_resolver,
-    ResolvePluginsScopeAndPathsOptions { skip_traversal: false },
+    ResolvePluginsScopeAndPathsOptions {
+      skip_traversal: false,
+      skip_scopes_without_files: true,
+    },
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
@@ -159,7 +162,10 @@ pub async fn check<TEnvironment: Environment>(
     &cmd.patterns,
     environment,
     plugin_resolver,
-    ResolvePluginsScopeAndPathsOptions { skip_traversal: false },
+    ResolvePluginsScopeAndPathsOptions {
+      skip_traversal: false,
+      skip_scopes_without_files: true,
+    },
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
@@ -369,7 +375,10 @@ pub async fn format<TEnvironment: Environment>(
     &cmd.patterns,
     environment,
     plugin_resolver,
-    ResolvePluginsScopeAndPathsOptions { skip_traversal: false },
+    ResolvePluginsScopeAndPathsOptions {
+      skip_traversal: false,
+      skip_scopes_without_files: true,
+    },
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
