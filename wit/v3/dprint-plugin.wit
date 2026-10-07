@@ -1,0 +1,215 @@
+/// dprint Wasm plugin ABI, plugin system schema version 3.
+///
+/// Introduced in dprint 0.8.0 (dprint-core 0.27.0, 2020-08-05), the only
+/// version accepted up to dprint 0.46.3, and still run by the current host
+/// next to version 4. A v3 plugin is recognised by its
+/// `get_plugin_schema_version` export, by name (the host doesn't call it).
+///
+/// Like version 4 this is a core-module ABI, not a component: the plugin
+/// exports a linear `memory` and passes byte payloads through a shared
+/// buffer it owns, here in chunks through a fixed 4 KiB transfer buffer
+/// (see `shared-bytes` below). Every value is an `i32` on wasm32, written
+/// as `u32` here. Payloads are JSON unless said otherwise.
+///
+/// Within version 3, without a version bump, the payloads grew: `fileNames`
+/// (dprint 0.15.0), `updateUrl` (0.22.0), ordered config keys (0.23.0),
+/// `reset_config` (0.24.2), array/object/null config values (0.28.0), and
+/// formatted output as arbitrary bytes rather than UTF-8 (0.43.2).
+package dprint:plugin@3.0.0;
+
+/// The JSON payloads the plugin and the host exchange.
+interface types {
+  /// A payload, as JSON text (UTF-8).
+  type json = string;
+
+  /// A pointer into the plugin's linear memory.
+  type pointer = u32;
+
+  /// What `format` (and the host's `host-format`) returns: 0, 1 or 2.
+  enum format-result {
+    no-change,
+    /// Changed: the formatted bytes are in `get-formatted-text`.
+    changed,
+    /// Failed: the error text is in `get-error-text`.
+    error,
+  }
+
+  /// `get-plugin-info` (keys in camelCase), with the file matching
+  /// flattened into it (version 4 split that off).
+  record plugin-info {
+    name: string,
+    version: string,
+    config-key: string,
+    /// Without a leading dot.
+    file-extensions: list<string>,
+    /// Since dprint 0.15.0; default none.
+    file-names: list<string>,
+    help-url: string,
+    config-schema-url: string,
+    /// Since dprint 0.22.0.
+    update-url: option<string>,
+  }
+
+  /// `set-global-config`: the configuration file's global formatting
+  /// settings, each optional.
+  record global-configuration {
+    line-width: option<u32>,
+    use-tabs: option<bool>,
+    indent-width: option<u8>,
+    /// "auto", "lf" or "crlf".
+    new-line-kind: option<string>,
+  }
+
+  /// `set-plugin-config` and `set-override-config`: the plugin's table, an
+  /// object of property name to value: a string, a number (i32) or a
+  /// boolean, and since dprint 0.28.0 also an array, an object or null.
+  type config-key-map = json;
+
+  /// `get-config-diagnostics`: a list of these.
+  record configuration-diagnostic {
+    property-name: string,
+    message: string,
+  }
+}
+
+/// What the plugin exports.
+interface plugin-exports {
+  use types.{pointer, format-result};
+
+  // --- shared bytes: how every payload is passed, in chunks ---
+  //
+  // The plugin has a shared byte buffer and a fixed transfer buffer of
+  // `get-wasm-memory-buffer-size()` bytes (4096). Host to plugin: the host
+  // calls `clear-shared-bytes(len)`, then for each chunk writes it to the
+  // transfer buffer and calls `add-to-shared-bytes-from-buffer(n)`. Plugin
+  // to host: the export returns `len`; for each chunk the host calls
+  // `set-buffer-with-shared-bytes(offset, n)` and reads `n` bytes from the
+  // transfer buffer.
+
+  /// `get_plugin_schema_version() -> u32`. Returns 3.
+  get-plugin-schema-version: func() -> u32;
+
+  /// `get_wasm_memory_buffer() -> *const u8`. The transfer buffer.
+  get-wasm-memory-buffer: func() -> pointer;
+
+  /// `get_wasm_memory_buffer_size() -> usize`. 4096.
+  get-wasm-memory-buffer-size: func() -> u32;
+
+  /// `add_to_shared_bytes_from_buffer(length: usize)`. Appends the first
+  /// `length` bytes of the transfer buffer to the shared bytes.
+  add-to-shared-bytes-from-buffer: func(length: u32);
+
+  /// `set_buffer_with_shared_bytes(offset: usize, length: usize)`. Copies
+  /// `length` shared bytes from `offset` into the transfer buffer.
+  set-buffer-with-shared-bytes: func(offset: u32, length: u32);
+
+  /// `clear_shared_bytes(capacity: usize)`. Empties the shared bytes,
+  /// reserving `capacity`. Returns nothing (version 4 returns a pointer).
+  clear-shared-bytes: func(capacity: u32);
+
+  // --- plugin information ---
+
+  /// `get_plugin_info() -> usize`. Shared bytes get `types.plugin-info`
+  /// JSON; returns its length.
+  get-plugin-info: func() -> u32;
+
+  /// `get_license_text() -> usize`. Shared bytes get the license (UTF-8).
+  get-license-text: func() -> u32;
+
+  // --- configuration: one at a time ---
+  //
+  // When the configuration changes, the host sends
+  // `types.global-configuration` JSON and calls `set-global-config`, then
+  // `types.config-key-map` JSON and calls `set-plugin-config`.
+
+  /// `set_global_config()`. Shared bytes hold `types.global-configuration`.
+  set-global-config: func();
+
+  /// `set_plugin_config()`. Shared bytes hold `types.config-key-map`. The
+  /// plugin resolves the configuration from both.
+  set-plugin-config: func();
+
+  /// `reset_config()`. Since dprint 0.24.2; forgets the configuration.
+  /// Only the playground uses it; the host never calls it.
+  reset-config: func();
+
+  /// `get_resolved_config() -> usize`. Shared bytes get the resolved
+  /// configuration as JSON (the plugin's own shape).
+  get-resolved-config: func() -> u32;
+
+  /// `get_config_diagnostics() -> usize`. Shared bytes get a JSON list of
+  /// `types.configuration-diagnostic`.
+  get-config-diagnostics: func() -> u32;
+
+  // --- formatting ---
+  //
+  // The host's sequence for one format: with an override config, send it
+  // and call `set-override-config`; send the file path and call
+  // `set-file-path`; send the file text and call `format`; on `changed`
+  // call `get-formatted-text`, on `error` call `get-error-text`. The
+  // current host doesn't format a range with a v3 plugin (it reports no
+  // change) and never asks it for config updates.
+
+  /// `set_override_config()`. Shared bytes hold `types.config-key-map`
+  /// JSON: the plugin's properties for this file. New in version 3.
+  set-override-config: func();
+
+  /// `set_file_path()`. Shared bytes hold the file path (UTF-8).
+  set-file-path: func();
+
+  /// `format() -> u8`. Shared bytes hold the file's text.
+  format: func() -> format-result;
+
+  /// `get_formatted_text() -> usize`. Shared bytes get the formatted text
+  /// (UTF-8 until dprint 0.43.2, any bytes since).
+  get-formatted-text: func() -> u32;
+
+  /// `get_error_text() -> usize`. Shared bytes get the error text (UTF-8).
+  get-error-text: func() -> u32;
+}
+
+/// What the host provides, in the import module "dprint". The host's own
+/// buffer is handled like the plugin's: in chunks of the plugin's transfer
+/// buffer.
+interface host {
+  use types.{pointer, format-result};
+
+  /// `host_clear_bytes(length: u32)`. Empties the host's buffer, reserving
+  /// `length`.
+  host-clear-bytes: func(length: u32);
+
+  /// `host_read_buffer(pointer: u32, length: u32)`. Appends `length` bytes
+  /// from the plugin's memory at `pointer` to the host's buffer.
+  host-read-buffer: func(pointer: pointer, length: u32);
+
+  /// `host_write_buffer(pointer: u32, offset: u32, length: u32)`. Copies
+  /// `length` bytes of the host's buffer from `offset` to the plugin's
+  /// memory at `pointer`.
+  host-write-buffer: func(pointer: pointer, offset: u32, length: u32);
+
+  /// `host_take_file_path()`. Takes the host's buffer as the path of the
+  /// file to format with `host-format`.
+  host-take-file-path: func();
+
+  /// `host_take_override_config()`. Takes the host's buffer as the
+  /// override config (`types.config-key-map` JSON) for `host-format`. New
+  /// in version 3.
+  host-take-override-config: func();
+
+  /// `host_format() -> u8`. Formats the host's buffer (the file text) with
+  /// another plugin, for the path and override taken before.
+  host-format: func() -> format-result;
+
+  /// `host_get_formatted_text() -> u32`. After `changed`: puts the
+  /// formatted text in the host's buffer and returns its length.
+  host-get-formatted-text: func() -> u32;
+
+  /// `host_get_error_text() -> u32`. After `error`: puts the error text in
+  /// the host's buffer and returns its length.
+  host-get-error-text: func() -> u32;
+}
+
+world plugin {
+  import host;
+  export plugin-exports;
+}

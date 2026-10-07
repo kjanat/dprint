@@ -1,0 +1,277 @@
+/// dprint Wasm plugin ABI, plugin system schema version 4.
+///
+/// Current. Introduced in dprint 0.47.0 (dprint-core 0.67.0, 2024-06-30);
+/// what `generate_plugin_code!` in dprint-core emits today.
+///
+/// This is not a component-model interface: a plugin is a core module that
+/// exports a linear `memory` and these functions, and passes byte payloads
+/// through a shared buffer it owns (see `shared-bytes` below). Every value
+/// is an `i32` on wasm32 (`u32`, `u8`, `usize` and pointers alike), so this
+/// file writes them as `u32` and names each function by its core export
+/// name in a doc comment. The payloads are JSON unless said otherwise; the
+/// `types` interface gives their shapes.
+package dprint:plugin@4.0.0;
+
+/// The JSON payloads the plugin and the host exchange.
+interface types {
+  /// A payload, as JSON text (UTF-8). The records below are its shape.
+  type json = string;
+
+  /// A pointer into the plugin's linear memory.
+  type pointer = u32;
+
+  /// A config registered with the plugin by `register-config`. Ids start
+  /// at 1; 0 is never a registered config.
+  type config-id = u32;
+
+  /// What `format` and `format-range` (and the host's `host-format`)
+  /// return: 0, 1 or 2 as an `i32`. Any other value is a protocol error.
+  enum format-result {
+    /// The text is unchanged.
+    no-change,
+    /// Changed: the formatted bytes are in `get-formatted-text`.
+    changed,
+    /// Failed: the error text is in `get-error-text`.
+    error,
+  }
+
+  /// `get-plugin-info` (keys in camelCase).
+  record plugin-info {
+    name: string,
+    version: string,
+    /// The key of the plugin's table in a configuration file.
+    config-key: string,
+    help-url: string,
+    /// The url of the plugin's configuration JSON schema. Empty for none.
+    config-schema-url: string,
+    /// The url of the plugin's `latest.json`, for `dprint config update`.
+    update-url: option<string>,
+  }
+
+  /// `get-config-file-matching`: which files a config matches.
+  record file-matching-info {
+    /// Without a leading dot. Default: none.
+    file-extensions: list<string>,
+    /// Default: none.
+    file-names: list<string>,
+    /// Whether these add to (rather than replace) what the plugin matches
+    /// by default. Since dprint-core 0.70.0; default false.
+    additive: bool,
+  }
+
+  /// What the host sends before `register-config`:
+  /// `{ "plugin": <config-key-map>, "global": <global-configuration> }`.
+  record raw-format-config {
+    plugin: json,
+    global: json,
+  }
+
+  /// `global`: the configuration file's global formatting settings, each
+  /// optional.
+  record global-configuration {
+    line-width: option<u32>,
+    use-tabs: option<bool>,
+    indent-width: option<u8>,
+    /// "auto", "lf" or "crlf".
+    new-line-kind: option<string>,
+  }
+
+  /// A plugin's table (or an override): an object of property name to
+  /// value, where a value is a string, a number (i32), a boolean, an
+  /// array, an object, or null (an untagged JSON value). WIT has no
+  /// recursive types, so it's `json` here.
+  type config-key-map = json;
+
+  /// `get-config-diagnostics`: a list of these.
+  record configuration-diagnostic {
+    property-name: string,
+    message: string,
+  }
+
+  /// `check-config-updates` input.
+  record check-config-updates-message {
+    old-version: option<string>,
+    config: config-key-map,
+  }
+
+  /// `check-config-updates` output: `{ "kind": "ok", "data": [<config-change>] }`
+  /// or `{ "kind": "err", "data": "<message>" }`.
+  variant json-response {
+    ok(list<config-change>),
+    err(string),
+  }
+
+  /// A change to a configuration file. `kind` is "Add", "Set" or "Remove".
+  record config-change {
+    /// Property names and array indexes from the plugin's table.
+    path: list<path-segment>,
+    kind: config-change-kind,
+    /// Absent for "Remove".
+    value: option<json>,
+  }
+
+  variant path-segment {
+    key(string),
+    index(u32),
+  }
+
+  enum config-change-kind {
+    add,
+    set,
+    remove,
+  }
+}
+
+/// What the plugin exports. The host looks the version up by name
+/// (`dprint_plugin_version_4`) without calling it, and requires `memory`.
+interface plugin-exports {
+  use types.{pointer, config-id, format-result};
+
+  // --- shared bytes: how every payload is passed ---
+  //
+  // Host to plugin: the host calls `clear-shared-bytes(len)`, writes `len`
+  // bytes at the pointer it returns, then calls the export that consumes
+  // them. Plugin to host: the export returns `len`; the host reads `len`
+  // bytes at `get-shared-bytes-ptr()`.
+
+  /// `dprint_plugin_version_4() -> u32`. Returns 4. A marker: the host only
+  /// checks that an export of this name exists.
+  dprint-plugin-version-4: func() -> u32;
+
+  /// `get_shared_bytes_ptr() -> *const u8`.
+  get-shared-bytes-ptr: func() -> pointer;
+
+  /// `clear_shared_bytes(size: usize) -> *const u8`. Replaces the shared
+  /// bytes with `size` zero bytes and returns their pointer.
+  clear-shared-bytes: func(size: u32) -> pointer;
+
+  // --- plugin information ---
+
+  /// `get_plugin_info() -> usize`. Shared bytes get `types.plugin-info`
+  /// JSON; returns its length. Read once when the plugin is compiled, with
+  /// no-op host imports, and cached.
+  get-plugin-info: func() -> u32;
+
+  /// `get_license_text() -> usize`. Shared bytes get the license (UTF-8).
+  get-license-text: func() -> u32;
+
+  // --- configuration ---
+
+  /// `register_config(config_id: u32)`. Shared bytes hold
+  /// `types.raw-format-config` JSON; the plugin resolves it and keeps it
+  /// under `config-id`. Called once per id.
+  register-config: func(config-id: config-id);
+
+  /// `release_config(config_id: u32)`. Drops a registered config. The
+  /// host never calls it.
+  release-config: func(config-id: config-id);
+
+  /// `get_resolved_config(config_id: u32) -> usize`. Shared bytes get the
+  /// resolved configuration as JSON (the plugin's own shape).
+  get-resolved-config: func(config-id: config-id) -> u32;
+
+  /// `get_config_diagnostics(config_id: u32) -> usize`. Shared bytes get a
+  /// JSON list of `types.configuration-diagnostic`.
+  get-config-diagnostics: func(config-id: config-id) -> u32;
+
+  /// `get_config_file_matching(config_id: u32) -> usize`. Shared bytes get
+  /// `types.file-matching-info` JSON.
+  get-config-file-matching: func(config-id: config-id) -> u32;
+
+  /// `check_config_updates() -> usize`. Optional (the host treats a missing
+  /// export as no changes). Shared bytes hold
+  /// `types.check-config-updates-message` JSON in; they get
+  /// `types.json-response` JSON out.
+  check-config-updates: func() -> u32;
+
+  // --- formatting ---
+  //
+  // The host's sequence for one format: with an override config, send it
+  // and call `set-override-config`; send the file path and call
+  // `set-file-path`; send the file bytes and call `format` or
+  // `format-range`; on `changed` call `get-formatted-text`, on `error`
+  // call `get-error-text`.
+
+  /// `set_override_config()`. Shared bytes hold a `types.config-key-map`
+  /// JSON: the plugin's properties for this file (an override).
+  set-override-config: func();
+
+  /// `set_file_path()`. Shared bytes hold the file path (UTF-8). The plugin
+  /// replaces `\` with `/`.
+  set-file-path: func();
+
+  /// `format(config_id: u32) -> u8`. Shared bytes hold the file's bytes.
+  format: func(config-id: config-id) -> format-result;
+
+  /// `format_range(config_id: u32, range_start: u32, range_end: u32) -> u8`.
+  /// Optional (the host treats a missing export as `no-change`). The
+  /// range is in byte offsets of the file.
+  format-range: func(config-id: config-id, range-start: u32, range-end: u32) -> format-result;
+
+  /// `get_formatted_text() -> usize`. Shared bytes get the formatted bytes
+  /// (any bytes, not necessarily UTF-8).
+  get-formatted-text: func() -> u32;
+
+  /// `get_error_text() -> usize`. Shared bytes get the error text (UTF-8),
+  /// which becomes a non-critical format error. A trap (ex. a panic) is a
+  /// critical one instead: the host recreates the instance and retries
+  /// once.
+  get-error-text: func() -> u32;
+}
+
+/// What the host provides, in the import module "dprint". A plugin imports
+/// any subset.
+interface host {
+  use types.{pointer, format-result};
+
+  /// `host_has_cancelled() -> i32`. 1 when the format was cancelled, so a
+  /// long format can stop.
+  host-has-cancelled: func() -> bool;
+
+  /// `host_format(file_path_ptr, file_path_len, start_range, end_range,
+  /// override_config_ptr, override_config_len, file_text_ptr, file_text_len) -> u8`.
+  /// Asks the host to format text with another plugin (ex. embedded code).
+  /// A range of `(0, file_text_len)` is the whole file; an override length
+  /// of 0 is no override.
+  host-format: func(
+    file-path-ptr: pointer,
+    file-path-len: u32,
+    start-range: u32,
+    end-range: u32,
+    override-config-ptr: pointer,
+    override-config-len: u32,
+    file-text-ptr: pointer,
+    file-text-len: u32,
+  ) -> format-result;
+
+  /// `host_get_formatted_text() -> u32`. After `changed`: the length of
+  /// the host's pending bytes, to be fetched with `host-write-buffer`.
+  host-get-formatted-text: func() -> u32;
+
+  /// `host_get_error_text() -> u32`. After `error`: the length of the
+  /// host's pending error text.
+  host-get-error-text: func() -> u32;
+
+  /// `host_write_buffer(pointer: *const u8)`. Copies the host's whole
+  /// pending buffer to `pointer` in the plugin's memory. The plugin calls
+  /// `clear-shared-bytes(len)` first and passes the pointer it got.
+  host-write-buffer: func(pointer: pointer);
+}
+
+/// What the host provides in the import module "env", for a plugin that
+/// prints through the WASI preview 1 `fd_write` shape (ex. dprint-core's
+/// `WasiPrintFd`).
+interface env {
+  use types.{pointer};
+
+  /// `fd_write(fd: i32, iovs: *const Iovec, iovs_len: i32, nwritten: *mut i32) -> i32`.
+  /// Each iovec is 8 bytes: `buf: u32, buf_len: u32`. The host logs fd 1
+  /// and 2 to its stderr with the plugin's name; any other fd returns 1.
+  fd-write: func(fd: s32, iovs: pointer, iovs-len: s32, nwritten: pointer) -> s32;
+}
+
+world plugin {
+  import host;
+  import env;
+  export plugin-exports;
+}
