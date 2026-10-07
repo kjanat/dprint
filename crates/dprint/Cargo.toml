@@ -86,7 +86,7 @@ workspace = true
 [dev-dependencies]
 boon              = "0.6.1"
 # stay on this version because it's good enough and makes the output the same on all platforms
-path-clean        = "0.1.0"
+path-clean        = "1.0.1"
 pretty_assertions = "1.4.0"
 sys_traits        = { workspace = true, features = ["memory"] }
 tempfile          = "3.20"
