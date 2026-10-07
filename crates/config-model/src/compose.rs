@@ -362,8 +362,14 @@ impl Applies {
           .extend((0..branches.len()).map(|index| (format!("{}/{}/{}", pointer, keyword, index), keyword)));
       }
     }
-    for keyword in ["if", "then", "else", "not"] {
-      if object.contains_key(keyword) {
+    // (`then` and `else` are ignored without an `if`)
+    let conditionals: &[&'static str] = if object.contains_key("if") {
+      &["if", "then", "else", "not"]
+    } else {
+      &["not"]
+    };
+    for keyword in conditionals {
+      if object.contains_key(*keyword) {
         result.on_a_condition.push((format!("{}/{}", pointer, keyword), keyword));
       }
     }
@@ -1293,7 +1299,20 @@ mod test {
       "anyOf": [{ "$ref": "#/$defs/shared" }, { "type": "object" }],
       "allOf": [{ "$ref": "#/$defs/mid" }],
     });
+    // `then` and `else` without an `if` are ignored, whatever they say
+    let then_and_else_without_if = json!({
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": { "a": { "type": "string" } },
+      "unevaluatedProperties": false,
+      "then": { "properties": { "b": { "type": "number" } } },
+      "else": { "additionalProperties": true },
+    });
+    let then_without_if = json!({ "then": { "maxProperties": 0 } });
     let cases = [
+      (&then_and_else_without_if, json!({}), json!({ "a": "x" }), true),
+      (&then_and_else_without_if, json!({}), json!({ "b": 1 }), false),
+      (&then_and_else_without_if, json!({}), json!({ "zzz": 1 }), false),
+      (&then_without_if, json!({}), json!({ "a": 1 }), true),
       (&shared_twice, json!({}), json!({ "a": "x" }), true),
       (&shared_twice, json!({}), json!({ "a": 1 }), false),
       (&shared_twice, json!({}), json!({ "zzz": 1 }), false),
