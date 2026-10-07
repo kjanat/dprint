@@ -32,11 +32,15 @@ export function addInstallTabsEvent() {
       copyBtn.disabled = true;
       const command = cmdText.textContent;
       try {
-        if (navigator.clipboard == null) throw new Error("Clipboard is unavailable.");
+        if (navigator.clipboard == null) {
+          throw new Error("Clipboard is unavailable.");
+        }
         await navigator.clipboard.writeText(command);
         if (cmdText.textContent === command) copyBtn.textContent = "copied ✓";
       } catch {
-        if (cmdText.textContent === command) copyBtn.textContent = "copy failed";
+        if (cmdText.textContent === command) {
+          copyBtn.textContent = "copy failed";
+        }
       } finally {
         copyBtn.disabled = false;
         copyTimeout = setTimeout(() => {

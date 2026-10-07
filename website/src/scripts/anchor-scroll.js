@@ -20,10 +20,12 @@ const restoreAnchorScroll = () => {
   const target = getHashTarget();
   if (target == null || document.fonts == null) return;
 
-  const scrollYBefore = window.scrollY;
+  const scrollYBefore = globalThis.scrollY;
   document.fonts.ready.then(() => {
     // don't yank the page around if the reader already scrolled somewhere else
-    if (window.scrollY === scrollYBefore && getHashTarget() === target) target.scrollIntoView();
+    if (globalThis.scrollY === scrollYBefore && getHashTarget() === target) {
+      target.scrollIntoView();
+    }
   });
 };
 

@@ -1,2 +1,2 @@
-export * from "./getPluginDefaultConfig";
-export * from "./getPluginUrls";
+export * from "./getPluginDefaultConfig.ts";
+export * from "./getPluginUrls.ts";

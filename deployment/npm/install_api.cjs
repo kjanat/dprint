@@ -11,17 +11,17 @@ module.exports = {
   replaceBinEntry,
   runInstall() {
     const dprintFileName = os.platform() === "win32" ? "dprint.exe" : "dprint";
-    const targetExecutablePath = path.join(
-      __dirname,
-      dprintFileName,
-    );
+    const targetExecutablePath = path.join(__dirname, dprintFileName);
 
     if (fs.existsSync(targetExecutablePath)) {
       return targetExecutablePath;
     }
 
     const target = getTarget();
-    const sourceExecutablePath = resolveSourceExecutablePath(target, dprintFileName);
+    const sourceExecutablePath = resolveSourceExecutablePath(
+      target,
+      dprintFileName,
+    );
 
     if (sourceExecutablePath == null) {
       // the @dprint/<target> optional dependency isn't installed (for example
@@ -56,7 +56,9 @@ module.exports = {
       if (process.env.DPRINT_DEBUG === "1") {
         console.warn(
           "Failed to copy executable from "
-            + sourceExecutablePath + " to " + targetExecutablePath
+            + sourceExecutablePath
+            + " to "
+            + targetExecutablePath
             + ". Using resolved package path instead.",
           err,
         );
@@ -76,7 +78,9 @@ module.exports = {
 function resolveSourceExecutablePath(target, dprintFileName) {
   let sourcePackagePath;
   try {
-    sourcePackagePath = path.dirname(require.resolve(`@dprint/${target}/package.json`));
+    sourcePackagePath = path.dirname(
+      require.resolve(`@dprint/${target}/package.json`),
+    );
   } catch {
     // the optional dependency wasn't installed
     return undefined;
@@ -95,15 +99,21 @@ function resolveSourceExecutablePath(target, dprintFileName) {
 function downloadExecutable(target, dprintFileName, destinationPath) {
   // @ts-ignore
   const version = require("./package.json").version;
-  const registry = (process.env.npm_config_registry || "https://registry.npmjs.org")
-    .replace(/\/+$/, "");
+  const registry = (
+    process.env.npm_config_registry || "https://registry.npmjs.org"
+  ).replace(/\/+$/, "");
   // npm tarball urls drop the scope from the file name (e.g.
   // https://registry.npmjs.org/@dprint/win32-x64/-/win32-x64-1.0.0.tgz)
   const tarballUrl = `${registry}/@dprint/${target}/-/${target}-${version}.tgz`;
-  console.error(`[dprint] Optional dependency @dprint/${target} was not installed. Downloading from ${tarballUrl}`);
+  console.error(
+    `[dprint] Optional dependency @dprint/${target} was not installed. Downloading from ${tarballUrl}`,
+  );
   const tarballBuffer = downloadBufferSync(tarballUrl);
   // files inside an npm tarball live under the "package/" directory
-  const executableBuffer = extractFileFromTarGzip(tarballBuffer, `package/${dprintFileName}`);
+  const executableBuffer = extractFileFromTarGzip(
+    tarballBuffer,
+    `package/${dprintFileName}`,
+  );
   verifyExecutableHash(target, executableBuffer);
   atomicWriteFile(destinationPath, executableBuffer);
 }
@@ -120,18 +130,30 @@ function verifyExecutableHash(target, buffer) {
     // @ts-ignore
     hashes = require("./hashes.json");
   } catch (err) {
-    throw new Error(`Could not load hashes.json to verify the downloaded binary: ${err instanceof Error ? err.message : err}`);
+    throw new Error(
+      `Could not load hashes.json to verify the downloaded binary: ${err instanceof Error ? err.message : err}`,
+    );
   }
   const expected = hashes[target];
   if (typeof expected !== "string") {
-    throw new Error(`No known hash for @dprint/${target} to verify the download against.`);
+    throw new Error(
+      `No known hash for @dprint/${target} to verify the download against.`,
+    );
   }
-  const actual = require("node:crypto").createHash("sha256").update(buffer).digest("hex");
+  const actual = require("node:crypto")
+    .createHash("sha256")
+    .update(buffer)
+    .digest("hex");
   if (actual !== expected) {
     throw new Error(
-      "Integrity check failed for the downloaded @dprint/" + target + " binary.\n"
-        + "  Expected sha256: " + expected + "\n"
-        + "  Actual sha256:   " + actual,
+      "Integrity check failed for the downloaded @dprint/"
+        + target
+        + " binary.\n"
+        + "  Expected sha256: "
+        + expected
+        + "\n"
+        + "  Actual sha256:   "
+        + actual,
     );
   }
 }
@@ -162,13 +184,17 @@ function downloadBufferWithCurl(url) {
   if (proxy) {
     args.push("--proxy", proxy);
   }
-  const noProxy = process.env.npm_config_noproxy || process.env.NO_PROXY || process.env.no_proxy;
+  const noProxy = process.env.npm_config_noproxy
+    || process.env.NO_PROXY
+    || process.env.no_proxy;
   if (noProxy) {
     args.push("--noproxy", noProxy);
   }
   args.push("-o", "-", url);
   try {
-    return require("node:child_process").execFileSync("curl", args, { maxBuffer: 512 * 1024 * 1024 });
+    return require("node:child_process").execFileSync("curl", args, {
+      maxBuffer: 512 * 1024 * 1024,
+    });
   } catch (err) {
     if (err instanceof Error && "code" in err && err.code === "ENOENT") {
       // curl isn't installed, fall back to node
@@ -212,7 +238,9 @@ function extractFileFromTarGzip(buffer, subpath) {
   try {
     tar = zlib.gunzipSync(buffer);
   } catch (err) {
-    throw new Error(`Invalid gzip data in downloaded tarball: ${err instanceof Error ? err.message : err}`);
+    throw new Error(
+      `Invalid gzip data in downloaded tarball: ${err instanceof Error ? err.message : err}`,
+    );
   }
   let offset = 0;
   while (offset < tar.length) {
@@ -225,7 +253,9 @@ function extractFileFromTarGzip(buffer, subpath) {
       offset += (size + 511) & ~511;
     }
   }
-  throw new Error(`Could not find ${JSON.stringify(subpath)} in downloaded tarball`);
+  throw new Error(
+    `Could not find ${JSON.stringify(subpath)} in downloaded tarball`,
+  );
 }
 
 /**
@@ -282,8 +312,16 @@ function getTarget() {
 
 function getArch() {
   const arch = os.arch();
-  if (arch !== "arm64" && arch !== "x64" && arch !== "riscv64" && arch !== "loong64" && arch !== "ppc64") {
-    throw new Error(`Unsupported architecture ${os.arch()}. Only x64, arm64, riscv64, loong64 and ppc64 binaries are available.`);
+  if (
+    arch !== "arm64"
+    && arch !== "x64"
+    && arch !== "riscv64"
+    && arch !== "loong64"
+    && arch !== "ppc64"
+  ) {
+    throw new Error(
+      `Unsupported architecture ${os.arch()}. Only x64, arm64, riscv64, loong64 and ppc64 binaries are available.`,
+    );
   }
   return arch;
 }
@@ -334,7 +372,9 @@ function getLinuxFamily() {
       // excludeNetwork avoids a slow reverse DNS lookup while generating the
       // report, but it's a global flag so restore it once we're done
       // Older Node typings do not include this optional runtime property.
-      const processReport = /** @type {NodeJS.ProcessReport & { excludeNetwork?: boolean }} */ (process.report);
+      const processReport = /** @type {NodeJS.ProcessReport & { excludeNetwork?: boolean }} */ (
+        process.report
+      );
       const originalExcludeNetwork = processReport.excludeNetwork;
       let rawReport;
       try {
@@ -358,7 +398,9 @@ function getLinuxFamily() {
 
     function isMuslFromChildProcess() {
       try {
-        return require("node:child_process").execSync("ldd --version", { encoding: "utf8" }).includes("musl");
+        return require("node:child_process")
+          .execSync("ldd --version", { encoding: "utf8" })
+          .includes("musl");
       } catch {
         return false;
       }
@@ -441,10 +483,7 @@ function isBinDirForThisPackage(binDir) {
   try {
     if (os.platform() === "win32") {
       // verify the .cmd wrapper references our bin.cjs
-      const content = fs.readFileSync(
-        path.join(binDir, "dprint.cmd"),
-        "utf8",
-      );
+      const content = fs.readFileSync(path.join(binDir, "dprint.cmd"), "utf8");
       return content.includes("bin.cjs");
     } else {
       // verify the symlink points into our package directory

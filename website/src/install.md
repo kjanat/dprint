@@ -13,13 +13,13 @@ Install using one of the methods below.
   Requires `curl`, `unzip`, and `jq`.
 
   ```sh
-  curl -fsSL https://dprint.dev/install.sh | sh
+  curl -fsSL https://dprint.kjanat.dev/install.sh | sh
   ```
 
 - Powershell (Windows):
 
   ```sh
-  iwr https://dprint.dev/install.ps1 -useb | iex
+  iwr https://dprint.kjanat.dev/install.ps1 -useb | iex
   ```
 
 - [Scoop](https://scoop.sh/) (Windows):

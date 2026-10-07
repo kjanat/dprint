@@ -1,25 +1,29 @@
-export async function getPluginDefaultConfig(configSchemaUrl: string, signal: AbortSignal) {
-  if (configSchemaUrl == null) {
-    return "{\n}\n";
-  }
+export async function getPluginDefaultConfig(
+  configSchemaUrl: string,
+  signal: AbortSignal,
+) {
+  if (configSchemaUrl == null) return "{\n}\n";
 
   try {
-    const response = await fetch(configSchemaUrl, {
-      signal,
-    });
+    const response = await fetch(configSchemaUrl, { signal });
     const json = await response.json();
     let text = "{";
     let wroteProperty = false;
 
     for (const propertyName of Object.keys(json.properties)) {
-      if (propertyName === "$schema" || propertyName === "deno" || propertyName === "locked") {
+      if (
+        propertyName === "$schema"
+        || propertyName === "deno"
+        || propertyName === "locked"
+      ) {
         continue;
       }
       const property = json.properties[propertyName];
       const derivedPropName = property["$ref"]?.replace("#/definitions/", "");
 
-      const lastSegment = propertyName.split(".").pop()!;
-      const astSpecific = (derivedPropName !== propertyName && derivedPropName in json.properties)
+      const lastSegment = propertyName.slice(propertyName.lastIndexOf(".") + 1);
+      const astSpecific = (derivedPropName !== propertyName
+        && derivedPropName in json.properties)
         || (lastSegment !== propertyName && lastSegment in json.properties);
       if (astSpecific) {
         continue;

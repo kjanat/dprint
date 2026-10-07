@@ -9,14 +9,14 @@ function onLoad() {
     selectedNodeId: traceResult.traces[traceResult.traces.length - 1].printNodeId,
   };
 
-  const slider = createSlider(value => {
+  const slider = createSlider((value) => {
     appData.traceIndex = value;
     appData.selectedNodeId = traceResult.traces[value].printNodeId;
     refreshApp();
   });
   const codeView = createCodeView();
   const infoArea = createInfoArea();
-  const graph = createGraph(printNodeId => {
+  const graph = createGraph((printNodeId) => {
     const traceIndex = getNextTraceIndex();
     // might not have had a trace that visited this print node
     if (traceIndex >= 0) {
@@ -27,13 +27,15 @@ function onLoad() {
 
     function getNextTraceIndex() {
       if (appData.selectedNodeId === printNodeId) {
-        const traceIndex = traceResult.traces.findIndex((t, index) => index > appData.traceIndex && t.printNodeId === printNodeId);
+        const traceIndex = traceResult.traces.findIndex(
+          (t, index) => index > appData.traceIndex && t.printNodeId === printNodeId,
+        );
         if (traceIndex >= 0) {
           return traceIndex;
         }
       }
 
-      return traceResult.traces.findIndex(t => t.printNodeId === printNodeId);
+      return traceResult.traces.findIndex((t) => t.printNodeId === printNodeId);
     }
   });
 
@@ -79,13 +81,19 @@ function getLastNodes(node) {
       lastNodes.push(node);
     }
     if (condition.truePath != null) {
-      lastNodes.push(...getLastNodes(traceResult.getPrintNode(condition.truePath)));
+      lastNodes.push(
+        ...getLastNodes(traceResult.getPrintNode(condition.truePath)),
+      );
     }
     if (condition.falsePath != null) {
-      lastNodes.push(...getLastNodes(traceResult.getPrintNode(condition.falsePath)));
+      lastNodes.push(
+        ...getLastNodes(traceResult.getPrintNode(condition.falsePath)),
+      );
     }
   } else if (node.printItem.kind === "rcPath") {
-    lastNodes.push(...getLastNodes(traceResult.getPrintNode(node.printItem.content)));
+    lastNodes.push(
+      ...getLastNodes(traceResult.getPrintNode(node.printItem.content)),
+    );
   } else {
     lastNodes.push(node);
   }
@@ -114,9 +122,15 @@ function getNodeHoverText(node) {
 }
 
 function getNodesAndLinks() {
-  /** @type {import("./types").GraphPrintNode[]} */
-  const nodes = traceResult.printNodes.map(node => ({ id: node.printNodeId, printNode: node, sources: [], targets: [], depthY: 0 }));
-  const nodesMap = new Map(nodes.map(n => [n.printNode.printNodeId, n]));
+  /** @type {import("./types.d.ts").GraphPrintNode[]} */
+  const nodes = traceResult.printNodes.map((node) => ({
+    id: node.printNodeId,
+    printNode: node,
+    sources: [],
+    targets: [],
+    depthY: 0,
+  }));
+  const nodesMap = new Map(nodes.map((n) => [n.printNode.printNodeId, n]));
   /** @type {{ source: number; target: number; color: string | undefined; originatingNodeId: number | undefined }[]} */
   const links = [];
 
@@ -139,7 +153,10 @@ function getNodesAndLinks() {
         addLink(node, target, "red");
         addLinksToLastNodes(node, target);
       }
-      if ((condition.truePath == null || condition.falsePath == null) && printNode.nextPrintNodeId != null) {
+      if (
+        (condition.truePath == null || condition.falsePath == null)
+        && printNode.nextPrintNodeId != null
+      ) {
         addLink(node, getNodeById(printNode.nextPrintNodeId));
       }
     } else if (printNode.nextPrintNodeId != null) {
@@ -166,7 +183,9 @@ function getNodesAndLinks() {
       if (node == null) {
         continue;
       }
-      node.depthY = node.sources.length === 0 ? 0 : Math.max(...node.sources.map(s => s.depthY)) + 1;
+      node.depthY = node.sources.length === 0
+        ? 0
+        : Math.max(...node.sources.map((s) => s.depthY)) + 1;
       if (!analyzedNodes.has(node.printNode.printNodeId)) {
         analyzedNodes.add(node.printNode.printNodeId);
         nodesToAnalyze.push(...node.targets);
@@ -182,7 +201,12 @@ function getNodesAndLinks() {
     if (source.printNode.nextPrintNodeId != null) {
       const nextPrintNodeTarget = getNodeById(source.printNode.nextPrintNodeId);
       for (const lastNode of getLastNodes(target.printNode)) {
-        addLink(getNodeById(lastNode.printNodeId), nextPrintNodeTarget, undefined, source.printNode.printNodeId);
+        addLink(
+          getNodeById(lastNode.printNodeId),
+          nextPrintNodeTarget,
+          undefined,
+          source.printNode.printNodeId,
+        );
       }
     }
   }
@@ -229,31 +253,48 @@ function createGraph(onPrintNodeSelect) {
   let wasMouseActivity = false;
   const width = 400;
   const height = 400;
-  const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(/** @param {any} d */ d => d.id).distance(10))
+  const simulation = d3
+    .forceSimulation(nodes)
+    .force(
+      "link",
+      d3
+        .forceLink(links)
+        .id(/** @param {any} d */ (d) => d.id)
+        .distance(10),
+    )
     .force("charge", d3.forceManyBody().strength(-3000))
-    .force("y", d3.forceY().y(/** @param {any} d */ d => d.depthY * 125));
-  const svg = d3.create("svg")
-    .attr("viewBox", [0, 0, width, height])
+    .force(
+      "y",
+      d3.forceY().y(/** @param {any} d */ (d) => d.depthY * 125),
+    );
+  const svg = d3
+    .create("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`)
     .style("font", "40px sans-serif")
-    .on("wheel", () => wasMouseActivity = true)
-    .on("click", () => wasMouseActivity = true);
+    .on("wheel", () => (wasMouseActivity = true))
+    .on("click", () => (wasMouseActivity = true));
 
-  const arrow = svg.append("svg:defs").selectAll("marker")
+  const arrow = svg
+    .append("svg:defs")
+    .selectAll("marker")
     .data(["end"])
-    .enter().append("svg:marker")
+    .enter()
+    .append("svg:marker")
     .attr("id", String)
     .attr("orient", "auto");
   const arrowInnerPath = arrow.append("svg:path").attr("fill", "#000");
 
-  const drag = d3
-    .drag()
-    .on("drag", /** @param {any} event @param {any} d */ function(event, d) {
+  /** @type {import("d3").DragBehavior<SVGGElement, import("./types").GraphPrintNode, import("./types").GraphPrintNode | import("d3").SubjectPosition>} */
+  const drag = d3.drag();
+  drag.on(
+    "drag",
+    /** @param {any} event @param {any} d */ function(event, d) {
       d.x = event.x;
       d.y = event.y;
       d3.select(this).raise().attr("transform", `translate(${d.x}, ${d.y})`);
       refreshLinks();
-    });
+    },
+  );
 
   const nodeRadius = 15;
   const linkThickness = 5;
@@ -263,46 +304,60 @@ function createGraph(onPrintNodeSelect) {
     .data(links)
     .join("line")
     .attr("stroke-opacity", 0.6)
-    .attr("stroke", /** @param {any} d */ d => getLineColor(d))
-    .attr("data-originating-node-id", /** @param {any} d */ d => d.originatingNodeId)
+    .attr("stroke", /** @param {any} d */ (d) => getLineColor(d))
+    .attr(
+      "data-originating-node-id",
+      /** @param {any} d */ (d) => d.originatingNodeId,
+    )
     .style("stroke-width", linkThickness)
     .attr("marker-end", "url(#end)")
-    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
-      /** @type {number | undefined} */
-      const originatingNodeId = d.originatingNodeId;
-      if (originatingNodeId != null) {
-        onPrintNodeSelect(originatingNodeId);
-      }
-    });
-  link.append("title")
-    .text(/** @param {any} d */ d => {
+    .on(
+      "click",
+      /** @param {any} _ @param {any} d */ (_, d) => {
+        /** @type {number | undefined} */
+        const originatingNodeId = d.originatingNodeId;
+        if (originatingNodeId != null) {
+          onPrintNodeSelect(originatingNodeId);
+        }
+      },
+    );
+  link.append("title").text(
+    /** @param {any} d */ (d) => {
       if (d.originatingNodeId != null) {
         return getNodeHoverText(traceResult.getPrintNode(d.originatingNodeId));
       }
-      return undefined;
-    });
+      return null;
+    },
+  );
 
   const nodeG = svg.append("g");
-  const nodeGInner = nodeG.append("g")
-    .selectAll("g")
+  /** @type {import("d3").Selection<SVGGElement, import("./types").GraphPrintNode, SVGGElement, undefined>} */
+  const nodeSelection = nodeG
+    .append("g")
+    .selectAll("g");
+  const nodeGInner = nodeSelection
     .data(nodes)
     .join("g")
     .call(drag);
   const nodeCircle = nodeGInner
     .append("circle")
     .attr("r", nodeRadius)
-    .attr("fill", /** @param {any} d */ d => getNodeColor(d.printNode))
+    .attr("fill", /** @param {any} d */ (d) => getNodeColor(d.printNode))
     .attr("stroke", "#000")
-    .attr("id", /** @param {any} d */ d => `node${d.id}`)
-    .on("click", /** @param {any} _ @param {any} d */ (_, d) => {
-      onPrintNodeSelect(d.id);
-    });
+    .attr("id", /** @param {any} d */ (d) => `node${d.id}`)
+    .on(
+      "click",
+      /** @param {any} _ @param {any} d */ (_, d) => {
+        onPrintNodeSelect(d.id);
+      },
+    );
   nodeGInner
     .append("text")
     .attr("x", 50)
     .attr("y", "0.31em")
-    .text(/** @param {any} d */ d => getNodeHoverText(d.printNode))
-    .clone(true).lower()
+    .text(/** @param {any} d */ (d) => getNodeHoverText(d.printNode))
+    .clone(true)
+    .lower()
     .attr("fill", "none")
     .attr("stroke", "white")
     .attr("stroke-width", 3);
@@ -311,24 +366,32 @@ function createGraph(onPrintNodeSelect) {
   let transform;
   /** @type {number} */
   let sqrtK;
-  const zoom = d3.zoom().on("zoom", /** @param {any} e */ e => {
-    transform = e.transform;
-    nodeG.attr("transform", transform);
-    sqrtK = Math.sqrt(transform.k);
-    nodeCircle.attr("r", nodeRadius / sqrtK)
-      .attr("stroke-width", 1 / sqrtK);
+  /** @type {import("d3").ZoomBehavior<SVGSVGElement, undefined>} */
+  const zoom = d3.zoom();
+  zoom.on(
+    "zoom",
+    /** @param {any} e */ (e) => {
+      transform = e.transform;
+      nodeG.attr("transform", transform);
+      sqrtK = Math.sqrt(transform.k);
+      nodeCircle.attr("r", nodeRadius / sqrtK).attr("stroke-width", 1 / sqrtK);
 
-    linkG.attr("transform", transform);
-    link.style("stroke-width", linkThickness / sqrtK);
+      linkG.attr("transform", transform);
+      link.style("stroke-width", linkThickness / sqrtK);
 
-    arrow.attr("markerWidth", 5)
-      .attr("markerHeight", 5)
-      .attr("viewBox", `0 0 ${5 / sqrtK} ${5 / sqrtK}`)
-      .attr("refX", 8 / sqrtK)
-      .attr("refY", 2.5 / sqrtK);
-    arrowInnerPath.attr("d", `M 0 0 L ${5 / sqrtK} ${2.5 / sqrtK} L 0 ${5 / sqrtK} z`);
-    refreshSelectedNode();
-  });
+      arrow
+        .attr("markerWidth", 5)
+        .attr("markerHeight", 5)
+        .attr("viewBox", `0 0 ${5 / sqrtK} ${5 / sqrtK}`)
+        .attr("refX", 8 / sqrtK)
+        .attr("refY", 2.5 / sqrtK);
+      arrowInnerPath.attr(
+        "d",
+        `M 0 0 L ${5 / sqrtK} ${2.5 / sqrtK} L 0 ${5 / sqrtK} z`,
+      );
+      refreshSelectedNode();
+    },
+  );
 
   simulation.on("tick", () => {
     refreshLinks();
@@ -337,14 +400,16 @@ function createGraph(onPrintNodeSelect) {
     let maxX = Number.MIN_SAFE_INTEGER;
     let minY = Number.MAX_SAFE_INTEGER;
     let maxY = Number.MIN_SAFE_INTEGER;
-    nodeGInner
-      .attr("transform", /** @param {any} d */ d => {
+    nodeGInner.attr(
+      "transform",
+      /** @param {any} d */ (d) => {
         minX = Math.min(minX, d.x);
         maxX = Math.max(maxX, d.x);
         minY = Math.min(minY, d.y);
         maxY = Math.max(maxY, d.y);
         return `translate(${d.x}, ${d.y})`;
-      });
+      },
+    );
 
     if (!wasMouseActivity) {
       svg.call(
@@ -359,18 +424,19 @@ function createGraph(onPrintNodeSelect) {
 
   function refreshLinks() {
     link
-      .attr("x1", /** @param {any} d */ d => d.source.x)
-      .attr("y1", /** @param {any} d */ d => d.source.y)
-      .attr("x2", /** @param {any} d */ d => d.target.x)
-      .attr("y2", /** @param {any} d */ d => d.target.y);
+      .attr("x1", /** @param {any} d */ (d) => d.source.x)
+      .attr("y1", /** @param {any} d */ (d) => d.source.y)
+      .attr("x2", /** @param {any} d */ (d) => d.target.x)
+      .attr("y2", /** @param {any} d */ (d) => d.target.y);
   }
 
   let lastId = 0;
+  const element = svg.call(zoom).call(zoom.transform, d3.zoomIdentity).node();
+  if (element == null) {
+    throw new Error("Failed to create the trace graph SVG.");
+  }
   return {
-    element: svg
-      .call(zoom)
-      .call(zoom.transform, d3.zoomIdentity)
-      .node(),
+    element,
     /** @param {number} selectedNodeId */
     setSelectedNodeId(selectedNodeId) {
       d3.select(`#node${lastId}`)
@@ -526,7 +592,7 @@ function createCodeView() {
 /** @param {HTMLElement} element */
 function clearElementChildren(element) {
   let last;
-  while (last = element.lastChild) {
+  while ((last = element.lastChild)) {
     element.removeChild(last);
   }
 }

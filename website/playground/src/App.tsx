@@ -1,10 +1,10 @@
 import type { FileMatchingInfo, PluginInfo } from "@dprint/formatter";
 import { useEffect, useState } from "react";
-import { Spinner } from "./components";
-import * as formatterWorker from "./FormatterWorker";
-import { Playground } from "./Playground";
-import { getPluginDefaultConfig, getPluginShortNameFromPluginUrl, getPluginUrls } from "./plugins";
-import { UrlSaver } from "./utils";
+import { Spinner } from "./components/index.ts";
+import * as formatterWorker from "./FormatterWorker.ts";
+import { Playground } from "./Playground.tsx";
+import { getPluginDefaultConfig, getPluginShortNameFromPluginUrl, getPluginUrls } from "./plugins/index.ts";
+import { UrlSaver } from "./utils/index.ts";
 
 const urlSaver = new UrlSaver();
 const initialUrl = urlSaver.getUrlInfo();
@@ -14,7 +14,9 @@ export default function App() {
   const [pluginUrls, setPluginUrls] = useState<string[]>([]);
   const [pluginUrl, setPluginUrl] = useState(initialUrl.pluginUrl);
   const [pluginInfo, setPluginInfo] = useState<PluginInfo | undefined>();
-  const [fileMatchingInfo, setFileMatchingInfo] = useState<FileMatchingInfo | undefined>();
+  const [fileMatchingInfo, setFileMatchingInfo] = useState<
+    FileMatchingInfo | undefined
+  >();
   const [fileExtension, setFileExtension] = useState(initialUrl.ext ?? "");
   const [text, setText] = useState(initialUrl.text);
   const [configText, setConfigText] = useState(initialUrl.configText ?? "");
@@ -25,17 +27,28 @@ export default function App() {
   // initialization
   useEffect(() => {
     const abortController = new AbortController();
-    getPluginUrls(abortController.signal).then(pluginUrls => {
-      setPluginUrls(pluginUrls.concat(initialUrl.pluginUrl ?? []));
-      if (initialUrl.pluginUrl == null) {
-        setPluginUrl(pluginUrls.find(url => getPluginShortNameFromPluginUrl(url) === (initialUrl.pluginName ?? "typescript"))!);
-      }
-    }).catch(err => {
-      if (!abortController.signal.aborted) {
-        console.error(err);
-        alert("There was an error getting the plugins. Try refreshing the page or check the browser console.");
-      }
-    });
+    getPluginUrls(abortController.signal)
+      .then((pluginUrls) => {
+        setPluginUrls(pluginUrls.concat(initialUrl.pluginUrl ?? []));
+        if (initialUrl.pluginUrl == null) {
+          const pluginName = initialUrl.pluginName ?? "typescript";
+          const selectedPluginUrl = pluginUrls.find(
+            (url) => getPluginShortNameFromPluginUrl(url) === pluginName,
+          );
+          if (selectedPluginUrl == null) {
+            throw new Error(`Plugin not found: ${pluginName}`);
+          }
+          setPluginUrl(selectedPluginUrl);
+        }
+      })
+      .catch((err) => {
+        if (!abortController.signal.aborted) {
+          console.error(err);
+          alert(
+            "There was an error getting the plugins. Try refreshing the page or check the browser console.",
+          );
+        }
+      });
     return () => {
       abortController.abort();
     };
@@ -68,9 +81,11 @@ export default function App() {
 
     function onError(err: string) {
       console.error(err);
-      alert("There was an error with the formatter worker. Try refreshing the page or check the browser console.");
+      alert(
+        "There was an error with the formatter worker. Try refreshing the page or check the browser console.",
+      );
     }
-  }, [setFormattedText, setPluginInfo]);
+  }, []);
 
   useEffect(() => {
     if (pluginUrl == null) {
@@ -84,9 +99,18 @@ export default function App() {
       text,
       configText: configText === defaultConfigText ? undefined : configText,
       plugin: isBuiltInLanguage ? shortName : pluginUrl,
-      ext: fileMatchingInfo?.fileExtensions.indexOf(fileExtension) === 0 ? undefined : fileExtension,
+      ext: fileMatchingInfo?.fileExtensions.indexOf(fileExtension) === 0
+        ? undefined
+        : fileExtension,
     });
-  }, [text, configText, pluginUrl, defaultConfigText, fileExtension, fileMatchingInfo]);
+  }, [
+    text,
+    configText,
+    pluginUrl,
+    defaultConfigText,
+    fileExtension,
+    fileMatchingInfo,
+  ]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -99,28 +123,30 @@ export default function App() {
   }, [pluginUrl]);
 
   useEffect(() => {
-    if (pluginUrl == null || pluginInfo == null) {
-      return;
-    }
+    if (pluginUrl == null || pluginInfo == null) return;
 
     const abortController = new AbortController();
-    getPluginDefaultConfig(pluginInfo.configSchemaUrl, abortController.signal).then(defaultConfigText => {
-      if (isFirstLoad && initialUrl.configText != null) {
-        setConfigText(initialUrl.configText);
-        isFirstLoad = false;
-      } else {
-        setConfigText(defaultConfigText);
-      }
-      setDefaultConfigText(defaultConfigText);
-      setIsLoading(false);
-    }).catch(err => {
-      if (abortController.signal.aborted) {
-        return;
-      }
+    getPluginDefaultConfig(pluginInfo.configSchemaUrl, abortController.signal)
+      .then((defaultConfigText) => {
+        if (isFirstLoad && initialUrl.configText != null) {
+          setConfigText(initialUrl.configText);
+          isFirstLoad = false;
+        } else {
+          setConfigText(defaultConfigText);
+        }
+        setDefaultConfigText(defaultConfigText);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (abortController.signal.aborted) {
+          return;
+        }
 
-      console.error(err);
-      alert("There was an error loading the plugin. Check the console or try refreshing the page.");
-    });
+        console.error(err);
+        alert(
+          "There was an error loading the plugin. Check the console or try refreshing the page.",
+        );
+      });
 
     return () => {
       abortController.abort();
@@ -144,7 +170,7 @@ export default function App() {
       selectedPluginUrl={pluginUrl}
       selectedPluginInfo={pluginInfo}
       fileMatchingInfo={fileMatchingInfo}
-      onSelectPluginUrl={url => {
+      onSelectPluginUrl={(url) => {
         setPluginInfo(undefined);
         if (!pluginUrls.includes(url)) {
           setPluginUrls([...pluginUrls, url]);

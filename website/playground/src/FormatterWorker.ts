@@ -5,11 +5,14 @@ const fileMatchingListeners: ((info: FileMatchingInfo) => void)[] = [];
 const formatListeners: ((text: string) => void)[] = [];
 const errorListeners: ((err: string) => void)[] = [];
 
-const formatterWorker = new Worker(new URL("./formatter.worker.ts", import.meta.url), {
-  type: "module",
-});
+const formatterWorker = new Worker(
+  new URL("./formatter.worker.ts", import.meta.url),
+  {
+    type: "module",
+  },
+);
 
-formatterWorker.addEventListener("message", ev => {
+formatterWorker.addEventListener("message", (ev) => {
   switch (ev.data.type) {
     case "PluginInfo":
       for (const listener of pluginInfoListeners) {
@@ -41,7 +44,7 @@ export function loadUrl(url: string) {
   });
 }
 
-export function setConfig(config: any) {
+export function setConfig(config: Record<string, unknown>) {
   formatterWorker.postMessage({
     type: "SetConfig",
     config,
@@ -67,11 +70,15 @@ export function removeOnPluginInfo(listener: (info: PluginInfo) => void) {
   }
 }
 
-export function addOnFileMatchingInfo(listener: (info: FileMatchingInfo) => void) {
+export function addOnFileMatchingInfo(
+  listener: (info: FileMatchingInfo) => void,
+) {
   fileMatchingListeners.push(listener);
 }
 
-export function removeOnFileMatchingInfo(listener: (info: FileMatchingInfo) => void) {
+export function removeOnFileMatchingInfo(
+  listener: (info: FileMatchingInfo) => void,
+) {
   const index = fileMatchingListeners.indexOf(listener);
   if (index >= 0) {
     fileMatchingListeners.splice(index, 1);

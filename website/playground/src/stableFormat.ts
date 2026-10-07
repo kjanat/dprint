@@ -1,6 +1,9 @@
 const MAX_STABLE_FORMAT_TRIES = 5;
 
-export function formatTextUntilStable(fileText: string, formatText: (fileText: string) => string) {
+export function formatTextUntilStable(
+  fileText: string,
+  formatText: (fileText: string) => string,
+) {
   let formattedText = formatText(fileText);
   if (formattedText === fileText) {
     return formattedText;

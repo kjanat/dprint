@@ -246,6 +246,9 @@ body,
 .divider {
   position: relative;
   flex: 0 0 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   touch-action: none;
 }
 

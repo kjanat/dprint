@@ -1,11 +1,9 @@
-/// <reference lib="deno.ns" />
-
 import { strictEqual, throws } from "node:assert/strict";
 import { formatTextUntilStable } from "./stableFormat.ts";
 
 Deno.test("returns unchanged text after one pass", () => {
   let callCount = 0;
-  const result = formatTextUntilStable("text", text => {
+  const result = formatTextUntilStable("text", (text) => {
     callCount++;
     return text;
   });
@@ -37,7 +35,7 @@ Deno.test("formats text until stable", () => {
   ]);
   let callCount = 0;
 
-  const result = formatTextUntilStable(input, text => {
+  const result = formatTextUntilStable(input, (text) => {
     callCount++;
     const output = outputs.get(text);
     if (output == null) {
@@ -55,7 +53,7 @@ Deno.test("errors when formatting does not stabilize", () => {
 
   throws(
     () =>
-      formatTextUntilStable("text", text => {
+      formatTextUntilStable("text", (text) => {
         callCount++;
         return `${text}_formatted`;
       }),

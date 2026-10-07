@@ -12,11 +12,13 @@ const readPreference = () => {
 export const getTheme = () => {
   const theme = document.documentElement.dataset.theme;
   if (theme === "light" || theme === "dark") return theme;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return globalThis.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
 };
 
 export const setupTheme = () => {
-  const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+  const systemTheme = globalThis.matchMedia("(prefers-color-scheme: dark)");
   const buttons = document.querySelectorAll("[data-theme-toggle]");
   let preference = readPreference();
 
@@ -32,9 +34,12 @@ export const setupTheme = () => {
       button.removeAttribute("hidden");
     }
     for (const meta of document.querySelectorAll("meta[name=\"theme-color\"]")) {
-      meta.setAttribute("content", getComputedStyle(document.body).backgroundColor);
+      meta.setAttribute(
+        "content",
+        getComputedStyle(document.body).backgroundColor,
+      );
     }
-    window.dispatchEvent(new Event("dprint:theme-change"));
+    globalThis.dispatchEvent(new Event("dprint:theme-change"));
   };
 
   const toggle = () => {
@@ -55,11 +60,11 @@ export const setupTheme = () => {
   update();
   for (const button of buttons) button.addEventListener("click", toggle);
   systemTheme.addEventListener("change", update);
-  window.addEventListener("storage", onStorage);
+  globalThis.addEventListener("storage", onStorage);
 
   return () => {
     for (const button of buttons) button.removeEventListener("click", toggle);
     systemTheme.removeEventListener("change", update);
-    window.removeEventListener("storage", onStorage);
+    globalThis.removeEventListener("storage", onStorage);
   };
 };

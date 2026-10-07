@@ -1,10 +1,11 @@
+import type { SimulationNodeDatum } from "d3";
+
 declare global {
   const rawTraceResult: TracingResult;
   const specMessage: string;
-  const d3: any;
 }
 
-export interface GraphPrintNode {
+export interface GraphPrintNode extends SimulationNodeDatum {
   id: number;
   printNode: PrintNode;
   sources: GraphPrintNode[];
@@ -36,14 +37,27 @@ export interface PrintNode {
   printItem: PrintItem;
 }
 
-export type PrintItem = InfoItem | SignalItem | StringItem | ConditionItem | RcPathItem | AnchorItem | ConditionReevaluationItem;
+export type PrintItem =
+  | InfoItem
+  | SignalItem
+  | StringItem
+  | ConditionItem
+  | RcPathItem
+  | AnchorItem
+  | ConditionReevaluationItem;
 
 export interface InfoItem {
   kind: "info";
   content: Info;
 }
 
-export type Info = LineNumber | ColumnNumber | IsStartOfLine | IndentLevel | LineStartColumnNumber | LineStartIndentLevel;
+export type Info =
+  | LineNumber
+  | ColumnNumber
+  | IsStartOfLine
+  | IndentLevel
+  | LineStartColumnNumber
+  | LineStartIndentLevel;
 
 export interface LineNumber {
   kind: "lineNumber";

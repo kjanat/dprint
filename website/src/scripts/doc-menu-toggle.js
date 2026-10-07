@@ -3,7 +3,7 @@
 const setupDocMenu = () => {
   const details = document.querySelector("details.doc-nav");
   if (details == null) return; // not a documentation page
-  if (window.matchMedia("(max-width: 860px)").matches) details.open = false;
+  if (globalThis.matchMedia("(max-width: 860px)").matches) details.open = false;
 };
 
 export { setupDocMenu };

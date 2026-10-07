@@ -6,25 +6,16 @@
   "type": "object",
   "properties": {
     "$schema": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": ["string", "null"],
       "description": "The JSON schema reference. Normally you shouldn't bother to provide this as the dprint vscode editor extension will handle constructing the schema for you based on the plugins provided."
     },
     "incremental": {
-      "type": [
-        "boolean",
-        "null"
-      ],
+      "type": ["boolean", "null"],
       "description": "Whether to format files only when they change.",
       "default": true
     },
     "inherit": {
-      "type": [
-        "boolean",
-        "null"
-      ],
+      "type": ["boolean", "null"],
       "description": "For a nested (directory specific) configuration file, whether to inherit the plugins and configuration of the ancestor configuration file. Has no effect on a root configuration file.",
       "default": false
     },
@@ -53,27 +44,18 @@
       "description": "Configurations to extend."
     },
     "lineWidth": {
-      "type": [
-        "integer",
-        "null"
-      ],
+      "type": ["integer", "null"],
       "minimum": 0,
       "description": "The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases."
     },
     "indentWidth": {
-      "type": [
-        "integer",
-        "null"
-      ],
+      "type": ["integer", "null"],
       "minimum": 0,
       "maximum": 255,
       "description": "The number of characters for an indent."
     },
     "useTabs": {
-      "type": [
-        "boolean",
-        "null"
-      ],
+      "type": ["boolean", "null"],
       "description": "Whether to use tabs (true) or spaces (false) for indentation."
     },
     "newLineKind": {
@@ -109,30 +91,21 @@
       "description": "The kind of newline to use."
     },
     "includes": {
-      "type": [
-        "array",
-        "null"
-      ],
+      "type": ["array", "null"],
       "items": {
         "type": "string"
       },
       "description": "Array of patterns (globs) to use to find files to format."
     },
     "excludes": {
-      "type": [
-        "array",
-        "null"
-      ],
+      "type": ["array", "null"],
       "items": {
         "type": "string"
       },
       "description": "Array of patterns (globs) to exclude files or directories to format."
     },
     "shebangs": {
-      "type": [
-        "object",
-        "null"
-      ],
+      "type": ["object", "null"],
       "additionalProperties": {
         "type": "string",
         "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\")."
@@ -143,10 +116,7 @@
       }
     },
     "plugins": {
-      "type": [
-        "array",
-        "null"
-      ],
+      "type": ["array", "null"],
       "items": {
         "type": "string"
       },
@@ -162,10 +132,7 @@
       "type": "object",
       "properties": {
         "locked": {
-          "type": [
-            "boolean",
-            "null"
-          ],
+          "type": ["boolean", "null"],
           "description": "Whether this plugin configuration is locked against overrides from extending configurations."
         },
         "associations": {
@@ -235,9 +202,7 @@
           "description": "File patterns this override applies to."
         }
       },
-      "required": [
-        "files"
-      ],
+      "required": ["files"],
       "additionalProperties": true,
       "description": "An override of a plugin's configuration for some of its files.",
       "minProperties": 2

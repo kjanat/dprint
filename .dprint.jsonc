@@ -3,13 +3,16 @@
   "lineWidth": 160,
   "exec": {
     "cwd": "${configDir}",
-    "commands": [{
-      "command": "rustfmt --edition 2024 --config imports_granularity=item",
-      "exts": ["rs"]
-    }, {
-      "command": "npx -y tombi format - --stdin-filename {{file_path}}",
-      "exts": ["toml"],
-    }]
+    "commands": [
+      {
+        "command": "rustfmt --edition 2024 --config imports_granularity=item",
+        "exts": ["rs"]
+      },
+      {
+        "command": "npx -y tombi format - --stdin-filename {{file_path}}",
+        "exts": ["toml"]
+      }
+    ]
   },
   "malva": {
     "blockSelectorLinebreak": "always"
@@ -44,8 +47,7 @@
     "importDeclaration.sortTypeOnlyImports": "none"
   },
   "excludes": [
-    "website/playground/dist",
-    "website/_site",
+    "**/_site",
     "**/node_modules",
     "**/dist",
     "**/target",

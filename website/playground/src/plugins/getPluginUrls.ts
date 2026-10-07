@@ -1,44 +1,54 @@
+const plugins = [
+  { name: "typescript", npm: "@dprint/typescript", prefix: "typescript-" },
+  { name: "json", npm: "@dprint/json", prefix: "json-" },
+  { name: "markdown", npm: "@dprint/markdown", prefix: "markdown-" },
+  { name: "toml", npm: "@dprint/toml", prefix: "toml-" },
+  { name: "dockerfile", npm: "@dprint/dockerfile", prefix: "dockerfile-" },
+  { name: "biome", npm: "@dprint/biome", prefix: "biome-" },
+  { name: "oxc", npm: "@dprint/oxc", prefix: "oxc-" },
+  { name: "mago", npm: "@dprint/mago", prefix: "mago-" },
+  { name: "ruff", npm: "@dprint/ruff", prefix: "ruff-" },
+  { name: "malva", npm: "dprint-plugin-malva", prefix: "g-plane/malva-v" },
+  { name: "markup_fmt", npm: "dprint-plugin-markup", prefix: "g-plane/markup_fmt-v" },
+  { name: "pretty_yaml", npm: "dprint-plugin-yaml", prefix: "g-plane/pretty_yaml-v" },
+  { name: "pretty_graphql", npm: "dprint-plugin-graphql", prefix: "g-plane/pretty_graphql-v" },
+];
+
 export async function getPluginUrls(signal: AbortSignal): Promise<string[]> {
-  const response = await fetch("https://plugins.dprint.dev/info.json", { signal });
-  const json = await response.json();
-  const expectedSchemaVersion = 4;
-
-  if (json.schemaVersion !== expectedSchemaVersion) {
-    throw new Error(`Expected schema version ${expectedSchemaVersion}, but found ${json.schemaVersion}.`);
-  }
-
-  const typescriptPlugin = json.latest.find((p: any) => p.configKey === "typescript")!;
-  const jsonPlugin = json.latest.find((p: any) => p.configKey === "json")!;
-  const markdownPlugin = json.latest.find((p: any) => p.configKey === "markdown")!;
-  const tomlPlugin = json.latest.find((p: any) => p.configKey === "toml")!;
-  const dockerfilePlugin = json.latest.find((p: any) => p.configKey === "dockerfile")!;
-  const biomePlugin = json.latest.find((p: any) => p.configKey === "biome")!;
-  const oxcPlugin = json.latest.find((p: any) => p.configKey === "oxc")!;
-  const magoPlugin = json.latest.find((p: any) => p.configKey === "mago")!;
-  const ruffPlugin = json.latest.find((p: any) => p.configKey === "ruff")!;
-  const malvaPlugin = json.latest.find((p: any) => p.configKey === "malva")!;
-  const markupFmtPlugin = json.latest.find((p: any) => p.configKey === "markup")!;
-  const prettyYamlPlugin = json.latest.find((p: any) => p.configKey === "yaml")!;
-  const prettyGraphqlPlugin = json.latest.find((p: any) => p.configKey === "graphql")!;
-
-  return [
-    typescriptPlugin.url,
-    jsonPlugin.url,
-    markdownPlugin.url,
-    tomlPlugin.url,
-    dockerfilePlugin.url,
-    biomePlugin.url,
-    oxcPlugin.url,
-    magoPlugin.url,
-    ruffPlugin.url,
-    malvaPlugin.url,
-    markupFmtPlugin.url,
-    prettyYamlPlugin.url,
-    prettyGraphqlPlugin.url,
-  ];
+  return await Promise.all(
+    plugins.map(async (plugin) => {
+      const response = await fetch(
+        `https://data.jsdelivr.com/v1/packages/npm/${plugin.npm}/resolved?specifier=latest`,
+        { signal },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Error resolving ${plugin.npm}: HTTP ${response.status}`,
+        );
+      }
+      const { version } = await response.json();
+      if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+        throw new Error(`No stable release version found for ${plugin.npm}.`);
+      }
+      // Keep canonical URLs in shared links and the plugin selector.
+      return `https://plugins.dprint.dev/${plugin.prefix}${version}.wasm`;
+    }),
+  );
 }
 
-const RE_PLUGIN_URL = /https:\/\/plugins\.dprint\.dev\/(?:[a-z_-]+\/)?([a-z_-]+)-v?[0-9]+\.[0-9]+\.[0-9]+\.wasm$/;
+const RE_PLUGIN_URL = /^https:\/\/plugins\.dprint\.dev\/(?:[a-z_-]+\/)?([a-z_-]+)-v?([0-9]+\.[0-9]+\.[0-9]+)\.wasm$/;
+
+export function getPluginDownloadUrl(url: string): string {
+  const match = RE_PLUGIN_URL.exec(url);
+  if (!match) return url;
+  const plugin = plugins.find(
+    (plugin) => url === `https://plugins.dprint.dev/${plugin.prefix}${match[2]}.wasm`,
+  );
+  // Custom plugins retain their own download URL.
+  return plugin
+    ? `https://cdn.jsdelivr.net/npm/${plugin.npm}@${match[2]}/plugin.wasm`
+    : url;
+}
 
 export function getPluginShortNameFromPluginUrl(url: string) {
   const result = RE_PLUGIN_URL.exec(url);

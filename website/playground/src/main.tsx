@@ -4,7 +4,12 @@ import "../../src/theme.css";
 import "./index.css";
 import App from "./App.tsx";
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (root == null) {
+  throw new Error("Playground root element not found.");
+}
+
+createRoot(root).render(
   <StrictMode>
     <App />
   </StrictMode>,

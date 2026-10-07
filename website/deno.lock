@@ -43,6 +43,7 @@
     "jsr:@std/yaml@^1.0.5": "1.2.0",
     "jsr:@zip-js/zip-js@2.7.53": "2.7.53",
     "npm:@dprint/formatter@~0.5.1": "0.5.1",
+    "npm:@types/deno@^2.7.0": "2.7.0",
     "npm:@types/node@^26.6.4": "26.6.4",
     "npm:@types/nunjucks@3.2.6": "3.2.6",
     "npm:@types/react-dom@^19.3.0": "19.3.0_@types+react@19.3.0",
@@ -514,6 +515,9 @@
     },
     "@rolldown/pluginutils@1.0.1": {
       "integrity": "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="
+    },
+    "@types/deno@2.7.0": {
+      "integrity": "sha512-Y6fWcV8KpYeO3Lik/RiYnUxtr/LWqoeACciU0CA+dr1U/45tGgaX3HWQQAPCNN53raN4Rr4Fht4y6qsUH57fDA=="
     },
     "@types/linkify-it@5.0.0": {
       "integrity": "sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q=="
@@ -1251,6 +1255,7 @@
         "packageJson": {
           "dependencies": [
             "npm:@dprint/formatter@~0.5.1",
+            "npm:@types/deno@^2.7.0",
             "npm:@types/node@^26.6.4",
             "npm:@types/react-dom@^19.3.0",
             "npm:@types/react@^19.3.0",

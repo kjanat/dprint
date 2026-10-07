@@ -2,11 +2,10 @@ import type { FileMatchingInfo, PluginInfo } from "@dprint/formatter";
 import JSON5 from "json5";
 import type React from "react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CodeEditor } from "./components";
-import { Spinner } from "./components";
-import * as formatterWorker from "./FormatterWorker";
-import { getLanguageFromPluginUrl, getPluginShortNameFromPluginUrl } from "./plugins";
 import { setupTheme } from "../../src/scripts/theme.js";
+import { CodeEditor, Spinner } from "./components/index.ts";
+import * as formatterWorker from "./FormatterWorker.ts";
+import { getLanguageFromPluginUrl, getPluginShortNameFromPluginUrl } from "./plugins/index.ts";
 
 import "./Playground.css";
 
@@ -46,7 +45,10 @@ export function Playground({
 
   useEffect(() => {
     if (fileMatchingInfo.fileExtensions.length > 0) {
-      if (fileExtension == null || !fileMatchingInfo.fileExtensions.includes(fileExtension)) {
+      if (
+        fileExtension == null
+        || !fileMatchingInfo.fileExtensions.includes(fileExtension)
+      ) {
         onFileExtensionChanged(fileMatchingInfo.fileExtensions[0]);
       }
     }
@@ -54,7 +56,7 @@ export function Playground({
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      formatterWorker.formatText("file." + (fileExtension ?? "ts"), text);
+      formatterWorker.formatText(`file.${fileExtension ?? "ts"}`, text);
     }, 250);
 
     return () => clearTimeout(timeout);
@@ -62,14 +64,14 @@ export function Playground({
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      let config;
+      let config: Record<string, unknown> = {};
       try {
         config = JSON5.parse(configText);
         if (config.lineWidth == null) {
           config.lineWidth = 80;
         }
         formatterWorker.setConfig(config);
-      } catch (err) {
+      } catch (_) {
         // ignore for now
       }
     }, 250);
@@ -80,17 +82,18 @@ export function Playground({
   const lineWidth = useMemo(() => {
     try {
       const lineWidth = parseInt(JSON5.parse(configText).lineWidth, 10);
-      if (!isNaN(lineWidth)) {
-        return lineWidth;
-      }
-    } catch (err) {
+      if (!Number.isNaN(lineWidth)) return lineWidth;
+    } catch (_) {
       // ignore
     }
     return 80;
   }, [configText]);
-  const onFileExtensionChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    onFileExtensionChanged(event.target.value);
-  }, [onFileExtensionChanged]);
+  const onFileExtensionChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      onFileExtensionChanged(event.target.value);
+    },
+    [onFileExtensionChanged],
+  );
 
   const editorLanguage = getLanguageFromPluginUrl(selectedPluginUrl) ?? "plaintext";
   const langLabel = getPluginShortNameFromPluginUrl(selectedPluginUrl) ?? "plugin";
@@ -105,34 +108,52 @@ export function Playground({
   const startColumnResize = useDividerDrag(panesRef, "x", setLeftFrac);
   const startRowResize = useDividerDrag(leftColRef, "y", setInputFrac);
 
-  const onSelectPlugin = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    if (event.target.selectedIndex >= pluginUrls.length) {
-      const url = prompt("Please provide a Wasm plugin url:", "");
-      if (url != null && url.trim().length > 0) {
-        onSelectPluginUrl(url);
-      } else {
-        event.preventDefault();
-      }
-    } else {
-      onSelectPluginUrl(pluginUrls[event.target.selectedIndex]);
-    }
-  }, [pluginUrls, onSelectPluginUrl]);
+  const onSelectPlugin = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      if (event.target.selectedIndex >= pluginUrls.length) {
+        const url = prompt("Please provide a Wasm plugin url:", "");
+        if (url != null && url.trim().length > 0) onSelectPluginUrl(url);
+        else event.preventDefault();
+      } else onSelectPluginUrl(pluginUrls[event.target.selectedIndex]);
+    },
+    [pluginUrls, onSelectPluginUrl],
+  );
 
   return (
     <div id="App">
       <nav id="AppNav">
         <div className="navInner">
-          <a className="brand" href="/">dprint</a>
+          <a className="brand" href="/">
+            dprint
+          </a>
           <div className="navLinks">
             <a href="/overview">Overview</a>
-            <a className="active" href="/playground">Playground</a>
+            <a className="active" href="/playground">
+              Playground
+            </a>
             <a href="/sponsor">Sponsor</a>
-            <a className="ghButton" href="https://github.com/kjanat/dprint" rel="noopener noreferrer">
+            <a
+              className="ghButton"
+              href="https://github.com/kjanat/dprint"
+              rel="noopener noreferrer"
+            >
               GitHub <span className="ghArrow">↗</span>
             </a>
-            <button className="theme-toggle" type="button" data-theme-toggle hidden>
+            <button
+              className="theme-toggle"
+              type="button"
+              data-theme-toggle
+              hidden
+            >
               <svg viewBox="0 0 20 20" aria-hidden="true">
-                <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <circle
+                  cx="10"
+                  cy="10"
+                  r="7"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                />
                 <path d="M10 3a7 7 0 0 1 0 14Z" fill="currentColor" />
               </svg>
               <span data-theme-label>Theme</span>
@@ -145,30 +166,56 @@ export function Playground({
         <div className="toolbar">
           <div className="toolbarGroup">
             <span className="toolbarLabel">plugin</span>
-            <select className="control" value={selectedPluginUrl} onChange={onSelectPlugin}>
-              {pluginUrls.map((pluginUrl, i) => (
-                <option key={i} value={pluginUrl}>
+            <select
+              className="control"
+              value={selectedPluginUrl}
+              onChange={onSelectPlugin}
+            >
+              {pluginUrls.map((pluginUrl) => (
+                <option key={pluginUrl} value={pluginUrl}>
                   {pluginUrl}
                 </option>
               ))}
               <option key="custom">Custom…</option>
             </select>
-            <select className="control" value={fileExtension} onChange={onFileExtensionChange}>
-              {fileMatchingInfo.fileExtensions.map((ext, i) => <option key={i} value={ext}>.{ext}</option>)}
+            <select
+              className="control"
+              value={fileExtension}
+              onChange={onFileExtensionChange}
+            >
+              {fileMatchingInfo.fileExtensions.map((ext) => (
+                <option key={ext} value={ext}>
+                  .{ext}
+                </option>
+              ))}
             </select>
           </div>
           <div className="toolbarGroup">
-            <button className="btn btnGhost" onClick={() => onTextChanged("")}>Reset</button>
+            <button type="button" className="btn btnGhost" onClick={() => onTextChanged("")}>
+              Reset
+            </button>
             <button
+              type="button"
               className="btn btnPrimary"
-              onClick={() => formatterWorker.formatText("file." + (fileExtension ?? "ts"), text)}
+              onClick={() =>
+                formatterWorker.formatText(
+                  `file.${fileExtension ?? "ts"}`,
+                  text,
+                )}
             >
               Format <span className="btnArrow">▸</span>
             </button>
           </div>
         </div>
 
-        <div className="panes" ref={panesRef} style={{ "--left-frac": leftFrac, "--input-frac": inputFrac } as React.CSSProperties}>
+        <div
+          className="panes"
+          ref={panesRef}
+          style={{
+            "--left-frac": leftFrac,
+            "--input-frac": inputFrac,
+          } as React.CSSProperties}
+        >
           <div className="leftCol" ref={leftColRef}>
             <section className="pane inputPane">
               <div className="paneHeader">
@@ -187,9 +234,8 @@ export function Playground({
               </div>
             </section>
 
-            <div
+            <hr
               className="divider dividerHorizontal"
-              role="separator"
               aria-orientation="horizontal"
               onPointerDown={startRowResize}
             />
@@ -201,7 +247,7 @@ export function Playground({
               </div>
               <div className="paneBody">
                 <CodeEditor
-                  language={"json"}
+                  language="json"
                   onChange={onConfigTextChanged}
                   jsonSchemaUrl={selectedPluginInfo?.configSchemaUrl}
                   text={configText}
@@ -210,9 +256,8 @@ export function Playground({
             </section>
           </div>
 
-          <div
+          <hr
             className="divider dividerVertical"
-            role="separator"
             aria-orientation="vertical"
             onPointerDown={startColumnResize}
           />
@@ -220,7 +265,12 @@ export function Playground({
           <section className="pane outputPane">
             <div className="paneHeader">
               <span className="paneLabel">Output</span>
-              <span className="paneMeta" style={{ color: isLoading ? "var(--text-muted)" : "var(--success)" }}>
+              <span
+                className="paneMeta"
+                style={{
+                  color: isLoading ? "var(--text-muted)" : "var(--success)",
+                }}
+              >
                 {isLoading ? "loading…" : "formatted ✓"}
               </span>
             </div>
@@ -229,7 +279,7 @@ export function Playground({
                 <CodeEditor
                   language={editorLanguage}
                   text={formattedText}
-                  readonly={true}
+                  readonly
                   lineWidth={lineWidth}
                   onScrollTopChange={setScrollTop}
                   scrollTop={scrollTop}
@@ -251,31 +301,34 @@ function useDividerDrag(
   axis: "x" | "y",
   setFraction: (fraction: number) => void,
 ) {
-  return useCallback((event: React.PointerEvent) => {
-    event.preventDefault();
-    const container = containerRef.current;
-    if (container == null) {
-      return;
-    }
+  return useCallback(
+    (event: React.PointerEvent) => {
+      event.preventDefault();
+      const container = containerRef.current;
+      if (container == null) {
+        return;
+      }
 
-    function onMove(moveEvent: PointerEvent) {
-      const rect = container!.getBoundingClientRect();
-      const fraction = axis === "x"
-        ? (moveEvent.clientX - rect.left) / rect.width
-        : (moveEvent.clientY - rect.top) / rect.height;
-      setFraction(Math.min(0.85, Math.max(0.15, fraction)));
-    }
+      const onMove = (moveEvent: PointerEvent) => {
+        const rect = container.getBoundingClientRect();
+        const fraction = axis === "x"
+          ? (moveEvent.clientX - rect.left) / rect.width
+          : (moveEvent.clientY - rect.top) / rect.height;
+        setFraction(Math.min(0.85, Math.max(0.15, fraction)));
+      };
 
-    function onUp() {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
+      function onUp() {
+        globalThis.removeEventListener("pointermove", onMove);
+        globalThis.removeEventListener("pointerup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
 
-    document.body.style.cursor = axis === "x" ? "col-resize" : "row-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }, [containerRef, axis, setFraction]);
+      document.body.style.cursor = axis === "x" ? "col-resize" : "row-resize";
+      document.body.style.userSelect = "none";
+      globalThis.addEventListener("pointermove", onMove);
+      globalThis.addEventListener("pointerup", onUp);
+    },
+    [containerRef, axis, setFraction],
+  );
 }

@@ -6,7 +6,10 @@ const child_process = require("node:child_process");
 const os = require("node:os");
 const fs = require("node:fs");
 
-const exePath = path.join(__dirname, os.platform() === "win32" ? "dprint.exe" : "dprint");
+const exePath = path.join(
+  __dirname,
+  os.platform() === "win32" ? "dprint.exe" : "dprint",
+);
 
 if (!fs.existsSync(exePath)) {
   try {
@@ -26,15 +29,14 @@ if (!fs.existsSync(exePath)) {
 
 /** @param exePath {string} */
 function runDprintExe(exePath) {
-  const result = child_process.spawnSync(
-    exePath,
-    process.argv.slice(2),
-    { stdio: "inherit" },
-  );
+  const result = child_process.spawnSync(exePath, process.argv.slice(2), {
+    stdio: "inherit",
+  });
   if (result.error) {
     if (!fs.existsSync(exePath)) {
       throw new Error(
-        "Could not find exe at path '" + exePath
+        "Could not find exe at path '"
+          + exePath
           + "'. Maybe try installing dprint again.",
       );
     }

@@ -12,8 +12,9 @@ export function setupNavHeight() {
 
   update();
 
-  if (typeof ResizeObserver !== "undefined") new ResizeObserver(update).observe(nav);
-  else window.addEventListener("resize", update);
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(update).observe(nav);
+  } else globalThis.addEventListener("resize", update);
 
   function update() {
     const height = Math.round(nav.getBoundingClientRect().height);

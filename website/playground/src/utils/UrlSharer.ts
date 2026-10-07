@@ -116,7 +116,12 @@ export class UrlSaver {
     }
   }
 
-  updateUrl({ text, configText, plugin, ext }: {
+  updateUrl({
+    text,
+    configText,
+    plugin,
+    ext,
+  }: {
     text: string;
     configText?: string;
     plugin?: string;
@@ -132,11 +137,7 @@ export class UrlSaver {
     if (ext != null) {
       url += `/ext/${ext}`;
     }
-    window.history.replaceState(
-      undefined,
-      "",
-      url,
-    );
+    globalThis.history.replaceState(undefined, "", url);
   }
 }
 

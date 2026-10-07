@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@types/d3": "6.7.8"
+  }
+}

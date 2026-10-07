@@ -1,1 +1,1 @@
-export * from "./UrlSharer";
+export * from "./UrlSharer.ts";

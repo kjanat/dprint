@@ -14,79 +14,95 @@ interface Package {
 const args = parseArgs(Deno.args, {
   boolean: ["publish", "publish-only"],
 });
-const packages: Package[] = [{
-  zipFileName: "dprint-x86_64-pc-windows-msvc.zip",
-  os: "win32",
-  cpu: "x64",
-}, {
-  zipFileName: "dprint-aarch64-pc-windows-msvc.zip",
-  os: "win32",
-  cpu: "arm64",
-}, {
-  zipFileName: "dprint-x86_64-apple-darwin.zip",
-  os: "darwin",
-  cpu: "x64",
-}, {
-  zipFileName: "dprint-aarch64-apple-darwin.zip",
-  os: "darwin",
-  cpu: "arm64",
-}, {
-  zipFileName: "dprint-x86_64-unknown-linux-gnu.zip",
-  os: "linux",
-  cpu: "x64",
-  libc: "glibc",
-}, {
-  zipFileName: "dprint-x86_64-unknown-linux-musl.zip",
-  os: "linux",
-  cpu: "x64",
-  libc: "musl",
-}, {
-  zipFileName: "dprint-aarch64-unknown-linux-gnu.zip",
-  os: "linux",
-  cpu: "arm64",
-  libc: "glibc",
-}, {
-  zipFileName: "dprint-aarch64-unknown-linux-musl.zip",
-  os: "linux",
-  cpu: "arm64",
-  libc: "musl",
-}, {
-  zipFileName: "dprint-riscv64gc-unknown-linux-gnu.zip",
-  os: "linux",
-  cpu: "riscv64",
-  libc: "glibc",
-}, {
-  zipFileName: "dprint-loongarch64-unknown-linux-gnu.zip",
-  os: "linux",
-  cpu: "loong64",
-  libc: "glibc",
-}, {
-  zipFileName: "dprint-loongarch64-unknown-linux-musl.zip",
-  os: "linux",
-  cpu: "loong64",
-  libc: "musl",
-}, {
-  // Node reports ppc64le as "ppc64"
-  zipFileName: "dprint-powerpc64le-unknown-linux-gnu.zip",
-  os: "linux",
-  cpu: "ppc64",
-  libc: "glibc",
-}, {
-  zipFileName: "dprint-powerpc64le-unknown-linux-musl.zip",
-  os: "linux",
-  cpu: "ppc64",
-  libc: "musl",
-}, {
-  // android (Termux): Node reports the platform as "android" and the arch as
-  // "arm64"/"x64". bionic libc, so no libc field (npm only knows glibc/musl).
-  zipFileName: "dprint-aarch64-linux-android.zip",
-  os: "android",
-  cpu: "arm64",
-}, {
-  zipFileName: "dprint-x86_64-linux-android.zip",
-  os: "android",
-  cpu: "x64",
-}];
+const packages: Package[] = [
+  {
+    zipFileName: "dprint-x86_64-pc-windows-msvc.zip",
+    os: "win32",
+    cpu: "x64",
+  },
+  {
+    zipFileName: "dprint-aarch64-pc-windows-msvc.zip",
+    os: "win32",
+    cpu: "arm64",
+  },
+  {
+    zipFileName: "dprint-x86_64-apple-darwin.zip",
+    os: "darwin",
+    cpu: "x64",
+  },
+  {
+    zipFileName: "dprint-aarch64-apple-darwin.zip",
+    os: "darwin",
+    cpu: "arm64",
+  },
+  {
+    zipFileName: "dprint-x86_64-unknown-linux-gnu.zip",
+    os: "linux",
+    cpu: "x64",
+    libc: "glibc",
+  },
+  {
+    zipFileName: "dprint-x86_64-unknown-linux-musl.zip",
+    os: "linux",
+    cpu: "x64",
+    libc: "musl",
+  },
+  {
+    zipFileName: "dprint-aarch64-unknown-linux-gnu.zip",
+    os: "linux",
+    cpu: "arm64",
+    libc: "glibc",
+  },
+  {
+    zipFileName: "dprint-aarch64-unknown-linux-musl.zip",
+    os: "linux",
+    cpu: "arm64",
+    libc: "musl",
+  },
+  {
+    zipFileName: "dprint-riscv64gc-unknown-linux-gnu.zip",
+    os: "linux",
+    cpu: "riscv64",
+    libc: "glibc",
+  },
+  {
+    zipFileName: "dprint-loongarch64-unknown-linux-gnu.zip",
+    os: "linux",
+    cpu: "loong64",
+    libc: "glibc",
+  },
+  {
+    zipFileName: "dprint-loongarch64-unknown-linux-musl.zip",
+    os: "linux",
+    cpu: "loong64",
+    libc: "musl",
+  },
+  {
+    // Node reports ppc64le as "ppc64"
+    zipFileName: "dprint-powerpc64le-unknown-linux-gnu.zip",
+    os: "linux",
+    cpu: "ppc64",
+    libc: "glibc",
+  },
+  {
+    zipFileName: "dprint-powerpc64le-unknown-linux-musl.zip",
+    os: "linux",
+    cpu: "ppc64",
+    libc: "musl",
+  },
+  {
+    // android (Termux): Node reports the platform as "android" and the arch as
+    // "arm64"/"x64". bionic libc, so no libc field (npm only knows glibc/musl).
+    zipFileName: "dprint-aarch64-linux-android.zip",
+    os: "android",
+    cpu: "arm64",
+  },
+  {
+    zipFileName: "dprint-x86_64-linux-android.zip",
+    os: "android",
+    cpu: "x64",
+  },
+];
 
 const markdownText = `# dprint
 
@@ -104,7 +120,9 @@ $.logStep(`Publishing ${version}...`);
 
 if (!args["publish-only"]) {
   // Resolve the permanent repository ID so release URLs and metadata survive renames.
-  const repository = await $.request("https://api.github.com/repositories/1092062077").json<{ html_url: string }>();
+  const repository = await $.request(
+    "https://api.github.com/repositories/1092062077",
+  ).json<{ html_url: string }>();
   const repositoryUrl = repository.html_url;
   await $`rm -rf ${outputDir}`;
   await $`mkdir -p ${dprintDir} ${scopeDir}`;
@@ -113,31 +131,28 @@ if (!args["publish-only"]) {
   {
     $.logStep(`Setting up dprint ${version}...`);
     const pkgJson = {
-      "name": "@kjanat/dprint",
-      "version": version,
-      "description": "Pluggable and configurable code formatting platform written in Rust.",
-      "bin": "bin.cjs",
-      "repository": {
-        "type": "git",
-        "url": `git+${repositoryUrl}.git`,
+      name: "@kjanat/dprint",
+      version: version,
+      description: "Pluggable and configurable code formatting platform written in Rust.",
+      bin: "bin.cjs",
+      repository: {
+        type: "git",
+        url: `git+${repositoryUrl}.git`,
       },
-      "keywords": [
-        "code",
-        "formatter",
-      ],
-      "author": "David Sherret",
-      "license": "MIT",
-      "bugs": {
-        "url": `${repositoryUrl}/issues`,
+      keywords: ["code", "formatter"],
+      author: "David Sherret",
+      license: "MIT",
+      bugs: {
+        url: `${repositoryUrl}/issues`,
       },
-      "homepage": `${repositoryUrl}#readme`,
+      homepage: `${repositoryUrl}#readme`,
       // for yarn berry (https://github.com/dprint/dprint/issues/686)
-      "preferUnplugged": true,
-      "scripts": {
-        "postinstall": "node ./install.cjs",
+      preferUnplugged: true,
+      scripts: {
+        postinstall: "node ./install.cjs",
       },
       optionalDependencies: packages
-        .map(pkg => `@dprint/${getPackageNameNoScope(pkg)}`)
+        .map((pkg) => `@dprint/${getPackageNameNoScope(pkg)}`)
         .reduce((obj, pkgName) => ({ ...obj, [pkgName]: version }), {}),
     };
     currentDir.join("bin.cjs").copyFileToDirSync(dprintDir);
@@ -168,28 +183,34 @@ if (!args["publish-only"]) {
       // record the executable's hash so the dprint package can verify it when
       // downloading the binary as a fallback (e.g. for `npm install --omit=optional`)
       const executableName = pkg.os === "win32" ? "dprint.exe" : "dprint";
-      executableHashes[pkgName] = await sha256Hex(pkgDir.join(executableName).toString());
+      executableHashes[pkgName] = await sha256Hex(
+        pkgDir.join(executableName).toString(),
+      );
 
       // create the package.json and readme
-      pkgDir.join("README.md").writeTextSync(`# @dprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`);
+      pkgDir
+        .join("README.md")
+        .writeTextSync(
+          `# @dprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
+        );
       pkgDir.join("package.json").writeJsonPrettySync({
-        "name": `@dprint/${pkgName}`,
-        "version": version,
-        "description": `${pkgName} distribution of the dprint code formatter`,
-        "repository": {
-          "type": "git",
-          "url": `git+${repositoryUrl}.git`,
+        name: `@dprint/${pkgName}`,
+        version: version,
+        description: `${pkgName} distribution of the dprint code formatter`,
+        repository: {
+          type: "git",
+          url: `git+${repositoryUrl}.git`,
         },
         // force yarn to unpack
-        "preferUnplugged": true,
-        "author": "David Sherret",
-        "license": "MIT",
-        "bugs": {
-          "url": `${repositoryUrl}/issues`,
+        preferUnplugged: true,
+        author: "David Sherret",
+        license: "MIT",
+        bugs: {
+          url: `${repositoryUrl}/issues`,
         },
-        "homepage": `${repositoryUrl}#readme`,
-        "os": [pkg.os],
-        "cpu": [pkg.cpu],
+        homepage: `${repositoryUrl}#readme`,
+        os: [pkg.os],
+        cpu: [pkg.cpu],
         libc: pkg.libc == null ? undefined : [pkg.libc],
       });
     }
@@ -203,10 +224,16 @@ if (!args["publish-only"]) {
   {
     $.logStep("Verifying packages...");
     const testPlatform = Deno.build.os == "windows"
-      ? (Deno.build.arch === "x86_64" ? "@dprint/win32-x64" : "@dprint/win32-arm64")
+      ? Deno.build.arch === "x86_64"
+        ? "@dprint/win32-x64"
+        : "@dprint/win32-arm64"
       : Deno.build.os === "darwin"
-      ? (Deno.build.arch === "x86_64" ? "@dprint/darwin-x64" : "@dprint/darwin-arm64")
-      : (Deno.build.arch === "x86_64" ? "@dprint/linux-x64-glibc" : "@dprint/linux-arm64-glibc");
+      ? Deno.build.arch === "x86_64"
+        ? "@dprint/darwin-x64"
+        : "@dprint/darwin-arm64"
+      : Deno.build.arch === "x86_64"
+      ? "@dprint/linux-x64-glibc"
+      : "@dprint/linux-arm64-glibc";
     $.logLight("Test platform:", testPlatform);
     outputDir.join("package.json").writeJsonPrettySync({
       workspaces: [
@@ -230,10 +257,14 @@ if (!args["publish-only"]) {
     }
 
     // run once after post install created dprint, once with a simulated readonly file system, once creating the cache and once with
-    await $`node bin.cjs -v && rm ${dprintExe} && DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node bin.cjs -v && node bin.cjs -v && node bin.cjs -v`.cwd(dprintDir);
+    await $`node bin.cjs -v && rm ${dprintExe} && DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node bin.cjs -v && node bin.cjs -v && node bin.cjs -v`.cwd(
+      dprintDir,
+    );
 
     if (!dprintDir.join(dprintExe).existsSync()) {
-      throw new Error("dprint executable did not exist when lazily initialized");
+      throw new Error(
+        "dprint executable did not exist when lazily initialized",
+      );
     }
   }
 }
@@ -263,7 +294,7 @@ async function sha256Hex(filePath: string) {
   const data = await Deno.readFile(filePath);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest))
-    .map(b => b.toString(16).padStart(2, "0"))
+    .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
@@ -281,7 +312,10 @@ function resolveVersion() {
   ) {
     return firstArg;
   }
-  const version = (rootDir.join("crates/dprint/Cargo.toml").readTextSync().match(/version = "(.*?)"/))?.[1];
+  const version = rootDir
+    .join("crates/dprint/Cargo.toml")
+    .readTextSync()
+    .match(/version = "(.*?)"/)?.[1];
   if (version == null) {
     throw new Error("Could not resolve version.");
   }
