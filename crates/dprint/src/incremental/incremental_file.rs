@@ -99,23 +99,32 @@ impl<TEnvironment: Environment> IncrementalFile<TEnvironment> {
   /// the same modification time as when its text was last known formatted.
   /// This avoids reading the file.
   pub fn is_file_known_formatted_by_metadata(&self, file_path: &Path, metadata: &FileMetadata) -> bool {
-    let Some(read_data) = &self.read_data else {
-      return false;
-    };
-    let path_hash = get_bytes_hash(file_path.as_os_str().as_encoded_bytes());
-    let Some(stat) = read_data.file_stats.get(&path_hash) else {
-      return false;
-    };
-    let FileStat(len, modified_ns, content_hash) = *stat;
-    let is_unchanged = file_stat(metadata, self.run_start, content_hash).is_some_and(|current| current.0 == len && current.1 == modified_ns);
-    if is_unchanged && read_data.file_hashes.contains(&content_hash) {
-      let mut write_data = self.write_data.lock();
-      write_data.file_hashes.insert(content_hash);
-      write_data.file_stats.insert(path_hash, *stat);
-      true
-    } else {
-      false
+    match self.unchanged_file_stat(file_path, metadata) {
+      Some((path_hash, stat)) => {
+        let mut write_data = self.write_data.lock();
+        write_data.file_hashes.insert(stat.2);
+        write_data.file_stats.insert(path_hash, stat);
+        true
+      }
+      None => false,
     }
+  }
+
+  /// Like `is_file_known_formatted_by_metadata`, without keeping the file
+  /// for the next run. It's for looking ahead at what a run formats.
+  pub fn is_known_formatted_by_metadata(&self, file_path: &Path, metadata: &FileMetadata) -> bool {
+    self.unchanged_file_stat(file_path, metadata).is_some()
+  }
+
+  /// The hash of the file's path and its stat, when the file has the size
+  /// and modification time it had when its text was last known formatted.
+  fn unchanged_file_stat(&self, file_path: &Path, metadata: &FileMetadata) -> Option<(u64, FileStat)> {
+    let read_data = self.read_data.as_ref()?;
+    let path_hash = get_bytes_hash(file_path.as_os_str().as_encoded_bytes());
+    let stat = *read_data.file_stats.get(&path_hash)?;
+    let FileStat(len, modified_ns, content_hash) = stat;
+    let is_unchanged = file_stat(metadata, self.run_start, content_hash).is_some_and(|current| current.0 == len && current.1 == modified_ns);
+    (is_unchanged && read_data.file_hashes.contains(&content_hash)).then_some((path_hash, stat))
   }
 
   /// If the file text is known to be formatted. `metadata` is the file's

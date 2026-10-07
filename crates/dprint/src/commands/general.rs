@@ -295,6 +295,7 @@ mod test {
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::test_helpers::get_expected_help_text;
+  use crate::test_helpers::get_plural_formatted_text;
   use crate::test_helpers::get_singular_formatted_text;
   use crate::test_helpers::run_test_cli;
 
@@ -509,6 +510,7 @@ mod test {
   #[test]
   fn should_stop_before_compiling_more_plugins_than_the_limit() {
     let environment = nested_configs_with_uncompiled_plugins();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("native"));
     environment.set_env_var("DPRINT_MAX_PLUGIN_COMPILES", Some("1"));
     let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
     assert_eq!(
@@ -516,8 +518,8 @@ mod test {
       concat!(
         "Formatting these files would compile 2 plugins, more than the limit of 1. ",
         "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n",
-        "  test-plugin 0.2.0\n",
-        "  test-plugin 0.1.0"
+        "  test-plugin 0.2.0 (4 bytes)\n",
+        "  test-plugin 0.1.0 (4 bytes)"
       )
     );
     // nothing was compiled or formatted
@@ -528,12 +530,16 @@ mod test {
   }
 
   #[test]
-  fn should_say_how_many_plugins_it_compiles() {
+  fn should_say_which_plugins_it_compiles_before_formatting() {
     let environment = nested_configs_with_uncompiled_plugins();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("native"));
     run_test_cli(vec!["fmt"], &environment).unwrap();
     environment.take_stdout_messages();
     let mut messages = environment.take_stderr_messages();
-    assert_eq!(messages.remove(0), "Compiling up to 2 plugins to format these files.");
+    assert_eq!(
+      messages.remove(0),
+      "Compiling 2 plugins to native code to format these files: test-plugin 0.2.0 (4 bytes), test-plugin 0.1.0 (4 bytes)."
+    );
     // then each plugin's own line, in whichever order they start
     messages.sort();
     assert_eq!(
@@ -550,6 +556,110 @@ mod test {
     run_test_cli(vec!["fmt"], &environment).unwrap();
     environment.take_stdout_messages();
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn should_interpret_plugins_that_format_little() {
+    let environment = nested_configs_with_uncompiled_plugins();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
+    assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_formatted");
+  }
+
+  /// A configuration file with the test plugin, which isn't compiled yet.
+  fn config_with_uncompiled_plugin() -> TestEnvironment {
+    TestEnvironmentBuilder::new()
+      .add_remote_wasm_plugin()
+      .with_default_config(|config| {
+        config.add_remote_wasm_plugin();
+      })
+      .build()
+  }
+
+  #[test]
+  fn should_compile_a_plugin_that_formats_a_lot() {
+    let environment = config_with_uncompiled_plugin();
+    // its module is 291 KB, so it compiles for about 200 KB
+    environment.write_file("/file.txt", &"a".repeat(150 * 1024)).unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+
+    environment.write_file("/file.txt", &"a".repeat(300 * 1024)).unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![
+        "Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 (300.0 KB).",
+        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+      ]
+    );
+    assert_eq!(environment.take_wasm_compile_deadlines().len(), 1);
+    assert!(environment.read_file("/file.txt").unwrap().ends_with("a_formatted"));
+
+    // the native code is used from then on, however little it formats
+    environment.write_file("/file.txt", "text").unwrap();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+  }
+
+  #[test]
+  fn should_not_count_files_the_incremental_cache_knows_are_formatted() {
+    let environment = config_with_uncompiled_plugin();
+    // formatted already, so formatting leaves it as is
+    let formatted = format!("{}_formatted", "a".repeat(300 * 1024));
+    environment.set_fs_time(1_000);
+    environment.write_file("/file.txt", &formatted).unwrap();
+    // the first run learns the file's text is formatted and the second its
+    // size and modification time
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
+    environment.set_fs_time(2_000);
+    run_test_cli(vec!["check"], &environment).unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", None);
+
+    // so the next run formats nothing, and doesn't compile
+    run_test_cli(vec!["check"], &environment).unwrap();
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
+
+    // a file that changed is counted
+    environment.write_file("/file.txt", &format!("{}_formatted", "b".repeat(300 * 1024))).unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec![
+        "Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 (300.0 KB).",
+        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+      ]
+    );
+  }
+
+  #[test]
+  fn should_keep_how_fast_a_plugin_formats_in_the_interpreter() {
+    let environment = config_with_uncompiled_plugin();
+    environment.write_file("/file.txt", "text_formatted").unwrap();
+    run_test_cli(vec!["check"], &environment).unwrap();
+    let plugins_dir = environment.get_cache_dir().join("plugins");
+    let rates = environment
+      .dir_info(&plugins_dir)
+      .unwrap()
+      .into_iter()
+      .filter_map(|entry| match entry {
+        crate::environment::DirEntry::File { path, .. } if path.to_string_lossy().ends_with(".rate.json") => Some(path),
+        _ => None,
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(rates.len(), 1);
+    let rate: serde_json::Value = serde_json::from_str(&environment.read_file(&rates[0]).unwrap()).unwrap();
+    assert_eq!(rate["bytes"], 14);
   }
 
   #[test]

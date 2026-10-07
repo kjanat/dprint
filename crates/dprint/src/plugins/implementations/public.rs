@@ -14,6 +14,7 @@ use crate::environment::Environment;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginSourceReference;
+use crate::plugins::cache_meta::format_rate_path;
 use crate::plugins::cache_meta::native_module_path;
 use crate::utils::PathSource;
 use crate::utils::PluginKind;
@@ -119,7 +120,9 @@ pub async fn create_plugin<TEnvironment: Environment>(
             async move { loader.load_native().await }.boxed_local()
           }
         }),
+        wasm_module_path: cache_item.file_path.clone(),
         native_module_path: native_module_path(&cache_item.file_path),
+        format_rate_path: format_rate_path(&cache_item.file_path),
       };
       Ok(Box::new(wasm::WasmPlugin::new(
         cache_item.info,
@@ -549,7 +552,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn should_compile_once_the_plugin_formats() {
+  async fn should_format_in_the_interpreter_until_it_chooses_to_compile() {
     let environment = TestEnvironment::new();
     environment.add_remote_file("https://plugins.dprint.dev/test.wasm", WASM_PLUGIN_BYTES);
     let plugin_cache = Rc::new(PluginCache::new(environment.clone()));
@@ -558,28 +561,40 @@ mod test {
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
       .unwrap();
-    assert!(plugin.compiles_to_format());
+    assert!(plugin.chooses_format_engine());
+    assert!(!plugin.compiles_to_format());
 
-    // what comes before formatting doesn't compile it
+    // what comes before formatting doesn't compile it, and neither does
+    // formatting a little
     let initialized = plugin.initialize().await.unwrap();
     assert!(initialized.license_text().await.is_ok());
+    plugin.choose_format_engine(4);
+    assert!(!plugin.compiles_to_format());
+    assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert!(environment.take_wasm_compile_deadlines().is_empty());
 
-    // formatting does, once
+    // formatting a lot does, once
+    plugin.choose_format_engine(100 * 1024 * 1024);
+    assert!(plugin.compiles_to_format());
     assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    assert_eq!(environment.take_wasm_compile_deadlines().len(), 1);
     assert!(environment.path_exists(native_module_path(&cache_item.file_path)));
     assert!(!plugin.compiles_to_format());
+    assert!(!plugin.chooses_format_engine());
 
-    // and the next run loads what it compiled
+    // and later runs load the native code, however little they format
     let plugin = create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &WasmModuleCreator::default())
       .await
       .unwrap();
+    assert!(!plugin.chooses_format_engine());
     assert!(!plugin.compiles_to_format());
-    assert!(format_with(&plugin.initialize().await.unwrap()).await.is_ok());
+    let initialized = plugin.initialize().await.unwrap();
+    assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+    assert!(environment.take_wasm_compile_deadlines().is_empty());
   }
 
   // https://github.com/dprint/dprint/issues/734
@@ -592,7 +607,9 @@ mod test {
     let cache_item = plugin_cache.get_plugin_cache_item(&plugin_reference).await.unwrap();
     let wasm_module_creator = WasmModuleCreator::default();
     let create = || create_plugin(&plugin_cache, environment.clone(), &plugin_reference, &wasm_module_creator);
-    assert!(format_with(&create().await.unwrap().initialize().await.unwrap()).await.is_ok());
+    let plugin = create().await.unwrap();
+    plugin.choose_format_engine(100 * 1024 * 1024);
+    assert!(format_with(&plugin.initialize().await.unwrap()).await.is_ok());
     assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
 
     // ex. it was compiled for a CPU with different features, or the file is corrupt

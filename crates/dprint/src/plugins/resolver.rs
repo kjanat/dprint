@@ -48,6 +48,17 @@ impl PluginWrapper {
     self.plugin.built_in()
   }
 
+  /// Whether how the plugin formats depends on how much it formats.
+  pub fn chooses_format_engine(&self) -> bool {
+    self.plugin.chooses_format_engine()
+  }
+
+  /// Chooses how the plugin formats in this run, from the bytes of the
+  /// files it will format.
+  pub fn choose_format_engine(&self, bytes_to_format: u64) {
+    self.plugin.choose_format_engine(bytes_to_format)
+  }
+
   /// Whether formatting with the plugin first compiles it to native code.
   pub fn compiles_to_format(&self) -> bool {
     self.plugin.compiles_to_format()

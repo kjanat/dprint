@@ -91,8 +91,19 @@ pub trait Plugin {
     None
   }
 
-  /// Whether the plugin is compiled to native code before it formats, which
-  /// takes up to seconds of every core.
+  /// Whether how the plugin formats depends on how much it formats, which
+  /// is the case for a Wasm plugin without native code.
+  fn chooses_format_engine(&self) -> bool {
+    false
+  }
+
+  /// Chooses how the plugin formats in this run, from the bytes of the
+  /// files it will format.
+  fn choose_format_engine(&self, _bytes_to_format: u64) {}
+
+  /// Whether the plugin is compiled to native code before it formats, as
+  /// `choose_format_engine` chose. Compiling takes up to seconds of every
+  /// core.
   fn compiles_to_format(&self) -> bool {
     false
   }

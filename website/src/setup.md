@@ -99,9 +99,13 @@ Finding the files to format doesn't use these threads. dprint scans directories 
 
 ## Compiling Wasm Plugins
 
-dprint compiles a Wasm plugin to native code the first time the plugin formats a file, and caches the result. Everything before that runs the plugin in an interpreter: getting its plugin info, resolving its configuration, finding the files it formats, and its configuration diagnostics. These take milliseconds, so commands that don't format, like `dprint output-file-paths` and `dprint config update`, never compile a plugin.
+dprint runs a Wasm plugin in an interpreter until compiling it to native code pays off. Getting its plugin info, resolving its configuration, finding the files it formats and its configuration diagnostics always run in the interpreter. They take milliseconds, so commands that don't format, like `dprint output-file-paths` and `dprint config update`, never compile a plugin.
 
-Compiling a plugin takes up to seconds of every core. Before formatting, dprint counts the plugins that formatting the files would compile. When that's more than one, it says how many. When it's more than 50, it stops before compiling any, and lists them. Set `DPRINT_MAX_PLUGIN_COMPILES` to allow more (ex. `DPRINT_MAX_PLUGIN_COMPILES=100`).
+Before formatting, dprint adds up the size of the files each plugin will format, leaving out the files the incremental cache knows are formatted. A plugin is compiled when interpreting those bytes would take longer than compiling it, and formats in the interpreter otherwise. So formatting a few files never waits for a compile. dprint keeps how fast each plugin formatted in the interpreter, so later runs choose with the plugin's own speed. Once a plugin is compiled, its native code is cached and always used.
+
+dprint prints which plugins it compiles before it formats. When that's more than 50, it stops before compiling any, and lists them. Set `DPRINT_MAX_PLUGIN_COMPILES` to allow more (ex. `DPRINT_MAX_PLUGIN_COMPILES=100`). To always interpret or always compile, set `DPRINT_WASM_FORMAT_ENGINE` to `interpreter` or `native`.
+
+The editor integrations (`dprint lsp` and the editor service) format in the interpreter at first. Once a plugin has spent as long in the interpreter as compiling it would take, it compiles in the background and formats natively when that's done.
 
 ## Stalled Plugin Setup
 

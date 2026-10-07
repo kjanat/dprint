@@ -8,6 +8,9 @@
 //! few milliseconds. Compiling a plugin to native code takes up to seconds of
 //! every core, so dprint only does it once the plugin formats files (see
 //! `public.rs`).
+//!
+//! A plugin that formats little also formats here, as compiling it would
+//! take longer than interpreting what it formats (see `engine_choice.rs`).
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -16,6 +19,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use dprint_core::plugins::CancellationToken;
+use parking_lot::Mutex;
 use wasmi::CompilationMode;
 use wasmi::Engine;
 use wasmi::Linker;
@@ -30,6 +34,8 @@ use super::instance::LogFn;
 use super::instance::MAX_EXPORT_PARAMS;
 use super::instance::PluginExports;
 use super::instance::PluginSchemaVersion;
+use super::instance::WasmHostState;
+use super::instance::add_interpreted_host_functions;
 use super::instance::create_plugin_instance;
 use super::instance::plugin_schema_version_from_exports;
 use super::instance::write_output;
@@ -46,6 +52,10 @@ const FUEL_PER_CALL: u64 = 1_000_000_000;
 pub struct InterpretedModule {
   module: Module,
   version: PluginSchemaVersion,
+  wasm_bytes: Arc<[u8]>,
+  /// The module for formatting, read from `wasm_bytes` the first time the
+  /// plugin formats.
+  format_module: Arc<Mutex<Option<Module>>>,
 }
 
 impl InterpretedModule {
@@ -54,10 +64,25 @@ impl InterpretedModule {
   pub fn new(wasm_bytes: &[u8]) -> Result<Self> {
     let module = Module::new(engine(), wasm_bytes)?;
     let version = plugin_schema_version_from_exports(module.exports().map(|export| export.name()))?;
-    Ok(Self { module, version })
+    Ok(Self {
+      module,
+      version,
+      wasm_bytes: Arc::from(wasm_bytes),
+      format_module: Default::default(),
+    })
   }
 
-  /// Creates an instance of the plugin. `log` gets what the plugin prints.
+  pub fn version(&self) -> PluginSchemaVersion {
+    self.version
+  }
+
+  /// The size of the plugin's module in bytes.
+  pub fn wasm_len(&self) -> usize {
+    self.wasm_bytes.len()
+  }
+
+  /// Creates an instance of the plugin for the calls before formatting.
+  /// `log` gets what the plugin prints.
   ///
   /// The instance can't format: the functions the plugin imports to format
   /// with other plugins do nothing.
@@ -76,10 +101,54 @@ impl InterpretedModule {
     let Some(memory) = instance.get_memory(&store, "memory") else {
       bail!("Could not find memory export in plugin.");
     };
-    create_plugin_instance(self.version, InterpretedExports { store, instance, memory })
+    create_plugin_instance(
+      self.version,
+      InterpretedExports {
+        store,
+        instance,
+        memory,
+        fuel_per_call: Some(FUEL_PER_CALL),
+      },
+    )
+  }
+
+  /// Creates an instance of the plugin that formats. It runs without a fuel
+  /// limit, like native code.
+  pub fn instantiate_to_format(&self, host_state: WasmHostState) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> {
+    let module = self.format_module()?;
+    let mut store = Store::new(format_engine(), host_state);
+    let mut linker = Linker::new(format_engine());
+    add_interpreted_host_functions(&mut linker, self.version)?;
+    let instance = linker
+      .instantiate_and_start(&mut store, &module)
+      .map_err(|err| anyhow!("Error instantiating module: {:#}", err))?;
+    let Some(memory) = instance.get_memory(&store, "memory") else {
+      bail!("Could not find memory export in plugin.");
+    };
+    create_plugin_instance(
+      self.version,
+      InterpretedExports {
+        store,
+        instance,
+        memory,
+        fuel_per_call: None,
+      },
+    )
+  }
+
+  fn format_module(&self) -> Result<Module> {
+    let mut format_module = self.format_module.lock();
+    if let Some(module) = &*format_module {
+      return Ok(module.clone());
+    }
+    let module = Module::new(format_engine(), &self.wasm_bytes)?;
+    *format_module = Some(module.clone());
+    Ok(module)
   }
 }
 
+/// The engine for the calls before formatting, which stops a call that runs
+/// out of fuel.
 fn engine() -> &'static Engine {
   static ENGINE: OnceLock<Engine> = OnceLock::new();
   ENGINE.get_or_init(|| {
@@ -88,6 +157,16 @@ fn engine() -> &'static Engine {
     // and translated
     config.compilation_mode(CompilationMode::Lazy);
     config.consume_fuel(true);
+    Engine::new(&config)
+  })
+}
+
+/// The engine for formatting, which doesn't count fuel.
+fn format_engine() -> &'static Engine {
+  static ENGINE: OnceLock<Engine> = OnceLock::new();
+  ENGINE.get_or_init(|| {
+    let mut config = wasmi::Config::default();
+    config.compilation_mode(CompilationMode::Lazy);
     Engine::new(&config)
   })
 }
@@ -136,14 +215,33 @@ fn add_v4_imports(linker: &mut Linker<LogFn>) -> Result<()> {
   Ok(())
 }
 
-/// An interpreted plugin instance's exports.
-struct InterpretedExports {
-  store: Store<LogFn>,
-  instance: wasmi::Instance,
-  memory: Memory,
+/// The data in the store of an interpreted instance.
+trait InterpretedHostData: Send + 'static {
+  fn set_token(&mut self, token: Arc<dyn CancellationToken>);
 }
 
-impl InterpretedExports {
+impl InterpretedHostData for LogFn {
+  fn set_token(&mut self, _token: Arc<dyn CancellationToken>) {
+    // the instance doesn't format, so nothing checks the token
+  }
+}
+
+impl InterpretedHostData for WasmHostState {
+  fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
+    WasmHostState::set_token(self, token);
+  }
+}
+
+/// An interpreted plugin instance's exports.
+struct InterpretedExports<T: InterpretedHostData> {
+  store: Store<T>,
+  instance: wasmi::Instance,
+  memory: Memory,
+  /// The fuel every call gets, when the engine counts fuel.
+  fuel_per_call: Option<u64>,
+}
+
+impl<T: InterpretedHostData> InterpretedExports<T> {
   fn call_with_results(&mut self, name: &str, params: &[u32], results: &mut [Val]) -> Result<()> {
     let Some(func) = self.instance.get_func(&self.store, name) else {
       bail!("Could not find export '{}' in plugin.", name);
@@ -153,15 +251,17 @@ impl InterpretedExports {
     for (value, param) in values.iter_mut().zip(params) {
       *value = Val::I32(*param as i32);
     }
-    // every call gets the same fuel, whatever the calls before it used
-    self.store.set_fuel(FUEL_PER_CALL)?;
+    if let Some(fuel) = self.fuel_per_call {
+      // every call gets the same fuel, whatever the calls before it used
+      self.store.set_fuel(fuel)?;
+    }
     func
       .call(&mut self.store, &values[..params.len()], results)
       .map_err(|err| call_error(&format!("'{}'", name), err))
   }
 }
 
-impl PluginExports for InterpretedExports {
+impl<T: InterpretedHostData> PluginExports for InterpretedExports<T> {
   fn has_function(&mut self, name: &str) -> bool {
     self.instance.get_func(&self.store, name).is_some()
   }
@@ -187,7 +287,7 @@ impl PluginExports for InterpretedExports {
     Ok(self.memory.write(&mut self.store, offset, bytes)?)
   }
 
-  fn set_token(&mut self, _token: Arc<dyn CancellationToken>) {
-    // the instance doesn't format, so nothing checks the token
+  fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
+    self.store.data_mut().set_token(token);
   }
 }

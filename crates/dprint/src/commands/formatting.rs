@@ -15,6 +15,7 @@ use thiserror::Error;
 use crate::arg_parser::CheckSubCommand;
 use crate::arg_parser::CliArgs;
 use crate::arg_parser::DiffFormat;
+use crate::arg_parser::FilePatternArgs;
 use crate::arg_parser::FmtSubCommand;
 use crate::arg_parser::OutputFormatTimesSubCommand;
 use crate::arg_parser::StdInFmtSubCommand;
@@ -24,11 +25,13 @@ use crate::format::EnsureStableFormat;
 use crate::format::RunForFilePathError;
 use crate::format::run_parallelized;
 use crate::incremental::GetIncrementalFileOptions;
+use crate::incremental::IncrementalFile;
 use crate::incremental::get_incremental_file;
 use crate::patterns::FileMatcher;
 use crate::patterns::FileMatcherOptions;
 use crate::plugins::PluginResolver;
 use crate::resolution::PluginsScope;
+use crate::resolution::PluginsScopeAndPathsCollection;
 use crate::resolution::ResolvePluginsScopeAndPathsOptions;
 use crate::resolution::resolve_plugins_scope;
 use crate::resolution::resolve_plugins_scope_and_paths;
@@ -94,6 +97,31 @@ async fn output_stdin_format<TEnvironment: Environment>(
   Ok(())
 }
 
+/// The incremental file of each scope, in the order of the scopes.
+fn get_incremental_files<TEnvironment: Environment>(
+  scopes: &PluginsScopeAndPathsCollection<TEnvironment>,
+  incremental_cli_arg: Option<bool>,
+  patterns: &FilePatternArgs,
+  environment: &TEnvironment,
+) -> Vec<Option<Arc<IncrementalFile<TEnvironment>>>> {
+  scopes
+    .iter()
+    .map(|scope_and_paths| {
+      let config = scope_and_paths.scope.config.as_ref()?;
+      get_incremental_file(
+        GetIncrementalFileOptions {
+          incremental_cli_arg,
+          is_partial_run: patterns.is_partial_run(),
+        },
+        config,
+        &scope_and_paths.scope,
+        environment,
+      )
+      .map(Arc::new)
+    })
+    .collect()
+}
+
 pub async fn output_format_times<TEnvironment: Environment>(
   cmd: &OutputFormatTimesSubCommand,
   args: &CliArgs,
@@ -112,7 +140,8 @@ pub async fn output_format_times<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
-  scopes.check_planned_compiles()?;
+  // every file is formatted, as this doesn't use the incremental cache
+  scopes.plan_format_engines(&[]).await?;
   let durations: Arc<Mutex<Vec<(PathBuf, u128)>>> = Arc::new(Mutex::new(Vec::new()));
 
   for scope_and_paths in scopes.into_iter() {
@@ -169,30 +198,15 @@ pub async fn check<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
-  scopes.check_planned_compiles()?;
+  let incremental_files = get_incremental_files(&scopes, cmd.incremental, &cmd.patterns, environment);
+  scopes.plan_format_engines(&incremental_files).await?;
   let not_formatted_files_count = Arc::new(AtomicCounter::default());
   let list_different = cmd.list_different;
   let output_json = cmd.json;
   let diff_format = cmd.diff_format;
   let fail_fast_flag = cmd.fail_fast.then(|| Arc::new(AtomicFlag::default()));
 
-  for scope_and_paths in scopes.into_iter() {
-    let incremental_file = scope_and_paths
-      .scope
-      .config
-      .as_ref()
-      .and_then(|config| {
-        get_incremental_file(
-          GetIncrementalFileOptions {
-            incremental_cli_arg: cmd.incremental,
-            is_partial_run: cmd.patterns.is_partial_run(),
-          },
-          config,
-          &scope_and_paths.scope,
-          environment,
-        )
-      })
-      .map(Arc::new);
+  for (scope_and_paths, incremental_file) in scopes.into_iter().zip(incremental_files) {
     run_parallelized(scope_and_paths, environment, incremental_file.clone(), EnsureStableFormat(false), {
       let not_formatted_files_count = not_formatted_files_count.clone();
       let incremental_file = incremental_file.clone();
@@ -382,26 +396,11 @@ pub async fn format<TEnvironment: Environment>(
   )
   .await?;
   scopes.ensure_valid_for_cli_args(args)?;
-  scopes.check_planned_compiles()?;
+  let incremental_files = get_incremental_files(&scopes, cmd.incremental, &cmd.patterns, environment);
+  scopes.plan_format_engines(&incremental_files).await?;
 
   let formatted_files_count = Arc::new(AtomicCounter::default());
-  for scope_and_paths in scopes.into_iter() {
-    let incremental_file = scope_and_paths
-      .scope
-      .config
-      .as_ref()
-      .and_then(|config| {
-        get_incremental_file(
-          GetIncrementalFileOptions {
-            incremental_cli_arg: cmd.incremental,
-            is_partial_run: cmd.patterns.is_partial_run(),
-          },
-          config,
-          &scope_and_paths.scope,
-          environment,
-        )
-      })
-      .map(Arc::new);
+  for (scope_and_paths, incremental_file) in scopes.into_iter().zip(incremental_files) {
     let output_diff = cmd.diff;
     let diff_format = cmd.diff_format;
 
@@ -514,10 +513,7 @@ mod test {
       .build();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file("/file.txt").unwrap(), "text_toml");
   }
 
@@ -536,10 +532,7 @@ mod test {
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file("/file.txt").unwrap(), "text_json");
   }
 
@@ -555,10 +548,7 @@ mod test {
       .build();
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file("/file.txt").unwrap(), "text_remote_toml");
   }
 
@@ -568,10 +558,7 @@ mod test {
     let config = "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n[test-plugin]\nending = \"inline\"";
     run_test_cli(vec!["fmt", "--config", config, "/file.txt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file("/file.txt").unwrap(), "text_inline");
   }
 
@@ -1469,10 +1456,7 @@ mod test {
     .unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file(&file_path1).unwrap(), "text_custom-formatted");
     assert_eq!(environment.read_file(&file_path2).unwrap(), "text2_custom-formatted");
   }
@@ -1542,10 +1526,7 @@ mod test {
     run_test_cli(vec!["fmt", "--config", "https://dprint.dev/test.json"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file("/file1.txt").unwrap(), "text_custom-formatted");
     assert_eq!(environment.read_file("/sub/file2.txt").unwrap(), "text2_custom-formatted");
   }
@@ -2746,10 +2727,7 @@ text2"
     .unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]
@@ -4202,10 +4180,7 @@ text2"
 
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.read_file(&file_path).unwrap(), "text_formatted");
   }
 
@@ -4934,10 +4909,7 @@ text2"
     run_test_cli_with_stdin(vec!["fmt", "--stdin", "file.txt"], &environment, test_std_in).unwrap();
     // should format even though it wasn't matched because an absolute path wasn't provided
     assert_eq!(environment.take_stdout_messages(), vec!["text_formatted"]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]
@@ -5008,10 +4980,7 @@ text_formatted"
     run_test_cli_with_stdin(vec!["fmt", "--stdin", "txt"], &environment, test_std_in).unwrap();
     // should format even though it wasn't matched because an absolute path wasn't provided
     assert_eq!(environment.take_stdout_messages(), vec!["text_formatted"]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
     // now try with a leading period
     let test_std_in = TestStdInReader::from("text");
@@ -5040,10 +5009,7 @@ text_formatted"
       .err()
       .unwrap();
     assert_eq!(error_message.to_string(), "Did error.");
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]
@@ -5108,10 +5074,7 @@ text_formatted"
     // the absolute path must be provided instead of a relative one in order to properly pick up
     // inclusion/exclusion rules and the proper configuration file.
     assert_eq!(environment.take_stdout_messages(), vec!["text_formatted"]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]
@@ -5174,7 +5137,8 @@ text_formatted"
       .build();
     environment.add_remote_file_redirect(original_url, redirected_url);
     run_test_cli(vec!["fmt", "*.*"], &environment).unwrap();
-    assert_eq!(environment.take_stderr_messages(), vec![format!("Compiling {}", original_url)]);
+    // formatting one small file interprets the plugin, so it isn't compiled
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
   }
 
@@ -5300,10 +5264,7 @@ text_formatted"
 
     assert_eq!(environment.read_file("/test.txt").unwrap(), "text_formatted");
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[test]

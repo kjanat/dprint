@@ -192,10 +192,18 @@ pub fn native_module_path(module_path: &Path) -> PathBuf {
   module_path.with_extension("cwasm")
 }
 
-/// Removes a Wasm plugin's module and the native code compiled from it.
+/// Where a Wasm plugin's formatting rate in the interpreter is kept: next
+/// to the module, for the same build.
+pub fn format_rate_path(module_path: &Path) -> PathBuf {
+  module_path.with_extension("rate.json")
+}
+
+/// Removes a Wasm plugin's module, the native code compiled from it and its
+/// formatting rate.
 pub fn remove_wasm_module(module_path: &Path, environment: &impl Environment) {
   let _ = environment.remove_file(module_path);
   let _ = environment.remove_file(native_module_path(module_path));
+  let _ = environment.remove_file(format_rate_path(module_path));
 }
 
 /// What the plugin resolved configurations to (see `PluginResolutionCache`).

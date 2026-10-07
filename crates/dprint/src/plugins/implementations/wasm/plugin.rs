@@ -13,12 +13,17 @@ use dprint_core::plugins::FormatRange;
 use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::process::HostFormatCallback;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use sys_traits::FsMetadata;
+use sys_traits::FsMetadataValue;
 
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
@@ -26,12 +31,14 @@ use dprint_core::plugins::PluginInfo;
 
 use super::WasmHostFormatSender;
 use super::create_pools_import_object;
+use super::engine_choice;
+use super::engine_choice::FormatEngine;
+use super::engine_choice::FormatRate;
 use super::instance::InitializedWasmPluginInstance;
 use super::instance::LogFn;
-use super::instance::Store;
+use super::instance::create_host_state;
 use super::interpreter::InterpretedModule;
 use super::load_instance;
-use super::load_instance::WasmInstance;
 use super::load_instance::WasmModule;
 use crate::environment::Environment;
 use crate::plugins::FormatConfig;
@@ -47,12 +54,17 @@ pub type LoadModule<T> = Box<dyn Fn() -> LocalBoxFuture<'static, Result<T>>>;
 /// How a Wasm plugin loads its modules.
 pub struct WasmPluginModules {
   /// Loads the module the interpreter runs, for the calls that come before
-  /// formatting (its resolved configuration, the files it formats, ...).
+  /// formatting (its resolved configuration, the files it formats, ...) and
+  /// to format when compiling doesn't pay off.
   pub load_interpreted: LoadModule<InterpretedModule>,
-  /// Loads the native module that formats, compiling it first when needed.
+  /// Loads the native module, compiling it first when needed.
   pub load_native: LoadModule<WasmModule>,
+  /// Where the plugin's module is kept.
+  pub wasm_module_path: PathBuf,
   /// Where the native module is kept once it's compiled.
   pub native_module_path: PathBuf,
+  /// Where the plugin's formatting rate in the interpreter is kept.
+  pub format_rate_path: PathBuf,
 }
 
 /// How long a module that failed to load isn't tried again, as loading it
@@ -115,11 +127,43 @@ impl<T: Clone> LazyModule<T> {
 
 pub struct WasmPlugin<TEnvironment: Environment> {
   interpreted: LazyModule<InterpretedModule>,
-  native: Rc<LazyModule<WasmModule>>,
-  native_module_path: PathBuf,
+  formatting: Rc<Formatting<TEnvironment>>,
+  wasm_module_path: PathBuf,
   resolution_cache: PluginResolutionCache,
   environment: TEnvironment,
   plugin_info: PluginInfo,
+}
+
+/// How a Wasm plugin formats, shared by the plugin and its initialized
+/// plugin.
+struct Formatting<TEnvironment: Environment> {
+  native: Rc<LazyModule<WasmModule>>,
+  native_module_path: PathBuf,
+  format_rate_path: PathBuf,
+  /// What `choose_format_engine` chose for this run. A process that formats
+  /// without choosing first (ex. `dprint lsp`) has none.
+  chosen: Cell<Option<FormatEngine>>,
+  environment: TEnvironment,
+}
+
+impl<TEnvironment: Environment> Formatting<TEnvironment> {
+  fn has_native_code(&self) -> bool {
+    self.native.is_loaded() || self.environment.path_exists(&self.native_module_path)
+  }
+
+  /// How the plugin's next instance formats. Native code that exists is
+  /// always used, as loading it takes milliseconds.
+  fn engine(&self) -> FormatEngine {
+    if self.has_native_code() {
+      FormatEngine::Native
+    } else {
+      self
+        .chosen
+        .get()
+        .or_else(|| engine_choice::forced(&self.environment))
+        .unwrap_or(FormatEngine::Interpreter)
+    }
+  }
 }
 
 impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
@@ -127,8 +171,14 @@ impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
   pub fn new(plugin_info: PluginInfo, modules: WasmPluginModules, resolution_cache: PluginResolutionCache, environment: TEnvironment) -> Self {
     WasmPlugin {
       interpreted: LazyModule::new(modules.load_interpreted),
-      native: Rc::new(LazyModule::new(modules.load_native)),
-      native_module_path: modules.native_module_path,
+      formatting: Rc::new(Formatting {
+        native: Rc::new(LazyModule::new(modules.load_native)),
+        native_module_path: modules.native_module_path,
+        format_rate_path: modules.format_rate_path,
+        chosen: Cell::new(None),
+        environment: environment.clone(),
+      }),
+      wasm_module_path: modules.wasm_module_path,
       resolution_cache,
       environment,
       plugin_info,
@@ -150,8 +200,26 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     Some(&self.resolution_cache)
   }
 
+  fn chooses_format_engine(&self) -> bool {
+    !self.formatting.has_native_code()
+  }
+
+  fn choose_format_engine(&self, bytes_to_format: u64) {
+    let engine = engine_choice::forced(&self.environment).unwrap_or_else(|| {
+      let module_len = match self.environment.fs_metadata(&self.wasm_module_path) {
+        Ok(metadata) => metadata.len(),
+        // it's set up again when it's loaded, so this is a guess
+        Err(_) => 0,
+      };
+      let rate = engine_choice::read_rate(&self.environment, &self.formatting.format_rate_path);
+      engine_choice::choose(module_len, bytes_to_format, rate.as_ref())
+    });
+    log_debug!(self.environment, "{} formats {} bytes: {:?}", self.plugin_info.name, bytes_to_format, engine);
+    self.formatting.chosen.set(Some(engine));
+  }
+
   fn compiles_to_format(&self) -> bool {
-    !self.native.is_loaded() && !self.environment.path_exists(&self.native_module_path)
+    self.formatting.chosen.get() == Some(FormatEngine::Native) && !self.formatting.has_native_code()
   }
 
   async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
@@ -166,18 +234,10 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
       Arc::new(move |text: &str| environment.log_stderr_with_context(text, &plugin_name))
     };
     let plugin: Rc<dyn InitializedPlugin> = Rc::new(InitializedWasmPlugin::new(
-      plugin_name.clone(),
+      plugin_name,
       Arc::new(Interpreter::new(interpreted, log)),
-      self.native.clone(),
-      Arc::new({
-        move |module: &WasmModule, host_format_sender| {
-          let (linker, host_state) = create_pools_import_object(environment.clone(), &plugin_name, module.version(), module.engine(), host_format_sender)?;
-          let mut store = module.new_store(host_state);
-          let instance = load_instance(&mut store, module, &linker)?;
-          Ok((store, instance))
-        }
-      }),
-      self.environment.clone(),
+      self.formatting.clone(),
+      environment,
     ));
 
     Ok(plugin)
@@ -188,6 +248,7 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
 /// the plugin.
 struct Interpreter {
   module: InterpretedModule,
+  /// Gets what the plugin prints.
   log: LogFn,
   instance: parking_lot::Mutex<Option<Box<dyn InitializedWasmPluginInstance + Send>>>,
 }
@@ -239,16 +300,25 @@ struct InstanceState {
 struct WasmPluginSenderWithState {
   sender: Rc<WasmPluginSender>,
   instance_state_cell: Rc<RefCell<Option<InstanceState>>>,
+  engine: FormatEngine,
 }
 
-type LoadInstanceFn = dyn Fn(&WasmModule, WasmHostFormatSender) -> Result<(Store, WasmInstance)> + Send + Sync;
+/// Creates an instance that formats, on the thread it formats on.
+type CreateFormatInstance = Box<dyn FnOnce(WasmHostFormatSender) -> Result<Box<dyn InitializedWasmPluginInstance + Send>> + Send>;
 
 pub struct InitializedWasmPlugin<TEnvironment: Environment> {
   name: String,
   interpreter: Arc<Interpreter>,
   pending_instances: RefCell<Vec<WasmPluginSenderWithState>>,
-  native: Rc<LazyModule<WasmModule>>,
-  load_instance: Arc<LoadInstanceFn>,
+  formatting: Rc<Formatting<TEnvironment>>,
+  /// What the plugin formatted in the interpreter in this process.
+  interpreted: Arc<parking_lot::Mutex<FormatRate>>,
+  /// Whether the plugin started compiling in the background because it
+  /// formatted enough in the interpreter (see `compile_once_it_pays_off`).
+  compiling_in_background: Cell<bool>,
+  /// How long the plugin formats in the interpreter before it compiles in
+  /// the background: about as long as compiling it takes.
+  compile_after: Duration,
   environment: TEnvironment,
 }
 
@@ -263,6 +333,10 @@ impl<TEnvironment: Environment> Drop for InitializedWasmPlugin<TEnvironment> {
 
       instances.len()
     };
+    let interpreted = *self.interpreted.lock();
+    if interpreted.bytes > 0 {
+      engine_choice::add_to_rate(&self.environment, &self.formatting.format_rate_path, interpreted);
+    }
     log_debug!(
       self.environment,
       "Dropped {} ({} instances) in {}ms",
@@ -274,19 +348,16 @@ impl<TEnvironment: Environment> Drop for InitializedWasmPlugin<TEnvironment> {
 }
 
 impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
-  fn new(
-    name: String,
-    interpreter: Arc<Interpreter>,
-    native: Rc<LazyModule<WasmModule>>,
-    load_instance: Arc<LoadInstanceFn>,
-    environment: TEnvironment,
-  ) -> Self {
+  fn new(name: String, interpreter: Arc<Interpreter>, formatting: Rc<Formatting<TEnvironment>>, environment: TEnvironment) -> Self {
+    let compile_after = engine_choice::compile_time(interpreter.module.wasm_len() as u64);
     Self {
       name,
       interpreter,
       pending_instances: Default::default(),
-      native,
-      load_instance,
+      formatting,
+      interpreted: Default::default(),
+      compiling_in_background: Cell::new(false),
+      compile_after,
       environment,
     }
   }
@@ -353,10 +424,17 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
   }
 
   async fn get_or_create_instance(&self, instance_state: Option<InstanceState>) -> Result<WasmPluginSenderWithState> {
-    let maybe_instance = self.pending_instances.borrow_mut().pop(); // needs to be on a separate line
+    let engine = self.formatting.engine();
+    let maybe_instance = {
+      let mut instances = self.pending_instances.borrow_mut();
+      // an instance of the other engine isn't used again (ex. interpreted
+      // ones once the native code is there)
+      instances.retain(|instance| instance.engine == engine);
+      instances.pop()
+    };
     let plugin_sender = match maybe_instance {
       Some(instance) => instance,
-      None => self.create_instance().await?,
+      None => self.create_instance(engine).await?,
     };
     *plugin_sender.instance_state_cell.borrow_mut() = instance_state;
     Ok(plugin_sender)
@@ -367,23 +445,45 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     self.pending_instances.borrow_mut().push(plugin_sender);
   }
 
-  async fn create_instance(&self) -> Result<WasmPluginSenderWithState> {
-    // compiled the first time the plugin formats
-    let module = self.native.get().await?;
+  async fn create_instance(&self, engine: FormatEngine) -> Result<WasmPluginSenderWithState> {
+    let create: CreateFormatInstance = match engine {
+      FormatEngine::Native => {
+        // compiled the first time the plugin formats natively
+        let module = self.formatting.native.get().await?;
+        let log = self.interpreter.log.clone();
+        Box::new(move |host_format_sender| {
+          let (linker, host_state) = create_pools_import_object(log, module.version(), module.engine(), host_format_sender)?;
+          let mut store = module.new_store(host_state);
+          let instance = load_instance(&mut store, &module, &linker)?;
+          create_wasm_plugin_instance(store, instance)
+        })
+      }
+      FormatEngine::Interpreter => {
+        let module = self.interpreter.module.clone();
+        let log = self.interpreter.log.clone();
+        Box::new(move |host_format_sender| module.instantiate_to_format(create_host_state(module.version(), log, host_format_sender)))
+      }
+    };
     let start_instant = Instant::now();
-    log_debug!(self.environment, "Creating instance of {}", self.name);
+    log_debug!(self.environment, "Creating instance of {} ({:?})", self.name, engine);
 
     let (host_format_tx, mut host_format_rx) = tokio::sync::mpsc::unbounded_channel::<(HostFormatRequest, std::sync::mpsc::Sender<FormatResult>)>();
     let instance_state_cell: Rc<RefCell<Option<InstanceState>>> = Default::default();
+    // the time the instance waited for other plugins to format for it (ex.
+    // markdown's code blocks), which isn't its own formatting
+    let host_format_nanos = Arc::new(AtomicU64::new(0));
 
     dprint_core::async_runtime::spawn({
       let instance_state_cell = instance_state_cell.clone();
+      let host_format_nanos = host_format_nanos.clone();
       async move {
         while let Some((request, sender)) = host_format_rx.recv().await {
           let instance_state = instance_state_cell.borrow().clone();
           match instance_state {
             Some(instance_state) => {
+              let start = Instant::now();
               let message = (instance_state.host_format_callback)(request).await;
+              host_format_nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
               if sender.send(message).is_err() {
                 return; // disconnected
               }
@@ -400,43 +500,47 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
 
     let (tx, rx) = std::sync::mpsc::channel::<WasmPluginFormatRequest>();
     let (initialize_tx, initialize_rx) = tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
+    // what the instance formats is timed when it's interpreted, for the
+    // plugin's rate in the interpreter
+    let interpreted = (engine == FormatEngine::Interpreter).then(|| self.interpreted.clone());
 
     // spawn the wasm instance on a dedicated blocking thread to reduce issues.
     // the runtime gives its blocking threads a large stack (see
     // WASM_PLUGIN_THREAD_STACK_SIZE) so wasmtime can run wasm on this native
     // stack, up to MAX_WASM_STACK_SIZE.
-    dprint_core::async_runtime::spawn_blocking({
-      let load_instance = self.load_instance.clone();
-      move || {
-        let initialize = || {
-          let (store, instance) = (load_instance)(&module, host_format_tx)?;
-          let instance = create_wasm_plugin_instance(store, instance)?;
-          Ok(instance)
-        };
-        let mut instance = match initialize() {
-          Ok(instance) => {
-            if initialize_tx.send(Ok(())).is_err() {
-              return; // disconnected
-            }
-            instance
+    dprint_core::async_runtime::spawn_blocking(move || {
+      let mut instance = match create(host_format_tx) {
+        Ok(instance) => {
+          if initialize_tx.send(Ok(())).is_err() {
+            return; // disconnected
           }
-          Err(err) => {
-            let _ = initialize_tx.send(Err(err));
-            return; // quit
-          }
-        };
-        while let Ok(WasmPluginFormatRequest(request, response)) = rx.recv() {
-          let result = instance.format_text(
-            &request.file_path,
-            &request.file_bytes,
-            request.range.clone(),
-            &request.config,
-            &request.override_config,
-            request.token.clone(),
-          );
-          if response.send(result).is_err() {
-            break; // disconnected
-          }
+          instance
+        }
+        Err(err) => {
+          let _ = initialize_tx.send(Err(err));
+          return; // quit
+        }
+      };
+      while let Ok(WasmPluginFormatRequest(request, response)) = rx.recv() {
+        let start = Instant::now();
+        let host_format_start = host_format_nanos.load(Ordering::Relaxed);
+        let result = instance.format_text(
+          &request.file_path,
+          &request.file_bytes,
+          request.range.clone(),
+          &request.config,
+          &request.override_config,
+          request.token.clone(),
+        );
+        if let Some(interpreted) = &interpreted {
+          let host_format = host_format_nanos.load(Ordering::Relaxed) - host_format_start;
+          interpreted.lock().add(FormatRate {
+            bytes: request.file_bytes.len() as u64,
+            nanos: (start.elapsed().as_nanos() as u64).saturating_sub(host_format),
+          });
+        }
+        if response.send(result).is_err() {
+          break; // disconnected
         }
       }
     });
@@ -453,7 +557,40 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     Ok(WasmPluginSenderWithState {
       sender: Rc::new(tx),
       instance_state_cell,
+      engine,
     })
+  }
+
+  /// Without a choice for the run (ex. in `dprint lsp`), a plugin formats in
+  /// the interpreter until that took as long as compiling it would, then
+  /// compiles in the background and formats natively once that's done. That
+  /// costs at most about twice what knowing the future would.
+  fn compile_once_it_pays_off(&self) {
+    if self.formatting.chosen.get().is_some() || self.compiling_in_background.get() || self.formatting.has_native_code() {
+      return;
+    }
+    if engine_choice::forced(&self.environment).is_some() {
+      return;
+    }
+    let interpreted = Duration::from_nanos(self.interpreted.lock().nanos);
+    if interpreted < self.compile_after {
+      return;
+    }
+    self.compiling_in_background.set(true);
+    log_debug!(
+      self.environment,
+      "Compiling {} in the background after {}ms in the interpreter.",
+      self.name,
+      interpreted.as_millis()
+    );
+    let native = self.formatting.native.clone();
+    let environment = self.environment.clone();
+    let name = self.name.clone();
+    dprint_core::async_runtime::spawn(async move {
+      if let Err(err) = native.get().await {
+        log_debug!(environment, "Error compiling {} in the background: {:#}", name, err);
+      }
+    });
   }
 }
 
@@ -494,7 +631,7 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
     let instance_state = InstanceState {
       host_format_callback: request.on_host_format,
     };
-    self
+    let result = self
       .with_instance(Some(instance_state), move |plugin_sender| {
         let message = message.clone();
         async move {
@@ -505,7 +642,9 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
         .boxed_local()
       })
       .await
-      .map_err(crate::plugins::anyhow_to_format_error)
+      .map_err(crate::plugins::anyhow_to_format_error);
+    self.compile_once_it_pays_off();
+    result
   }
 
   async fn shutdown(&self) {
@@ -516,8 +655,106 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
 #[cfg(test)]
 mod test {
   use std::cell::Cell;
+  use std::path::Path;
+
+  use dprint_core::async_runtime::FutureExt;
 
   use super::*;
+  use crate::environment::TestEnvironment;
+  use crate::test_helpers::WASM_PLUGIN_BYTES;
+
+  async fn format_text(plugin: &InitializedWasmPlugin<TestEnvironment>) -> FormatResult {
+    plugin
+      .format_text(InitializedPluginFormatRequest {
+        file_path: PathBuf::from("/file.txt"),
+        file_text: b"text".to_vec(),
+        range: None,
+        config: Arc::new(FormatConfig {
+          id: dprint_core::plugins::FormatConfigId::from_raw(1),
+          global: Default::default(),
+          plugin: Default::default(),
+        }),
+        override_config: Default::default(),
+        on_host_format: Rc::new(|_| async { Ok(None) }.boxed_local()),
+        token: Arc::new(dprint_core::plugins::NullCancellationToken),
+      })
+      .await
+  }
+
+  #[tokio::test]
+  async fn without_a_choice_compiles_in_the_background_once_interpreting_took_as_long() {
+    let environment = TestEnvironment::new();
+    let native_loads = Rc::new(Cell::new(0));
+    let load_native: LoadModule<WasmModule> = Box::new({
+      let native_loads = native_loads.clone();
+      move || {
+        native_loads.set(native_loads.get() + 1);
+        async move {
+          let compiled = crate::plugins::compile_wasm(WASM_PLUGIN_BYTES)?;
+          super::super::WasmModuleCreator::default().create_from_serialized(&compiled.bytes)
+        }
+        .boxed_local()
+      }
+    });
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(None),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    plugin.compile_after = Duration::from_secs(3600);
+
+    // it interprets while that took less long than compiling would
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    tokio::task::yield_now().await;
+    assert_eq!(native_loads.get(), 0);
+    assert_eq!(formatting.engine(), FormatEngine::Interpreter);
+
+    // then compiles in the background, once
+    plugin.compile_after = Duration::ZERO;
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    while !formatting.native.is_loaded() {
+      tokio::task::yield_now().await;
+    }
+    assert_eq!(native_loads.get(), 1);
+
+    // and formats natively from then on
+    assert_eq!(formatting.engine(), FormatEngine::Native);
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    assert_eq!(native_loads.get(), 1);
+    assert!(plugin.pending_instances.borrow().iter().all(|instance| instance.engine == FormatEngine::Native));
+  }
+
+  #[tokio::test]
+  async fn a_chosen_engine_is_kept_for_the_run() {
+    let environment = TestEnvironment::new();
+    let load_native: LoadModule<WasmModule> = Box::new(|| async { Err(anyhow!("not compiled in this test")) }.boxed_local());
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(Some(FormatEngine::Interpreter)),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    plugin.compile_after = Duration::ZERO;
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    tokio::task::yield_now().await;
+    // the run chose to interpret, so it doesn't compile in the background
+    assert!(!plugin.compiling_in_background.get());
+    assert_eq!(formatting.engine(), FormatEngine::Interpreter);
+    drop(plugin);
+    // and it keeps how fast the plugin formatted
+    let rate = engine_choice::read_rate(&environment, Path::new("/plugin.rate.json")).unwrap();
+    assert_eq!(rate.bytes, 4);
+  }
 
   /// A module that fails to load the first time, and the count of times it
   /// was loaded.

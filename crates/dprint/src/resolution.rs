@@ -27,6 +27,8 @@ use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::process::HostFormatCallback;
 use indexmap::IndexMap;
+use sys_traits::FsMetadata;
+use sys_traits::FsMetadataValue;
 use thiserror::Error;
 
 use crate::arg_parser::CliArgs;
@@ -46,6 +48,8 @@ use crate::configuration::resolve_descendant_config_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
+use crate::incremental::FileMetadata;
+use crate::incremental::IncrementalFile;
 use crate::paths::FilesPathsByPlugins;
 use crate::paths::NoFilesFoundError;
 use crate::paths::get_and_resolve_file_paths;
@@ -610,46 +614,86 @@ pub struct PluginsScopeAndPathsCollection<TEnvironment: Environment> {
 }
 
 impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
-  /// Counts the plugins that formatting the files compiles to native code,
-  /// before any is: the Wasm plugins that format any of the files and aren't
-  /// compiled yet. Unchanged files aren't formatted, so this is the most it
-  /// compiles.
+  /// Chooses how each Wasm plugin without native code formats, before
+  /// anything is formatted: compiled to native code when interpreting what it
+  /// formats would take longer than compiling it. What it formats is the
+  /// bytes of its files, without the files `incremental_files` (one per
+  /// scope) knows are formatted by their size and modification time. That's
+  /// the most it formats, as an unchanged file read in full isn't formatted
+  /// either.
   ///
-  /// Above the limit, nothing is formatted and it's an error. Otherwise, more
-  /// than one gets a warning with the count, as compiling one takes up to
-  /// seconds of every core.
-  pub fn check_planned_compiles(&self) -> Result<()> {
-    let mut planned: Vec<&Rc<PluginWrapper>> = Vec::new();
+  /// Then the plugins it compiles are printed with what they format. More
+  /// than the limit is an error before anything is compiled or formatted.
+  pub async fn plan_format_engines(&self, incremental_files: &[Option<Arc<IncrementalFile<TEnvironment>>>]) -> Result<()> {
+    let mut choosing: Vec<&Rc<PluginWrapper>> = Vec::new();
     for scope_and_paths in &self.inner {
-      for plugin_names in scope_and_paths.file_paths_by_plugins.plugin_names() {
-        for name in plugin_names.names() {
-          let Some(plugin) = scope_and_paths.scope.plugins.get(name).map(|plugin| &plugin.plugin) else {
-            continue;
-          };
-          if !planned.iter().any(|planned| Rc::ptr_eq(planned, plugin)) && plugin.compiles_to_format() {
-            planned.push(plugin);
-          }
+      for plugin in scope_and_paths.scope.plugins.values() {
+        if plugin.plugin.chooses_format_engine() && !choosing.iter().any(|choosing| Rc::ptr_eq(choosing, &plugin.plugin)) {
+          choosing.push(&plugin.plugin);
         }
       }
     }
+    if choosing.is_empty() {
+      return Ok(());
+    }
+
+    let mut files = Vec::new();
+    for (scope_index, scope_and_paths) in self.inner.iter().enumerate() {
+      for (plugin_names, file_paths) in scope_and_paths.file_paths_by_plugins.iter() {
+        let plugin_indices = plugin_names
+          .names()
+          .filter_map(|name| scope_and_paths.scope.plugins.get(name))
+          .filter_map(|plugin| choosing.iter().position(|choosing| Rc::ptr_eq(choosing, &plugin.plugin)))
+          .collect::<Vec<_>>();
+        if !plugin_indices.is_empty() {
+          files.push(FilesToMeasure {
+            incremental_file: incremental_files.get(scope_index).cloned().flatten(),
+            plugin_indices,
+            file_paths: file_paths.clone(),
+          });
+        }
+      }
+    }
+    let bytes = bytes_to_format(&self.environment, files, choosing.len()).await?;
+
+    let mut compiling = Vec::new();
+    for (plugin, bytes) in choosing.into_iter().zip(bytes) {
+      plugin.choose_format_engine(bytes);
+      if plugin.compiles_to_format() {
+        compiling.push((plugin, bytes));
+      }
+    }
     let limit = max_plugin_compiles(&self.environment);
-    if planned.len() > limit {
+    if compiling.len() > limit {
       bail!(
         concat!(
           "Formatting these files would compile {} plugins, more than the limit of {}. ",
           "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n{}"
         ),
-        planned.len(),
+        compiling.len(),
         limit,
-        planned
+        compiling
           .iter()
-          .map(|plugin| format!("  {} {}", plugin.info().name, plugin.info().version))
+          .map(|(plugin, bytes)| format!("  {} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
           .collect::<Vec<_>>()
           .join("\n"),
       );
     }
-    if planned.len() > 1 {
-      log_warn!(self.environment, "Compiling up to {} plugins to format these files.", planned.len());
+    if !compiling.is_empty() {
+      log_warn!(
+        self.environment,
+        "Compiling {} to native code to format these files: {}.",
+        if compiling.len() == 1 {
+          "1 plugin".to_string()
+        } else {
+          format!("{} plugins", compiling.len())
+        },
+        compiling
+          .iter()
+          .map(|(plugin, bytes)| format!("{} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
     }
     Ok(())
   }
@@ -1114,6 +1158,97 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
 struct ScopeFiles {
   config: Rc<ResolvedConfig>,
   file_paths: Vec<PathBuf>,
+}
+
+/// Files a group of plugins formats, for `bytes_to_format`.
+struct FilesToMeasure<TEnvironment: Environment> {
+  incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
+  /// The plugins choosing how they format that format the files, as indexes
+  /// into the result of `bytes_to_format`.
+  plugin_indices: Vec<usize>,
+  file_paths: Vec<PathBuf>,
+}
+
+/// How many bytes each of `plugin_count` plugins formats, from the files'
+/// sizes. It reads metadata only, on several threads, as there can be tens
+/// of thousands of files.
+async fn bytes_to_format<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  files: Vec<FilesToMeasure<TEnvironment>>,
+  plugin_count: usize,
+) -> Result<Vec<u64>> {
+  // starting a thread costs more than reading the metadata of a few hundred files
+  const FILES_PER_THREAD: usize = 500;
+  let file_count = files.iter().map(|files| files.file_paths.len()).sum::<usize>();
+  if file_count == 0 {
+    return Ok(vec![0; plugin_count]);
+  }
+  let thread_count = environment.max_threads().min(file_count.div_ceil(FILES_PER_THREAD)).max(1);
+  let environment = environment.clone();
+  let bytes = dprint_core::async_runtime::spawn_blocking(move || {
+    let measure = |files: &FilesToMeasure<TEnvironment>, file_paths: &[PathBuf], bytes: &mut [u64]| {
+      let incremental_file = files.incremental_file.as_ref().filter(|file| file.has_known_files());
+      for file_path in file_paths {
+        let Ok(metadata) = environment.fs_metadata(file_path) else {
+          continue; // it's reported when it's formatted
+        };
+        let len = metadata.len();
+        let is_known_formatted = match (incremental_file, metadata.modified()) {
+          (Some(incremental_file), Ok(modified)) => incremental_file.is_known_formatted_by_metadata(file_path, &FileMetadata { len, modified }),
+          _ => false,
+        };
+        if !is_known_formatted {
+          for index in &files.plugin_indices {
+            bytes[*index] += len;
+          }
+        }
+      }
+    };
+    // the groups are split into chunks of about the same number of files,
+    // and each thread measures about the same number of chunks
+    let chunk_size = file_count.div_ceil(thread_count);
+    let chunks = files
+      .iter()
+      .flat_map(|files| files.file_paths.chunks(chunk_size).map(move |file_paths| (files, file_paths)))
+      .collect::<Vec<_>>();
+    std::thread::scope(|scope| {
+      let handles = chunks
+        .chunks(chunks.len().div_ceil(thread_count))
+        .map(|chunks| {
+          let measure = &measure;
+          scope.spawn(move || {
+            let mut bytes = vec![0; plugin_count];
+            for (files, file_paths) in chunks {
+              measure(files, file_paths, &mut bytes);
+            }
+            bytes
+          })
+        })
+        .collect::<Vec<_>>();
+      let mut bytes = vec![0; plugin_count];
+      for handle in handles {
+        for (total, thread_bytes) in bytes.iter_mut().zip(handle.join().unwrap()) {
+          *total += thread_bytes;
+        }
+      }
+      bytes
+    })
+  })
+  .await?;
+  Ok(bytes)
+}
+
+/// Bytes for people, ex. "1.5 MB".
+fn display_bytes(bytes: u64) -> String {
+  const KB: u64 = 1024;
+  const MB: u64 = 1024 * KB;
+  if bytes >= MB {
+    format!("{:.1} MB", bytes as f64 / MB as f64)
+  } else if bytes >= KB {
+    format!("{:.1} KB", bytes as f64 / KB as f64)
+  } else {
+    format!("{} bytes", bytes)
+  }
 }
 
 /// The most plugins a format run compiles to native code, unless

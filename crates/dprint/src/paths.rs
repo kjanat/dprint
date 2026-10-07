@@ -103,8 +103,8 @@ impl FilesPathsByPlugins {
     self.0.values().flatten()
   }
 
-  pub fn plugin_names(&self) -> impl Iterator<Item = &PluginNames> {
-    self.0.keys()
+  pub fn iter(&self) -> impl Iterator<Item = (&PluginNames, &Vec<PathBuf>)> {
+    self.0.iter()
   }
 }
 

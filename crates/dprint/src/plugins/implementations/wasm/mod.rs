@@ -1,5 +1,6 @@
 mod compile;
 mod compile_worker;
+mod engine_choice;
 mod instance;
 mod interpreter;
 mod load_instance;
