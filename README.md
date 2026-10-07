@@ -16,7 +16,7 @@ Monorepo for dprint—a pluggable and configurable code formatting platform.
 
 ## Plugins
 
-See https://dprint.dev/plugins/
+See <https://dprint.kjanat.dev/plugins/>
 
 Repos:
 

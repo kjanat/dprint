@@ -1,0 +1,52 @@
+{
+  "indentWidth": 2,
+  "lineWidth": 160,
+  "exec": {
+    "cwd": "${configDir}",
+    "commands": [{
+      "command": "rustfmt --edition 2024 --config imports_granularity=item",
+      "exts": ["rs"]
+    }, {
+      "command": "npx -y tombi format - --stdin-filename {{file_path}}",
+      "exts": ["toml"],
+    }]
+  },
+  "malva": {
+    "blockSelectorLinebreak": "always"
+  },
+  "pwsh": {
+    "braceStyle": "sameLine",
+    "useTabs": true,
+    "keywordCasing": true,
+    "spaceAroundOperator": true,
+    "spaceAroundPipe": true,
+    "spaceAfterSeparator": true
+  },
+  "typescript": {
+    "module.sortImportDeclarations": "maintain",
+    "module.sortExportDeclarations": "maintain",
+    "exportDeclaration.sortNamedExports": "maintain",
+    "exportDeclaration.sortTypeOnlyExports": "none",
+    "importDeclaration.sortNamedImports": "maintain",
+    "importDeclaration.sortTypeOnlyImports": "none"
+  },
+  "excludes": [
+    "website/playground/dist",
+    "website/_site",
+    "**/node_modules",
+    "**/dist",
+    "**/target",
+    "**/*-lock.json"
+  ],
+  "plugins": [
+    "npm:@dprint/typescript@0.96.1",
+    "npm:@dprint/json@0.25.2",
+    "npm:@dprint/markdown@0.26.0",
+    "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+    "npm:dprint-plugin-malva@0.16.0",
+    "npm:dprint-plugin-markup@0.27.5",
+    "npm:dprint-plugin-yaml@0.6.0",
+    "npm:@dprint/dockerfile@0.7.0",
+    "npm:dprint-plugin-pwsh@0.2.0"
+  ]
+}

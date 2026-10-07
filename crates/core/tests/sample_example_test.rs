@@ -88,7 +88,7 @@ fn it_formats_as_single_line_when_exceeding_print_width_with_only_one_item() {
       text: String::from(element_text),
     }],
   };
-  do_test(&expr, &format!("[{}]", &element_text));
+  do_test(&expr, &format!("[{}]", element_text));
 }
 
 #[test]

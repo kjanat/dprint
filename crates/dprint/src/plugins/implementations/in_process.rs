@@ -16,6 +16,7 @@ use dprint_core::plugins::FormatRequest;
 use dprint_core::plugins::FormatResult;
 use dprint_core::plugins::PluginInfo;
 
+use crate::plugins::BuiltInFormatter;
 use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
@@ -29,14 +30,16 @@ pub struct InProcessPlugin<THandler: AsyncPluginHandler> {
   // `Send + Sync`, which handlers needn't be
   create_handler: fn() -> THandler,
   config_schema: &'static str,
+  built_in: &'static BuiltInFormatter,
 }
 
 impl<THandler: AsyncPluginHandler> InProcessPlugin<THandler> {
-  pub fn new(create_handler: fn() -> THandler, config_schema: &'static str) -> Self {
+  pub fn new(create_handler: fn() -> THandler, config_schema: &'static str, built_in: &'static BuiltInFormatter) -> Self {
     Self {
       info: create_handler().plugin_info(),
       create_handler,
       config_schema,
+      built_in,
     }
   }
 }
@@ -60,6 +63,10 @@ impl<THandler: AsyncPluginHandler> Plugin for InProcessPlugin<THandler> {
 
   fn config_schema(&self) -> Option<&'static str> {
     Some(self.config_schema)
+  }
+
+  fn built_in(&self) -> Option<&'static BuiltInFormatter> {
+    Some(self.built_in)
   }
 }
 

@@ -11,6 +11,7 @@ use anyhow::Result;
 use anyhow::bail;
 use dprint_core::async_runtime::FutureExt;
 use dprint_core::async_runtime::LocalBoxFuture;
+use dprint_core::async_runtime::future;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::plugins::CancellationToken;
@@ -26,6 +27,8 @@ use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::process::HostFormatCallback;
 use indexmap::IndexMap;
+use sys_traits::FsMetadata;
+use sys_traits::FsMetadataValue;
 use thiserror::Error;
 
 use crate::arg_parser::CliArgs;
@@ -45,6 +48,8 @@ use crate::configuration::resolve_descendant_config_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
+use crate::incremental::FileMetadata;
+use crate::incremental::IncrementalFile;
 use crate::paths::FilesPathsByPlugins;
 use crate::paths::NoFilesFoundError;
 use crate::paths::get_and_resolve_file_paths;
@@ -133,8 +138,19 @@ impl PluginWithConfig {
     use std::hash::Hash;
     // list everything in here that would affect formatting, with the strings'
     // `Hash`, which ends them, so where one ends is part of the hash
-    self.info().name.hash(hasher);
-    self.info().version.hash(hasher);
+    match self.plugin.built_in() {
+      // released with dprint, so its cache revision says how it formats, not
+      // dprint's version (which changes for unrelated reasons)
+      Some(built_in) => {
+        "dprint built-in".hash(hasher);
+        built_in.name.hash(hasher);
+        built_in.cache_revision.hash(hasher);
+      }
+      None => {
+        self.info().name.hash(hasher);
+        self.info().version.hash(hasher);
+      }
+    }
 
     // serialize the config keys in order to prevent the hash from changing
     let sorted_config = self.format_config.plugin.iter().collect::<BTreeMap<_, _>>();
@@ -592,9 +608,108 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 pub struct PluginsScopeAndPathsCollection<TEnvironment: Environment> {
   environment: TEnvironment,
   inner: Vec<PluginsScopeAndPaths<TEnvironment>>,
+  /// The base directories of the scopes that found no files, whose plugins
+  /// weren't resolved (see `ResolvePluginsScopeAndPathsOptions`).
+  base_paths_without_files: Vec<CanonicalizedPathBuf>,
 }
 
 impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
+  /// Chooses how each Wasm plugin without native code formats, before
+  /// anything is formatted: compiled to native code when interpreting what it
+  /// formats would take longer than compiling it. What it formats is the
+  /// bytes of its files, without the files `incremental_files` (one per
+  /// scope) knows are formatted by their size and modification time. That's
+  /// the most it formats, as an unchanged file read in full isn't formatted
+  /// either.
+  ///
+  /// Then the plugins it compiles are printed with what they format. More
+  /// than the limit is an error before anything is compiled or formatted.
+  pub async fn plan_format_engines(&self, incremental_files: &[Option<Arc<IncrementalFile<TEnvironment>>>]) -> Result<()> {
+    let mut plugins: Vec<&Rc<PluginWrapper>> = Vec::new();
+    for scope_and_paths in &self.inner {
+      for plugin in scope_and_paths.scope.plugins.values() {
+        if !plugins.iter().any(|existing| Rc::ptr_eq(existing, &plugin.plugin)) {
+          plugins.push(&plugin.plugin);
+        }
+      }
+    }
+    // A cache file's existence doesn't prove it can be loaded. Keep loaded
+    // modules for formatting, and count recovery of unusable ones below.
+    let prepared = future::join_all(plugins.iter().map(|plugin| plugin.prepare_format_engine())).await;
+    let mut choosing: Vec<&Rc<PluginWrapper>> = Vec::new();
+    let mut recovering = Vec::new();
+    for (plugin, prepared) in plugins.into_iter().zip(prepared) {
+      if plugin.chooses_format_engine() {
+        choosing.push(plugin);
+        recovering.push(prepared.is_err());
+      }
+    }
+    if choosing.is_empty() {
+      return Ok(());
+    }
+
+    let mut files = Vec::new();
+    for (scope_index, scope_and_paths) in self.inner.iter().enumerate() {
+      for (plugin_names, file_paths) in scope_and_paths.file_paths_by_plugins.iter() {
+        let plugin_indices = plugin_names
+          .names()
+          .filter_map(|name| scope_and_paths.scope.plugins.get(name))
+          .filter_map(|plugin| choosing.iter().position(|choosing| Rc::ptr_eq(choosing, &plugin.plugin)))
+          .collect::<Vec<_>>();
+        if !plugin_indices.is_empty() {
+          files.push(FilesToMeasure {
+            incremental_file: incremental_files.get(scope_index).cloned().flatten(),
+            check_content_hash: plugin_indices.iter().any(|index| recovering[*index]),
+            plugin_indices,
+            file_paths: file_paths.clone(),
+          });
+        }
+      }
+    }
+    let bytes = bytes_to_format(&self.environment, files, choosing.len()).await?;
+
+    let mut compiling = Vec::new();
+    for (plugin, bytes) in choosing.into_iter().zip(bytes) {
+      plugin.choose_format_engine(bytes);
+      if plugin.compiles_to_format() {
+        compiling.push((plugin, bytes));
+      }
+    }
+    let limit = max_plugin_compiles(&self.environment);
+    if compiling.len() > limit {
+      bail!(
+        concat!(
+          "Formatting these files would compile {} plugins, more than the limit of {}. ",
+          "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n{}"
+        ),
+        compiling.len(),
+        limit,
+        compiling
+          .iter()
+          .map(|(plugin, bytes)| format!("  {} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
+          .collect::<Vec<_>>()
+          .join("\n"),
+      );
+    }
+    if !compiling.is_empty() {
+      log_warn!(
+        self.environment,
+        "Compiling {} to native code to format these files: {}.",
+        if compiling.len() == 1 {
+          "1 plugin".to_string()
+        } else {
+          format!("{} plugins", compiling.len())
+        },
+        compiling
+          .iter()
+          .map(|(plugin, bytes)| format!("{} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
+          .collect::<Vec<_>>()
+          .join(", "),
+      );
+    }
+    Ok(())
+  }
+
   pub fn ensure_valid_for_cli_args(&self, cli_args: &CliArgs) -> Result<()> {
     for scope in &self.inner {
       scope.scope.ensure_valid_for_cli_args(cli_args)?;
@@ -626,6 +741,9 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
               scope.file_paths_by_plugins.ensure_not_empty(&config.origin.base_path)?;
             }
           }
+          if let Some(base_path) = self.base_paths_without_files.first() {
+            return Err(NoFilesFoundError { base_path: base_path.clone() }.into());
+          }
         }
       }
     }
@@ -653,6 +771,10 @@ pub struct PluginsScopeAndPaths<TEnvironment: Environment> {
 
 pub struct ResolvePluginsScopeAndPathsOptions {
   pub skip_traversal: bool,
+  /// Leaves out the scopes that found no files, without resolving their
+  /// plugins. Commands that only work on the files found set this, so a
+  /// plugin is never downloaded or set up for a scope with nothing to format.
+  pub skip_scopes_without_files: bool,
 }
 
 pub async fn resolve_plugins_scope_and_paths<TEnvironment: Environment>(
@@ -668,6 +790,7 @@ pub async fn resolve_plugins_scope_and_paths<TEnvironment: Environment>(
     environment,
     plugin_resolver,
     skip_traversal: options.skip_traversal,
+    skip_scopes_without_files: options.skip_scopes_without_files,
   };
 
   resolver.resolve_for_config().await
@@ -679,51 +802,76 @@ struct PluginsAndPathsResolver<'a, TEnvironment: Environment> {
   environment: &'a TEnvironment,
   plugin_resolver: &'a Rc<PluginResolver<TEnvironment>>,
   skip_traversal: bool,
+  skip_scopes_without_files: bool,
 }
 
 impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
+  /// Finds every config scope and its files first, without touching a
+  /// plugin. Only then resolves the plugins of the scopes, so setting up
+  /// plugins never competes with the scan, and the scopes that found no files
+  /// can be left out before any of their plugins is downloaded or set up.
   pub async fn resolve_for_config(&'a self) -> Result<PluginsScopeAndPathsCollection<TEnvironment>> {
     let config = Rc::new(resolve_config_from_args(self.args, self.environment).await?);
-    let scope = resolve_plugins_scope(config.clone(), self.environment, self.plugin_resolver).await?;
     let config_discovery = self.args.config_discovery(self.environment);
     let mut glob_output = if self.skip_traversal {
       GlobOutput::default()
     } else {
-      get_and_resolve_file_paths(
-        &config,
-        self.patterns,
-        config_discovery,
-        scope.plugins.values().map(|p| p.as_ref()),
-        self.environment,
-      )
-      .await?
+      get_and_resolve_file_paths(&config, self.patterns, config_discovery, self.environment).await?
     };
     let root_config_path = config.origin.source.maybe_local_path().cloned();
 
-    // resolve specified paths that are outside the config's directory
-    // against the config file found in their own directory tree or the
-    // user's global config file
+    // specified paths outside the config's directory use the config file
+    // found in their own directory tree, or the user's global config file
     let outside_scopes = self
       .resolve_outside_base_paths(&mut glob_output, &config, config_discovery, root_config_path.clone())
       .await?;
 
-    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, glob_output.shebang_lines, self.environment)?;
-
-    let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
-    // todo: parallelize?
+    let mut scopes = vec![ScopeFiles {
+      config: config.clone(),
+      file_paths: glob_output.file_paths,
+    }];
     let patterns = Rc::new(self.patterns.clone());
-    for config_file_path in glob_output.config_files {
-      result.extend(
-        self
-          .resolve_for_sub_config(config_file_path, config.clone(), config_discovery, root_config_path.clone(), patterns.clone())
-          .await?,
-      );
+    scopes.extend(
+      self
+        .resolve_for_sub_configs(glob_output.config_files, config.clone(), config_discovery, root_config_path, patterns)
+        .await?,
+    );
+    scopes.extend(outside_scopes);
+
+    let mut base_paths_without_files = Vec::new();
+    if self.skip_scopes_without_files {
+      scopes.retain(|scope| {
+        if !scope.file_paths.is_empty() {
+          return true;
+        }
+        log_debug!(
+          self.environment,
+          "Not resolving the plugins of {} because it found no files.",
+          scope.config.origin.source.display()
+        );
+        base_paths_without_files.push(scope.config.origin.base_path.clone());
+        false
+      });
     }
-    result.extend(outside_scopes);
+
+    let resolved = future::join_all(scopes.into_iter().map(|scope| async move {
+      let plugins_scope = resolve_plugins_scope(scope.config, self.environment, self.plugin_resolver).await?;
+      let file_paths_by_plugins = get_file_paths_by_plugins(&plugins_scope.plugin_name_maps, scope.file_paths, self.environment)?;
+      Ok::<_, anyhow::Error>(PluginsScopeAndPaths {
+        scope: plugins_scope,
+        file_paths_by_plugins,
+      })
+    }))
+    .await;
+    let mut result = Vec::with_capacity(resolved.len());
+    for scope in resolved {
+      result.push(scope?);
+    }
 
     Ok(PluginsScopeAndPathsCollection {
       environment: self.environment.clone(),
       inner: result,
+      base_paths_without_files,
     })
   }
 
@@ -737,7 +885,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config: &Rc<ResolvedConfig>,
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     let outside_base_paths = std::mem::take(&mut glob_output.outside_base_paths);
     if outside_base_paths.is_empty() {
       return Ok(Vec::new());
@@ -823,7 +971,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config: &Rc<ResolvedConfig>,
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     // carry the negated patterns along so exclusions specified on the
     // command line keep applying in the new scope, but only resolve the
     // grouped paths so files matched by the other args don't get formatted
@@ -877,7 +1025,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     let mut rebased_config = (**config).clone();
     rebased_config.origin.base_path = base_path;
     self
@@ -911,7 +1059,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
+  ) -> Result<Vec<ScopeFiles>> {
     log_debug!(self.environment, "Analyzing config file {}", config_file_path.display());
     let config_file_path = self.environment.canonicalize(&config_file_path)?;
     if Some(&config_file_path) == root_config_path.as_ref() {
@@ -947,7 +1095,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> LocalBoxFuture<'a, Result<Vec<PluginsScopeAndPaths<TEnvironment>>>> {
+  ) -> LocalBoxFuture<'a, Result<Vec<ScopeFiles>>> {
     async move {
       let mut config = if is_descendant_config {
         // a nested config that opts into inheriting merges in the ancestor config
@@ -974,31 +1122,178 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
     config_discovery: ConfigDiscovery,
     root_config_path: Option<CanonicalizedPathBuf>,
     patterns: Rc<FilePatternArgs>,
-  ) -> Result<Vec<PluginsScopeAndPaths<TEnvironment>>> {
-    let scope = resolve_plugins_scope(config.clone(), self.environment, self.plugin_resolver).await?;
-    let mut glob_output = get_and_resolve_file_paths(
-      &config,
-      &patterns,
-      config_discovery,
-      scope.plugins.values().map(|p| p.as_ref()),
-      self.environment,
-    )
-    .await?;
-    // paths outside this config's directory were already handled when
-    // resolving the root scope
+  ) -> Result<Vec<ScopeFiles>> {
+    let mut glob_output = get_and_resolve_file_paths(&config, &patterns, config_discovery, self.environment).await?;
+    // the root scope already handled paths outside this config's directory
     glob_output.outside_base_paths.clear();
-    let file_paths_by_plugins = get_file_paths_by_plugins(&scope.plugin_name_maps, glob_output.file_paths, glob_output.shebang_lines, self.environment)?;
+    let mut result = vec![ScopeFiles {
+      config: config.clone(),
+      file_paths: glob_output.file_paths,
+    }];
+    result.extend(
+      self
+        .resolve_for_sub_configs(glob_output.config_files, config, config_discovery, root_config_path, patterns)
+        .await?,
+    );
+    Ok(result)
+  }
 
-    let mut result = vec![PluginsScopeAndPaths { scope, file_paths_by_plugins }];
-    // todo: parallelize?
-    for config_file_path in glob_output.config_files {
-      result.extend(
-        self
-          .resolve_for_sub_config(config_file_path, config.clone(), config_discovery, root_config_path.clone(), patterns.clone())
-          .await?,
-      );
+  /// Resolves the scopes of config files found in subdirectories, all at once.
+  /// Results keep the order of `config_file_paths`.
+  async fn resolve_for_sub_configs(
+    &'a self,
+    config_file_paths: Vec<PathBuf>,
+    parent_config: Rc<ResolvedConfig>,
+    config_discovery: ConfigDiscovery,
+    root_config_path: Option<CanonicalizedPathBuf>,
+    patterns: Rc<FilePatternArgs>,
+  ) -> Result<Vec<ScopeFiles>> {
+    let scopes = future::join_all(config_file_paths.into_iter().map(|config_file_path| {
+      self.resolve_for_sub_config(
+        config_file_path,
+        parent_config.clone(),
+        config_discovery,
+        root_config_path.clone(),
+        patterns.clone(),
+      )
+    }))
+    .await;
+    let mut result = Vec::new();
+    for scope in scopes {
+      result.extend(scope?);
     }
     Ok(result)
+  }
+}
+
+/// A config scope and the files found for it, before its plugins are resolved.
+struct ScopeFiles {
+  config: Rc<ResolvedConfig>,
+  file_paths: Vec<PathBuf>,
+}
+
+/// Files a group of plugins formats, for `bytes_to_format`.
+struct FilesToMeasure<TEnvironment: Environment> {
+  incremental_file: Option<Arc<IncrementalFile<TEnvironment>>>,
+  /// Cache recovery must not compile for unchanged files whose recent
+  /// modification time couldn't be trusted by the metadata fast path.
+  check_content_hash: bool,
+  /// The plugins choosing how they format that format the files, as indexes
+  /// into the result of `bytes_to_format`.
+  plugin_indices: Vec<usize>,
+  file_paths: Vec<PathBuf>,
+}
+
+/// How many bytes each of `plugin_count` plugins formats, from the files'
+/// sizes. It reads metadata on several threads, as there can be tens of
+/// thousands of files. Recovering native caches also check incremental hashes
+/// when metadata alone can't prove the files are unchanged.
+async fn bytes_to_format<TEnvironment: Environment>(
+  environment: &TEnvironment,
+  files: Vec<FilesToMeasure<TEnvironment>>,
+  plugin_count: usize,
+) -> Result<Vec<u64>> {
+  // starting a thread costs more than reading the metadata of a few hundred files
+  const FILES_PER_THREAD: usize = 500;
+  let file_count = files.iter().map(|files| files.file_paths.len()).sum::<usize>();
+  if file_count == 0 {
+    return Ok(vec![0; plugin_count]);
+  }
+  let thread_count = environment.max_threads().min(file_count.div_ceil(FILES_PER_THREAD)).max(1);
+  let environment = environment.clone();
+  let bytes = dprint_core::async_runtime::spawn_blocking(move || {
+    let measure = |files: &FilesToMeasure<TEnvironment>, file_paths: &[PathBuf], bytes: &mut [u64]| {
+      let incremental_file = files.incremental_file.as_ref().filter(|file| file.has_known_files());
+      for file_path in file_paths {
+        let Ok(metadata) = environment.fs_metadata(file_path) else {
+          continue; // it's reported when it's formatted
+        };
+        let len = metadata.len();
+        let mut is_known_formatted = match (incremental_file, metadata.modified()) {
+          (Some(incremental_file), Ok(modified)) => incremental_file.is_known_formatted_by_metadata(file_path, &FileMetadata { len, modified }),
+          _ => false,
+        };
+        if !is_known_formatted
+          && files.check_content_hash
+          && let Some(incremental_file) = incremental_file
+        {
+          is_known_formatted = environment
+            .read_file_bytes(file_path)
+            .is_ok_and(|text| incremental_file.is_file_known_formatted(file_path, &text, None));
+        }
+        if !is_known_formatted {
+          for index in &files.plugin_indices {
+            bytes[*index] += len;
+          }
+        }
+      }
+    };
+    // the groups are split into chunks of about the same number of files,
+    // and each thread measures about the same number of chunks
+    let chunk_size = file_count.div_ceil(thread_count);
+    let chunks = files
+      .iter()
+      .flat_map(|files| files.file_paths.chunks(chunk_size).map(move |file_paths| (files, file_paths)))
+      .collect::<Vec<_>>();
+    std::thread::scope(|scope| {
+      let handles = chunks
+        .chunks(chunks.len().div_ceil(thread_count))
+        .map(|chunks| {
+          let measure = &measure;
+          scope.spawn(move || {
+            let mut bytes = vec![0; plugin_count];
+            for (files, file_paths) in chunks {
+              measure(files, file_paths, &mut bytes);
+            }
+            bytes
+          })
+        })
+        .collect::<Vec<_>>();
+      let mut bytes = vec![0; plugin_count];
+      for handle in handles {
+        for (total, thread_bytes) in bytes.iter_mut().zip(handle.join().unwrap()) {
+          *total += thread_bytes;
+        }
+      }
+      bytes
+    })
+  })
+  .await?;
+  Ok(bytes)
+}
+
+/// Bytes for people, ex. "1.5 MB".
+fn display_bytes(bytes: u64) -> String {
+  const KB: u64 = 1024;
+  const MB: u64 = 1024 * KB;
+  if bytes >= MB {
+    format!("{:.1} MB", bytes as f64 / MB as f64)
+  } else if bytes >= KB {
+    format!("{:.1} KB", bytes as f64 / KB as f64)
+  } else {
+    format!("{} bytes", bytes)
+  }
+}
+
+/// The most plugins a format run compiles to native code, unless
+/// `DPRINT_MAX_PLUGIN_COMPILES` allows more.
+const DEFAULT_MAX_PLUGIN_COMPILES: usize = 50;
+
+fn max_plugin_compiles(environment: &impl Environment) -> usize {
+  let Some(value) = environment.env_var("DPRINT_MAX_PLUGIN_COMPILES") else {
+    return DEFAULT_MAX_PLUGIN_COMPILES;
+  };
+  match value.to_str().and_then(|value| value.trim().parse::<usize>().ok()) {
+    Some(limit) => limit,
+    None => {
+      log_warn!(
+        environment,
+        "Ignoring DPRINT_MAX_PLUGIN_COMPILES={}: it's not a number. Using {}.",
+        value.to_string_lossy(),
+        DEFAULT_MAX_PLUGIN_COMPILES
+      );
+      DEFAULT_MAX_PLUGIN_COMPILES
+    }
   }
 }
 
@@ -1159,14 +1454,19 @@ async fn resolve_plugin_config<TEnvironment: Environment>(
 /// The same plugin may end up specified more than once with different sources
 /// (ex. a config pinning a newer version of a plugin that the config it extends
 /// also specifies). Plugins are ordered by descending precedence, so the first
-/// entry for a name wins.
+/// entry for a name wins. A built-in counts as the plugin it serves references
+/// to, so one exec reference served built in and another run as the process
+/// plugin are still the same plugin.
 ///
 /// This can't be done when resolving the configuration because a plugin's name
 /// is only known once it has been resolved.
 fn filter_duplicate_plugin_names(plugins: Vec<Rc<PluginWrapper>>) -> Vec<Rc<PluginWrapper>> {
   let mut names = HashSet::with_capacity(plugins.len());
 
-  plugins.into_iter().filter(|plugin| names.insert(plugin.info().name.clone())).collect()
+  plugins
+    .into_iter()
+    .filter(|plugin| names.insert(plugin.referenced_plugin_name().to_string()))
+    .collect()
 }
 
 /// `property_origins` are where the plugin's properties are from, when that's
@@ -1216,6 +1516,83 @@ mod test {
   use crate::plugins::TestPlugin;
 
   use super::*;
+
+  fn plugin_with_config(plugin: TestPlugin) -> PluginWithConfig {
+    PluginWithConfig::new(
+      Rc::new(PluginWrapper::new(Box::new(plugin))),
+      PluginWithConfigOptions {
+        property_origins: Default::default(),
+        associations: None,
+        format_config: Arc::new(FormatConfig {
+          id: FormatConfigId::from_raw(1),
+          global: Default::default(),
+          plugin: Default::default(),
+        }),
+        file_matching: FileMatchingInfo {
+          file_extensions: vec!["txt".to_string()],
+          file_names: vec![],
+          additive: false,
+        },
+        overrides: Vec::new(),
+        serialized_resolved_config: "{}".to_string(),
+      },
+    )
+  }
+
+  fn refers_to_nothing(_reference: &crate::plugins::PluginSourceReference) -> bool {
+    false
+  }
+
+  static BUILT_IN: crate::plugins::BuiltInFormatter = crate::plugins::BuiltInFormatter {
+    name: "built-in",
+    cache_revision: 1,
+    serves_plugin: "dprint-plugin-built-in",
+    refers_to_served_plugin: refers_to_nothing,
+  };
+  static BUILT_IN_REVISED: crate::plugins::BuiltInFormatter = crate::plugins::BuiltInFormatter { cache_revision: 2, ..BUILT_IN };
+
+  #[test]
+  fn incremental_hash_of_a_built_in_is_its_cache_revision_not_its_version() {
+    let hash = |plugin: TestPlugin| get_plugin_hash(&plugin_with_config(plugin));
+    let built_in = |built_in, version| {
+      TestPlugin::new("built-in", "built-in", vec!["txt"], vec![])
+        .built_in(built_in)
+        .with_version(version)
+    };
+    // released with dprint, so its version is dprint's, which changes for
+    // reasons that have nothing to do with how it formats
+    assert_eq!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN, "0.59.0")));
+    // its cache revision changes when it formats differently
+    assert_ne!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN_REVISED, "0.58.0")));
+    // a loaded plugin is still identified by its name and version
+    let loaded = |version| TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).with_version(version);
+    assert_ne!(hash(loaded("1.0.0")), hash(loaded("1.0.1")));
+    assert_ne!(hash(loaded("1.0.0")), hash(built_in(&BUILT_IN, "1.0.0")));
+  }
+
+  #[test]
+  fn a_built_in_is_the_same_plugin_as_the_one_it_serves() {
+    let plugins = vec![
+      Rc::new(PluginWrapper::new(Box::new(
+        TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).built_in(&BUILT_IN),
+      ))),
+      // the external plugin it serves, ex. a release it doesn't serve
+      // referenced by a configuration file it extends
+      Rc::new(PluginWrapper::new(Box::new(TestPlugin::new(
+        "dprint-plugin-built-in",
+        "built-in",
+        vec!["txt"],
+        vec![],
+      )))),
+      Rc::new(PluginWrapper::new(Box::new(TestPlugin::new("other", "other", vec!["md"], vec![])))),
+    ];
+    let names = filter_duplicate_plugin_names(plugins)
+      .iter()
+      .map(|plugin| plugin.info().name.clone())
+      .collect::<Vec<_>>();
+    // the first one has precedence
+    assert_eq!(names, vec!["built-in", "other"]);
+  }
 
   // a plugin can derive values at resolution time that aren't present in the
   // raw config map (ex. the exec plugin folds the contents of `cacheKeyFiles`

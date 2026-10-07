@@ -11,20 +11,20 @@
 //! decides what a command with a relative path runs, local commands included,
 //! so it's only used with `"playWithFire": true`.
 //!
-//! This is written for the exec plugin's 0.7.3 configuration (the built-in
-//! exec's, see `ExecConfigInput`, which is where its properties are spelled),
-//! so it fails closed: of the other remote exec properties, at the root or in
-//! an override, only the ones 0.7.3 has that don't decide what runs are used
-//! without `"playWithFire": true` (any others might, ex. ones a later version
-//! adds), and a remote command that isn't one 0.7.3 reads (ex. with a
-//! property it doesn't have) only runs with it.
+//! This follows the configuration of exec plugin release
+//! `EXEC_COMMANDS_RELEASE` (0.7.3), as the built-in exec reads it. Its
+//! properties are spelled in `ExecConfigInput`. It fails closed: of the other remote exec properties, at the root or in an override,
+//! only the ones that release has that don't decide what runs are used without
+//! `"playWithFire": true` (any others might, ex. ones a later release adds),
+//! and a remote command that isn't one that release reads (ex. with a property
+//! it doesn't have) only runs with it.
 //! Nor does remote configuration set how long a command may run (`timeout`,
 //! `setupTimeout`) without it: a remote command runs within the local
 //! configuration's limits.
 //!
-//! Which program a command runs is read the way the exec plugin 0.7.3 reads
-//! it. So a list of programs is only checked when the exec plugin that runs
-//! the commands is that version, and otherwise remote commands only run with
+//! Which program a command runs is read the way that release reads it. So a
+//! list of programs is only checked when the exec plugin that runs the
+//! commands is that release, and otherwise remote commands only run with
 //! `"playWithFire": true`. A command's own `cwd` decides what a program it
 //! runs by a relative path (ex. `./formatter`) is, so a remote command that
 //! sets both only runs with `"playWithFire": true` as well. So does one that
@@ -62,6 +62,7 @@ use super::RawPluginConfigOverride;
 use super::ValueOrigin;
 use super::config_settings::merge_config_map_into;
 use crate::environment::Environment;
+use crate::plugins::EXEC_COMMANDS_RELEASE;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_command_program;
 use crate::plugins::exec_input::ExecCommandInput;
@@ -467,10 +468,11 @@ fn make_exec_config(
           environment,
           concat!(
             "Note: The exec commands in remote configuration are ignored for security reasons, as the programs they run are only ",
-            "checked against \"{}\" for the exec plugin 0.7.3, and this configuration uses {}. ",
+            "checked against \"{}\" for the exec plugin {}, and this configuration uses {}. ",
             "To run them, specify \"{}\": true in the exec configuration of a local configuration file."
           ),
           names().play_with_fire,
+          EXEC_COMMANDS_RELEASE,
           exec_plugin.display(),
           names().play_with_fire,
         );
@@ -564,7 +566,8 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
         }
         if !why.not_commands.is_empty() {
           reasons.push(format!(
-            "aren't commands the exec plugin 0.7.3 reads, which only run with \"{}\": true: {}",
+            "aren't commands the exec plugin {} reads, which only run with \"{}\": true: {}",
+            EXEC_COMMANDS_RELEASE,
             play_with_fire,
             why.not_commands.join(", ")
           ));
@@ -621,6 +624,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
     }
   }
   for (source, key) in ignored_properties.0 {
+    let unknown = format!("the exec plugin {} doesn't have it, so dprint can't tell what it does", EXEC_COMMANDS_RELEASE);
     log_warn!(
       environment,
       concat!(
@@ -636,7 +640,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
       } else if names().contains(&key) {
         "dprint doesn't know whether it decides what runs"
       } else {
-        "the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does"
+        &unknown
       },
       names().play_with_fire,
     );

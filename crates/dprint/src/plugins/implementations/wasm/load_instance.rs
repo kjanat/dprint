@@ -27,10 +27,6 @@ impl WasmInstance {
     self.version
   }
 
-  pub fn set_token(&self, store: &mut Store, token: std::sync::Arc<dyn dprint_core::plugins::CancellationToken>) {
-    store.data_mut().set_token(token);
-  }
-
   pub fn get_memory(&self, store: &mut Store, name: &str) -> Option<Memory> {
     self.inner.get_memory(store, name)
   }
@@ -40,16 +36,12 @@ impl WasmInstance {
   }
 }
 
-/// Instantiates a compiled wasm module with the given linker, recording the
-/// instance's memory in the store data so host functions can reach it.
+/// Instantiates a compiled wasm module with the given linker.
 pub fn load_instance(store: &mut Store, module: &WasmModule, linker: &Linker) -> Result<WasmInstance> {
   let instance = match linker.instantiate(&mut *store, &module.inner) {
     Ok(instance) => instance,
     Err(err) => bail!("Error instantiating module: {:#}", err),
   };
-  if let Some(memory) = instance.get_memory(&mut *store, "memory") {
-    store.data_mut().set_memory(memory);
-  }
   Ok(WasmInstance {
     inner: instance,
     _engine: module.engine.clone(),

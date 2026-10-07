@@ -103,6 +103,9 @@ const version = resolveVersion();
 $.logStep(`Publishing ${version}...`);
 
 if (!args["publish-only"]) {
+  // Resolve the permanent repository ID so release URLs and metadata survive renames.
+  const repository = await $.request("https://api.github.com/repositories/1092062077").json<{ html_url: string }>();
+  const repositoryUrl = repository.html_url;
   await $`rm -rf ${outputDir}`;
   await $`mkdir -p ${dprintDir} ${scopeDir}`;
 
@@ -110,13 +113,13 @@ if (!args["publish-only"]) {
   {
     $.logStep(`Setting up dprint ${version}...`);
     const pkgJson = {
-      "name": "dprint",
+      "name": "@kjanat/dprint",
       "version": version,
       "description": "Pluggable and configurable code formatting platform written in Rust.",
       "bin": "bin.cjs",
       "repository": {
         "type": "git",
-        "url": "git+https://github.com/dprint/dprint.git",
+        "url": `git+${repositoryUrl}.git`,
       },
       "keywords": [
         "code",
@@ -125,9 +128,9 @@ if (!args["publish-only"]) {
       "author": "David Sherret",
       "license": "MIT",
       "bugs": {
-        "url": "https://github.com/dprint/dprint/issues",
+        "url": `${repositoryUrl}/issues`,
       },
-      "homepage": "https://github.com/dprint/dprint#readme",
+      "homepage": `${repositoryUrl}#readme`,
       // for yarn berry (https://github.com/dprint/dprint/issues/686)
       "preferUnplugged": true,
       "scripts": {
@@ -157,7 +160,7 @@ if (!args["publish-only"]) {
       await $`mkdir -p ${pkgDir}`;
 
       // download and extract the zip file
-      const zipUrl = `https://github.com/dprint/dprint/releases/download/${version}/${pkg.zipFileName}`;
+      const zipUrl = `${repositoryUrl}/releases/download/${version}/${pkg.zipFileName}`;
       await $.request(zipUrl).showProgress().pipeToPath(zipPath);
       await decompress(zipPath.toString(), pkgDir.toString());
       zipPath.removeSync();
@@ -175,16 +178,16 @@ if (!args["publish-only"]) {
         "description": `${pkgName} distribution of the dprint code formatter`,
         "repository": {
           "type": "git",
-          "url": "git+https://github.com/dprint/dprint.git",
+          "url": `git+${repositoryUrl}.git`,
         },
         // force yarn to unpack
         "preferUnplugged": true,
         "author": "David Sherret",
         "license": "MIT",
         "bugs": {
-          "url": "https://github.com/dprint/dprint/issues",
+          "url": `${repositoryUrl}/issues`,
         },
-        "homepage": "https://github.com/dprint/dprint#readme",
+        "homepage": `${repositoryUrl}#readme`,
         "os": [pkg.os],
         "cpu": [pkg.cpu],
         libc: pkg.libc == null ? undefined : [pkg.libc],

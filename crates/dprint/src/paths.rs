@@ -2,7 +2,6 @@ use anyhow::Context;
 use anyhow::Result;
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Split;
@@ -15,15 +14,11 @@ use crate::environment::CanonicalizedPathBuf;
 use crate::environment::Environment;
 use crate::patterns::get_all_file_patterns;
 use crate::patterns::process_cli_path_args;
-use crate::patterns::process_config_patterns;
 use crate::plugins::PluginNameResolutionMaps;
-use crate::resolution::PluginWithConfig;
 use crate::utils::GlobOptions;
 use crate::utils::GlobOutput;
-use crate::utils::GlobPattern;
 use crate::utils::GlobPatterns;
 use crate::utils::glob;
-use crate::utils::is_negated_glob;
 use crate::utils::read_file_shebang_line;
 
 /// Struct that allows using plugin names as a key
@@ -107,23 +102,22 @@ impl FilesPathsByPlugins {
   pub fn all_file_paths(&self) -> impl Iterator<Item = &PathBuf> {
     self.0.values().flatten()
   }
+
+  pub fn iter(&self) -> impl Iterator<Item = (&PluginNames, &Vec<PathBuf>)> {
+    self.0.iter()
+  }
 }
 
 pub fn get_file_paths_by_plugins(
   plugin_name_maps: &PluginNameResolutionMaps,
   file_paths: Vec<PathBuf>,
-  mut shebang_lines: HashMap<PathBuf, Vec<u8>>,
   environment: &impl Environment,
 ) -> Result<FilesPathsByPlugins> {
   let mut file_paths_by_plugin: HashMap<PluginNames, Vec<PathBuf>> = HashMap::new();
   let mut plugin_names_builder = PluginNamesBuilder::default();
 
   for file_path in file_paths.into_iter() {
-    let plugin_names = match shebang_lines.remove(&file_path) {
-      // the traversal already read this file's shebang line, so don't read it again
-      Some(shebang_line) => plugin_name_maps.get_plugin_names_from_file_path_and_bytes(&file_path, &shebang_line),
-      None => get_plugin_names_for_file_on_disk(plugin_name_maps, &file_path, environment),
-    };
+    let plugin_names = get_plugin_names_for_file_on_disk(plugin_name_maps, &file_path, environment);
     if !plugin_names.is_empty() {
       // only a handful of distinct keys exist no matter how many files there
       // are, so allocate one only when the key hasn't been seen yet
@@ -158,11 +152,15 @@ pub fn get_plugin_names_for_file_on_disk<'a>(plugin_name_maps: &'a PluginNameRes
   }
 }
 
-pub async fn get_and_resolve_file_paths<'a>(
+/// Finds files matching the config and CLI patterns.
+///
+/// This doesn't need the plugins, so it doesn't wait for them to load. Without
+/// `includes`, it returns every file that isn't excluded.
+/// `get_file_paths_by_plugins` later drops files that no plugin formats.
+pub async fn get_and_resolve_file_paths(
   config: &ResolvedConfig,
   args: &FilePatternArgs,
   config_discovery: ConfigDiscovery,
-  plugins: impl Iterator<Item = &'a PluginWithConfig>,
   environment: &impl Environment,
 ) -> Result<GlobOutput> {
   let cwd = environment.cwd();
@@ -174,16 +172,6 @@ pub async fn get_and_resolve_file_paths<'a>(
   } else if args.only_dirty {
     let dirty_files = environment.get_dirty_files().context("Failed running git status.")?;
     file_patterns.arg_includes = Some(process_cli_path_args(&dirty_files, &cwd, environment));
-  }
-
-  if file_patterns.config_includes.is_none() {
-    // If no includes patterns were specified, derive one from the list of plugins
-    // as this is a massive performance improvement, because it collects less file
-    // paths to examine and match to plugins later.
-    //
-    // These are based at the config dir rather than the cwd so that explicitly
-    // specified paths outside the cwd (ex. ../file.txt) can still match them.
-    file_patterns.config_includes = Some(GlobPattern::new_vec(get_plugin_patterns(plugins), config.origin.base_path.clone()));
   }
 
   get_and_resolve_file_patterns(config, file_patterns, args.no_gitignore, config_discovery, environment).await
@@ -220,34 +208,4 @@ async fn get_and_resolve_file_patterns(
   })
   .await
   .unwrap()
-}
-
-fn get_plugin_patterns<'a>(plugins: impl Iterator<Item = &'a PluginWithConfig>) -> Vec<String> {
-  let mut file_names = HashSet::new();
-  let mut file_exts = HashSet::new();
-  let mut association_globs = Vec::new();
-  for plugin in plugins {
-    // associations add to the plugin's default file matching, so always include
-    // the plugin's default file names and extensions plus any positive globs
-    file_names.extend(&plugin.file_matching.file_names);
-    file_exts.extend(&plugin.file_matching.file_extensions);
-    if let Some(associations) = plugin.associations.as_ref() {
-      for pattern in process_config_patterns(associations) {
-        if !is_negated_glob(&pattern) {
-          association_globs.push(pattern);
-        }
-      }
-    }
-  }
-  let mut result = Vec::new();
-  if !file_exts.is_empty() {
-    result.push(format!("**/*.{{{}}}", file_exts.into_iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")));
-  }
-  if !file_names.is_empty() {
-    result.push(format!("**/{{{}}}", file_names.into_iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")));
-  }
-  // add the association globs last as they're least likely to be matched
-  result.extend(association_globs);
-
-  result
 }

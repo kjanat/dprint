@@ -7,4 +7,4 @@ layout: layouts/full_page.njk
 
 # Blog
 
-Please consult [releases](https://github.com/dprint/dprint/releases) on GitHub for overview of changes.
+Please consult [releases](https://github.com/kjanat/dprint/releases) on GitHub for overview of changes.

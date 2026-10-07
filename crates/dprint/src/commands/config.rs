@@ -534,6 +534,21 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
       };
 
       for (config_plugin_reference, config_plugin) in get_config_file_plugins(plugin_resolver, config_plugins.to_vec()).await {
+        // the configuration already has the plugin, served built in
+        if let Ok(config_plugin) = &config_plugin
+          && let Some(built_in) = config_plugin.built_in()
+          && plugin
+            .as_source_reference()
+            .is_ok_and(|reference| (built_in.refers_to_served_plugin)(&reference))
+        {
+          log_warn!(
+            environment,
+            "Skipping {}. The configuration file already has it, served by dprint's built-in {}.",
+            plugin_name_or_url,
+            built_in.name
+          );
+          return Ok(None);
+        }
         if let Ok(config_plugin) = config_plugin
           && let Some(update_url) = &config_plugin.info().update_url
           && let Ok(update_url) = Url::parse(update_url)
@@ -983,6 +998,8 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     plugin_resolver,
     ResolvePluginsScopeAndPathsOptions {
       skip_traversal: config_discovery.is_global(),
+      // updates the plugins of every config file, whether it has files or not
+      skip_scopes_without_files: false,
     },
   )
   .await?;
@@ -1243,6 +1260,8 @@ async fn run_plugin_config_updates<TEnvironment: Environment>(
     plugin_resolver,
     ResolvePluginsScopeAndPathsOptions {
       skip_traversal: config_discovery.is_global(),
+      // updates the plugins of every config file, whether it has files or not
+      skip_scopes_without_files: false,
     },
   )
   .await?;
@@ -1385,6 +1404,15 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
         }));
       }
     };
+    if let Some(built_in) = plugin.built_in() {
+      log_debug!(
+        environment,
+        "Skipping {}. It's served by dprint's built-in {}, which updates with dprint.",
+        plugin_reference.display(),
+        built_in.name
+      );
+      return None;
+    }
     // a user who pinned a checksum keeps one on the entry that replaces it
     let old_had_checksum = plugin_reference.checksum.is_some();
 
@@ -2043,7 +2071,7 @@ async fn get_config_file_plugin_names<TEnvironment: Environment>(
     .await
     .into_iter()
     .filter_map(|(plugin_reference, plugin_result)| match plugin_result {
-      Ok(plugin) => Some(plugin.info().name.to_string()),
+      Ok(plugin) => Some(plugin.referenced_plugin_name().to_string()),
       Err(err) => {
         log_warn!(environment, "Failed resolving plugin: {}\n\n{:#}", plugin_reference.path_source.display(), err);
         None
@@ -2416,10 +2444,8 @@ mod test {
       .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
       .build();
     run_test_cli(vec!["schema"], &environment).unwrap();
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Compiling https://plugins.dprint.dev/test-plugin.wasm"]
-    );
+    // the plugin isn't compiled to resolve its schema
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     let output = environment.take_stdout_messages();
     let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
     assert_eq!(schema["properties"]["test-plugin"]["type"], "object");
@@ -2469,7 +2495,6 @@ mod test {
     assert_eq!(
       environment.take_stderr_messages(),
       vec![
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         concat!(
           "The configuration schema of the test-plugin plugin (https://plugins.dprint.dev/test/schema.json) ",
           "is for https://json-schema.org/draft/2099-01/schema, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
@@ -2655,11 +2680,7 @@ mod test {
   async fn refresh_config_schema_file(environment: &TestEnvironment) -> Vec<String> {
     let config_path = environment.canonicalize("/dprint.json").unwrap();
     super::update_config_schema_file(environment, &test_plugin_resolver(environment), &config_path, &[]).await;
-    environment
-      .take_stderr_messages()
-      .into_iter()
-      .filter(|message| !message.starts_with("Compiling "))
-      .collect()
+    environment.take_stderr_messages()
   }
 
   /// Asserts the refresh kept the schema file as it was, and said why.
@@ -2768,9 +2789,7 @@ mod test {
     assert!(cancelled.is_err());
     assert_eq!(environment.read_file("/dprint.schema.json").unwrap(), PREVIOUS_SCHEMA_FILE);
     assert_eq!(environment.take_stdout_messages(), Vec::<String>::new());
-    let mut messages = environment.take_stderr_messages();
-    messages.retain(|message| !message.starts_with("Compiling "));
-    assert_eq!(messages, Vec::<String>::new());
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
   }
 
   #[tokio::test]
@@ -3450,13 +3469,7 @@ mod test {
     // Test updating the plugin in the global config
     run_test_cli(vec!["config", "update", "--global"], &environment).unwrap();
 
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to 0.2.0...".to_string(),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
-      ]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...".to_string(),]);
 
     let expected_text = format!(
       r#"{{
@@ -3536,7 +3549,6 @@ mod test {
       expected_logs: vec![
         "Updating test-plugin 0.1.0 to 0.2.0...".to_string(),
         "Updating test-process-plugin 0.1.0 to 0.3.0...".to_string(),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         "Extracting zip for test-process-plugin".to_string(),
       ],
       expected_urls: vec![new_wasm_url.clone(), new_ps_url_with_checksum.clone()],
@@ -3551,7 +3563,6 @@ mod test {
     let new_wasm_url = "https://plugins.dprint.dev/test-plugin.wasm".to_string();
     let new_wasm_url_with_checksum = format!("{}@{}", new_wasm_url, get_test_wasm_plugin_checksum());
     let updating_message = "Updating test-plugin 0.1.0 to 0.2.0...".to_string();
-    let compiling_message = "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string();
 
     // test all the wasm combinations
     test_update(TestUpdateOptions {
@@ -3561,7 +3572,7 @@ mod test {
       remote_has_wasm_checksum: true,
       remote_has_process_checksum: true,
       confirm_results: Vec::new(),
-      expected_logs: vec![updating_message.clone(), compiling_message.clone()],
+      expected_logs: vec![updating_message.clone()],
       expected_urls: vec![new_wasm_url_with_checksum.clone()],
       always_update: false,
       on_error: None,
@@ -3574,7 +3585,7 @@ mod test {
       remote_has_wasm_checksum: false,
       remote_has_process_checksum: true,
       confirm_results: Vec::new(),
-      expected_logs: vec![updating_message.clone(), compiling_message.clone()],
+      expected_logs: vec![updating_message.clone()],
       expected_urls: vec![new_wasm_url.clone()],
       always_update: false,
       on_error: None,
@@ -3587,7 +3598,7 @@ mod test {
       remote_has_wasm_checksum: true,
       remote_has_process_checksum: true,
       confirm_results: Vec::new(),
-      expected_logs: vec![updating_message.clone(), compiling_message.clone()],
+      expected_logs: vec![updating_message.clone()],
       expected_urls: vec![new_wasm_url.clone()],
       always_update: false,
       on_error: None,
@@ -3600,7 +3611,7 @@ mod test {
       remote_has_wasm_checksum: false,
       remote_has_process_checksum: true,
       confirm_results: Vec::new(),
-      expected_logs: vec![updating_message.clone(), compiling_message.clone()],
+      expected_logs: vec![updating_message.clone()],
       expected_urls: vec![new_wasm_url.clone()],
       always_update: false,
       on_error: None,
@@ -3681,7 +3692,6 @@ mod test {
         "Updating test-plugin 0.1.0 to 0.2.0...".to_string(),
         format!("The process plugin test-process-plugin 0.1.0 has a new url: {}", new_ps_url_with_checksum),
         "Do you want to update it? N".to_string(),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
       ],
       expected_urls: vec![new_wasm_url.clone(), old_ps_url.clone()],
       always_update: false,
@@ -3747,7 +3757,6 @@ mod test {
         "Updating test-process-plugin 0.1.0 to 0.3.0...".to_string(),
         "Updating test-process-plugin 0.1.0 in /sub_folder/dprint.json to 0.3.0...".to_string(),
         "Updating test-plugin 0.1.0 in /sub_folder/dprint.json to 0.2.0...".to_string(),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         "Extracting zip for test-process-plugin".to_string()
       ]
     );
@@ -3857,7 +3866,6 @@ mod test {
       vec![
         "Updating test-plugin 0.1.0 to 0.2.0...".to_string(),
         "Updating test-process-plugin 0.1.0 to 0.3.0...".to_string(),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         "Extracting zip for test-process-plugin".to_string()
       ]
     );
@@ -3980,7 +3988,6 @@ mod test {
           colors::bold("test-process-plugin")
         ),
         format!("Would update {} 0.1.0 in /sub_folder/dprint.json to 0.2.0.", colors::bold("test-plugin")),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
         "Extracting zip for test-process-plugin".to_string(),
         format!("\n{}", colors::gray("This was a dry run. No files were changed.")),
       ]
@@ -4002,6 +4009,8 @@ mod test {
     assert_eq!(environment.read_file("./sub_folder/dprint.json").unwrap(), sub_before);
   }
 
+  type UpdateErrorHandler = Box<dyn FnOnce(&str)>;
+
   struct TestUpdateOptions {
     config_has_wasm: bool,
     config_has_wasm_checksum: bool,
@@ -4012,7 +4021,7 @@ mod test {
     expected_logs: Vec<String>,
     expected_urls: Vec<String>,
     always_update: bool,
-    on_error: Option<Box<dyn FnOnce(&str)>>,
+    on_error: Option<UpdateErrorHandler>,
     exit_code: i32,
   }
 
@@ -4086,7 +4095,7 @@ mod test {
     }
     if opts.config_has_process {
       builder.add_remote_process_plugin();
-      builder.add_remote_process_plugin_at_url("https://plugins.dprint.dev/test-plugin-3.json", &*NEW_PROCESS_PLUGIN_FILE);
+      builder.add_remote_process_plugin_at_url("https://plugins.dprint.dev/test-plugin-3.json", &NEW_PROCESS_PLUGIN_FILE);
     }
 
     builder
@@ -4177,6 +4186,50 @@ mod test {
     run_test_cli(vec!["config", "update"], &environment).unwrap();
     // should be empty because nothing to upgrade
     assert!(environment.take_stderr_messages().is_empty());
+  }
+
+  /// A reference to the exec plugin release that the built-in exec serves.
+  const SERVED_EXEC_REFERENCE: &str = "https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa";
+
+  /// A configuration that references the exec plugin release that the
+  /// built-in exec serves, while a newer release of the exec plugin exists.
+  fn served_exec_environment() -> TestEnvironment {
+    let newer_release = json!({
+      "schemaVersion": 1,
+      "url": "https://plugins.dprint.dev/exec-0.8.0.json",
+      "version": "0.8.0"
+    })
+    .to_string();
+    TestEnvironmentBuilder::new()
+      .with_default_config(|config| {
+        config.add_plugin(SERVED_EXEC_REFERENCE);
+      })
+      .add_remote_file("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json", &newer_release)
+      .add_remote_file("https://plugins.dprint.dev/dprint/exec/latest.json", &newer_release)
+      .build()
+  }
+
+  #[test]
+  fn config_update_leaves_a_reference_served_built_in() {
+    // the built-in exec is updated by upgrading dprint, not by moving the
+    // reference to another release of the exec plugin
+    let environment = served_exec_environment();
+    let config_text = environment.read_file("/dprint.json").unwrap();
+    run_test_cli(vec!["config", "update"], &environment).unwrap();
+    assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn config_add_leaves_a_plugin_served_built_in() {
+    let environment = served_exec_environment();
+    let config_text = environment.read_file("/dprint.json").unwrap();
+    run_test_cli(vec!["config", "add", "exec"], &environment).unwrap();
+    assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Skipping exec. The configuration file already has it, served by dprint's built-in exec."]
+    );
   }
 
   #[test]
@@ -5852,10 +5905,7 @@ text",
     assert!(!dprint_json.contains("plugins.dprint.dev"), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",
-        "Compiling /cache/npm/registry.npmjs.org/@dprint__test-plugin@0.3.0/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
     );
   }
 
@@ -5880,10 +5930,7 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",
-        "Compiling /cache/npm/registry.npmjs.org/@dprint__test-plugin@0.3.0/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
     );
   }
 
@@ -5928,10 +5975,7 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.2.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.2.0...",
-        "Compiling /cache/npm/registry.npmjs.org/@dprint__test-plugin@0.2.0/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.2.0...",]
     );
   }
 
@@ -6042,10 +6086,7 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.1.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.1.0...",
-        "Compiling /cache/npm/registry.npmjs.org/@dprint__test-plugin@0.1.0/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.2.0 to npm:@dprint/test-plugin@0.1.0...",]
     );
   }
 
@@ -6577,13 +6618,7 @@ text",
     assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
     assert!(dprint_json.contains("\"https://plugins.dprint.dev/test-plugin.wasm\""), "got: {dprint_json}");
     // it follows its update url instead, which is what happened before npm packages
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to 0.2.0...",
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
-      ]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...",]);
   }
 
   #[test]
@@ -6664,13 +6699,7 @@ text",
     let dprint_json = environment.read_file("/dprint.json").unwrap();
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
     // the package came from the private registry, not the default
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to 0.3.0...",
-        "Compiling /cache/npm/dprint.example.com/@dprint__test-plugin@0.3.0/plugin.wasm",
-      ]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.3.0...",]);
   }
 
   #[test]
@@ -6705,10 +6734,7 @@ text",
     assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",
-        "Compiling /cache/npm/dprint.example.com/@dprint__test-plugin@0.3.0/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
     );
   }
 
@@ -6730,13 +6756,7 @@ text",
     assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
     // it still follows its update url, which is what happened before npm packages
     assert!(dprint_json.contains("\"https://plugins.dprint.dev/test-plugin.wasm\""), "got: {dprint_json}");
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to 0.2.0...",
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
-      ]
-    );
+    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0...",]);
   }
 
   #[test]
@@ -6895,10 +6915,7 @@ text",
     // write would have failed on otherwise
     assert_eq!(
       environment.take_stderr_messages(),
-      vec![
-        "Updating test-plugin 0.1.0 to npm:@dprint/example@1.0.0/test-plugin/plugin.wasm...",
-        "Compiling /cache/npm/registry.npmjs.org/@dprint__example@1.0.0/test-plugin/plugin.wasm",
-      ]
+      vec!["Updating test-plugin 0.1.0 to npm:@dprint/example@1.0.0/test-plugin/plugin.wasm...",]
     );
   }
 

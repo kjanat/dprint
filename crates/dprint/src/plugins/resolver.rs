@@ -14,10 +14,12 @@ use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
 use crate::environment::Environment;
+use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginResolutionCache;
 use crate::plugins::PluginSourceReference;
+use crate::plugins::referenced_plugin_name;
 use crate::utils::AsyncCell;
 
 pub struct PluginWrapper {
@@ -39,6 +41,37 @@ impl PluginWrapper {
 
   pub fn is_process_plugin(&self) -> bool {
     self.plugin.is_process_plugin()
+  }
+
+  /// Set when the plugin is a formatter built into dprint.
+  pub fn built_in(&self) -> Option<&'static BuiltInFormatter> {
+    self.plugin.built_in()
+  }
+
+  pub async fn prepare_format_engine(&self) -> Result<()> {
+    self.plugin.prepare_format_engine().await
+  }
+
+  /// Whether how the plugin formats depends on how much it formats.
+  pub fn chooses_format_engine(&self) -> bool {
+    self.plugin.chooses_format_engine()
+  }
+
+  /// Chooses how the plugin formats in this run, from the bytes of the
+  /// files it will format.
+  pub fn choose_format_engine(&self, bytes_to_format: u64) {
+    self.plugin.choose_format_engine(bytes_to_format)
+  }
+
+  /// Whether formatting with the plugin first compiles it to native code.
+  pub fn compiles_to_format(&self) -> bool {
+    self.plugin.compiles_to_format()
+  }
+
+  /// Name of the plugin a configuration file refers to for this one (see
+  /// [`referenced_plugin_name`]).
+  pub fn referenced_plugin_name(&self) -> &str {
+    referenced_plugin_name(self.plugin.as_ref())
   }
 
   /// The schema of the plugin's configuration when it's built into dprint.

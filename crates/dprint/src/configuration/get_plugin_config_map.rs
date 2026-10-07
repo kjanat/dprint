@@ -51,7 +51,7 @@ mod tests {
     let plugin = PluginWrapper::new(Box::new(create_plugin()));
     let result = get_plugin_config_map(&plugin, &mut config_map).unwrap();
     assert_eq!(result, ts_plugin);
-    assert_eq!(config_map.contains_key("typescript"), false);
+    assert!(!config_map.contains_key("typescript"));
   }
 
   #[test]

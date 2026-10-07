@@ -10,8 +10,8 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
 
    ```toml
    dprint-core = { version = "...", features = ["wasm"] }
-   serde = { version = "1.0", features = ["derive"] }
-   serde_json = { version = "1.0", features = ["preserve_order"] }
+   serde       = { version = "1.0", features = ["derive"] }
+   serde_json  = { version = "1.0", features = ["preserve_order"] }
    ```
 
 2. Add the following to _Cargo.toml_:
@@ -190,4 +190,4 @@ High level functions:
 - `host_get_error_text() -> u32` - Tell the host to store the error text in its local byte array and return back the byte length of that error message.
 - `host_has_cancelled() -> u32` - Check if the host has cancelled the formatting request (`1`) or not (`0`).
 
-I recommend looking in the [`dprint-core` wasm module](https://github.com/dprint/dprint/blob/main/crates/core/src/plugins/wasm/mod.rs) for how to use these.
+I recommend looking in the [`dprint-core` wasm module](https://github.com/kjanat/dprint/blob/HEAD/crates/core/src/plugins/wasm/mod.rs) for how to use these.

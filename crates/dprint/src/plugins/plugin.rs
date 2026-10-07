@@ -20,6 +20,27 @@ use dprint_core::plugins::PluginInfo;
 use dprint_core::plugins::process::HostFormatCallback;
 
 use super::PluginResolutionCache;
+use crate::plugins::PluginSourceReference;
+
+/// A formatter that ships inside dprint instead of being loaded as a plugin.
+///
+/// It's released with dprint, so it has no version, update URL or schema URL
+/// of its own.
+pub struct BuiltInFormatter {
+  /// Its name, ex. "exec".
+  pub name: &'static str,
+  /// Identifies how it formats in the incremental cache, in place of a
+  /// version. Bump it whenever it can format a file differently for the same
+  /// configuration. Upgrading dprint then reformats the files it formats, and
+  /// only when this changes.
+  pub cache_revision: u32,
+  /// Name of the external plugin whose references it serves, ex.
+  /// "dprint-plugin-exec". Configuration tooling uses this name for it, since
+  /// that's the plugin a configuration file refers to.
+  pub serves_plugin: &'static str,
+  /// Whether a reference is to the external plugin it serves, in any version.
+  pub refers_to_served_plugin: fn(&PluginSourceReference) -> bool,
+}
 
 /// Looks for a [`CriticalFormatError`] in an `anyhow::Error`, whether it was
 /// stored directly or wrapped in a [`FormatError`].
@@ -64,6 +85,43 @@ pub trait Plugin {
   fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
     None
   }
+
+  /// Set when the plugin is a formatter built into dprint.
+  fn built_in(&self) -> Option<&'static BuiltInFormatter> {
+    None
+  }
+
+  /// Loads existing native code without compiling, so failed cache recovery
+  /// can be counted before a format run starts.
+  async fn prepare_format_engine(&self) -> Result<()> {
+    Ok(())
+  }
+
+  /// Whether how the plugin formats depends on how much it formats, which
+  /// is the case for a Wasm plugin without native code.
+  fn chooses_format_engine(&self) -> bool {
+    false
+  }
+
+  /// Chooses how the plugin formats in this run, from the bytes of the
+  /// files it will format.
+  fn choose_format_engine(&self, _bytes_to_format: u64) {}
+
+  /// Whether the plugin is compiled to native code before it formats, as
+  /// `choose_format_engine` chose. Compiling takes up to seconds of every
+  /// core.
+  fn compiles_to_format(&self) -> bool {
+    false
+  }
+}
+
+/// Name of the plugin a configuration file refers to for `plugin`. For a
+/// built-in, that's the external plugin it serves references to.
+pub fn referenced_plugin_name(plugin: &dyn Plugin) -> &str {
+  match plugin.built_in() {
+    Some(built_in) => built_in.serves_plugin,
+    None => &plugin.info().name,
+  }
 }
 
 pub struct FormatConfig {
@@ -103,6 +161,7 @@ pub trait InitializedPlugin {
 #[cfg(test)]
 pub struct TestPlugin {
   info: PluginInfo,
+  built_in: Option<&'static BuiltInFormatter>,
   initialized_test_plugin: InitializedTestPlugin,
 }
 
@@ -118,12 +177,24 @@ impl TestPlugin {
         config_schema_url: "https://plugins.dprint.dev/schemas/test.json".to_string(),
         update_url: None,
       },
+      built_in: None,
       initialized_test_plugin: InitializedTestPlugin(FileMatchingInfo {
         file_extensions: file_extensions.into_iter().map(String::from).collect(),
         file_names: file_names.into_iter().map(String::from).collect(),
         additive: false,
       }),
     }
+  }
+
+  /// Makes it a built-in formatter.
+  pub fn built_in(mut self, built_in: &'static BuiltInFormatter) -> Self {
+    self.built_in = Some(built_in);
+    self
+  }
+
+  pub fn with_version(mut self, version: &str) -> Self {
+    self.info.version = version.to_string();
+    self
   }
 }
 
@@ -132,6 +203,10 @@ impl TestPlugin {
 impl Plugin for TestPlugin {
   fn info(&self) -> &PluginInfo {
     &self.info
+  }
+
+  fn built_in(&self) -> Option<&'static BuiltInFormatter> {
+    self.built_in
   }
 
   fn is_process_plugin(&self) -> bool {

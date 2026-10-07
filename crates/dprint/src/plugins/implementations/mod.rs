@@ -4,6 +4,7 @@ mod process;
 mod public;
 mod wasm;
 
+pub use builtin_exec::EXEC_COMMANDS_RELEASE;
 pub use builtin_exec::create_builtin_exec_plugin;
 pub use builtin_exec::exec_command_program;
 #[cfg(windows)]

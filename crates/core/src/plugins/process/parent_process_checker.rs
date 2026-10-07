@@ -94,10 +94,10 @@ mod test {
     .unwrap();
 
     let pid = child.id();
-    assert_eq!(is_process_active(pid), true);
+    assert!(is_process_active(pid));
     // also waits for it to exit
     child.kill().unwrap();
-    assert_eq!(is_process_active(pid), false);
+    assert!(!is_process_active(pid));
   }
 
   fn get_dprint_exe() -> PathBuf {

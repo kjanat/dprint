@@ -146,7 +146,7 @@ mod tests {
   fn should_not_error_multiple_at_symbols() {
     let environment = TestEnvironment::new();
     let plugin_text = "http://dprint.dev/@other/wasm_plugin.wasm@checksum";
-    let result = parse_plugin_source_reference(&plugin_text, &PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/")), &environment).unwrap();
+    let result = parse_plugin_source_reference(plugin_text, &PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/")), &environment).unwrap();
     assert_eq!(
       result,
       PluginSourceReference {

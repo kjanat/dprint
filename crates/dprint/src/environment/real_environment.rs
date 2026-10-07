@@ -454,6 +454,10 @@ impl Environment for RealEnvironment {
     Ok(entries)
   }
 
+  fn scan_file_system(&self) -> Arc<dyn tree_fucker::FileSystem> {
+    Arc::new(tree_fucker::std_fs::StdFileSystem::new())
+  }
+
   fn path_exists(&self, file_path: impl AsRef<Path>) -> bool {
     log_debug!(self, "Checking path exists: {}", file_path.as_ref().display());
     #[allow(clippy::disallowed_methods)]

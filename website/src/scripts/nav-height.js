@@ -8,17 +8,12 @@
  */
 export function setupNavHeight() {
   const nav = document.querySelector(".site-nav");
-  if (nav == null) {
-    return;
-  }
+  if (nav == null) return;
 
   update();
 
-  if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(update).observe(nav);
-  } else {
-    window.addEventListener("resize", update);
-  }
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(update).observe(nav);
+  else window.addEventListener("resize", update);
 
   function update() {
     const height = Math.round(nav.getBoundingClientRect().height);

@@ -1,27 +1,22 @@
 [workspace]
-resolver = "2"
-members = [
-  "crates/config-model",
-  "crates/core",
-  "crates/core-macros",
-  "crates/development",
-  "crates/dprint",
-  "crates/test-process-plugin",
-]
+resolver = "3"
+members  = ["crates/*"]
 # excluded because this needs to be compiled as wasm to work
-exclude = [
-  "crates/test-plugin",
-]
+exclude  = ["crates/test-plugin"]
+
+[workspace.package]
+edition    = "2024"
+repository = "https://github.com/kjanat/dprint"
 
 [workspace.dependencies]
-anyhow = "1.0.98"
-indexmap = { version = "2.9.0", features = ["serde"] }
-serde = { version = "1.0.219", features = ["derive"] }
+anyhow     = "1.0.98"
+indexmap   = { version = "2.9.0", features = ["serde"] }
+serde      = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
-similar = "2.7.0"
+similar    = "2.7.0"
 sys_traits = "=0.1.28"
-thiserror = "2.0.18"
-tokio = { version = "1.37.0", features = ["rt", "time", "macros", "rt-multi-thread"] }
+thiserror  = "2.0.18"
+tokio      = { version = "1.37.0", features = ["macros", "rt", "rt-multi-thread", "time"] }
 
 [patch.crates-io]
 # unreleased fixes on top of 0.6.1
@@ -30,4 +25,4 @@ boon = { git = "https://github.com/santhosh-tekuri/boon", rev = "b487e6a75097d87
 # Build release with debug symbols: cargo build --profile=release-with-debug
 [profile.release-with-debug]
 inherits = "release"
-debug = true
+debug    = true

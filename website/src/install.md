@@ -10,6 +10,8 @@ Install using one of the methods below.
 
 - Shell (Mac, Linux, WSL):
 
+  Requires `curl`, `unzip`, and `jq`.
+
   ```sh
   curl -fsSL https://dprint.dev/install.sh | sh
   ```
@@ -91,7 +93,7 @@ Install using one of the methods below.
   paru -S dprint-bin
   ```
 
-For binaries and source, see the [GitHub releases](https://github.com/dprint/dprint/releases).
+For binaries and source, see the [GitHub releases](https://github.com/kjanat/dprint/releases).
 
 ## Editor Extensions
 

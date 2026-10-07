@@ -95,11 +95,21 @@ This is very unsafe to do and not recommended. A warning will be displayed on fi
 
 By default, dprint only runs for a short period of time and so it will try to take advantage of as many CPU cores as it can. This might be an issue in some scenarios, and so you can limit the amount of parallelism by setting the `DPRINT_MAX_THREADS` environment variable in version 0.32 and up (ex. `DPRINT_MAX_THREADS=4`).
 
-Separately, dprint reads directories on several threads when discovering files in order to better saturate the disk. This is I/O bound, so the number of read threads is independent of `DPRINT_MAX_THREADS`. You can override it with the `DPRINT_GLOB_READ_THREADS` environment variable (ex. `DPRINT_GLOB_READ_THREADS=8`), though the default is suitable for most setups.
+Finding the files to format doesn't use these threads. dprint scans directories with [tree-fucker](https://github.com/kjanat/tree-fucker), which limits how much file system work runs at once across the whole process.
+
+## Compiling Wasm Plugins
+
+dprint runs a Wasm plugin in an interpreter until compiling it to native code pays off. Getting its plugin info, resolving its configuration, finding the files it formats and its configuration diagnostics always run in the interpreter. They take milliseconds, so commands that don't format, like `dprint output-file-paths` and `dprint config update`, never compile a plugin.
+
+Before formatting, dprint adds up the size of the files each plugin will format, leaving out the files the incremental cache knows are formatted. A plugin is compiled when interpreting those bytes would take longer than compiling it, and formats in the interpreter otherwise. So formatting a few files never waits for a compile. dprint keeps how fast each plugin formatted in the interpreter, so later runs choose with the plugin's own speed. Once a plugin is compiled, its native code is cached and always used.
+
+dprint prints which plugins it compiles before it formats. When that's more than 50, it stops before compiling any, and lists them. Set `DPRINT_MAX_PLUGIN_COMPILES` to allow more (ex. `DPRINT_MAX_PLUGIN_COMPILES=100`). To always interpret or always compile, set `DPRINT_WASM_FORMAT_ENGINE` to `interpreter` or `native`.
+
+The editor integrations (`dprint lsp` and the editor service) format in the interpreter at first. Once a plugin has spent as long in the interpreter as compiling it would take, it compiles in the background and formats natively when that's done.
 
 ## Stalled Plugin Setup
 
-The first time dprint uses a Wasm plugin, it compiles the plugin to native code and caches the result. dprint does this in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds, which is also what it looks like when it gets no CPU time at all), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
+dprint compiles a Wasm plugin in a separate process that it watches while it works. When that process crashes, stops making progress (its CPU time stops increasing for 5 seconds, which is also what it looks like when it gets no CPU time at all), or spends far longer on a step than the step needs, dprint kills it and tries again, up to three times. A compile that keeps the CPU busy for too long, or that fails twice, is retried without optimizations. That avoids slow paths in the optimizer, but the plugin may format more slowly until you run `dprint clear-cache`. Together these processes use at most `DPRINT_MAX_THREADS` threads, and each one exits as soon as the dprint process that started it does.
 
 Each attempt also has a time limit however much CPU time it gets, of twice the CPU time all its steps may use, and the compile as a whole (waiting for a free compile process, the attempts and the retries) has twice that, after which dprint gives up on the plugin. The limits grow with the plugin's size, up to 10 minutes in all: the largest plugins compile in about 13 seconds on one thread, so a compile that takes longer than that is stuck rather than large. If a module genuinely needs longer, set `DPRINT_WASM_COMPILE_TIMEOUT` to the number of seconds it may take in all (ex. `DPRINT_WASM_COMPILE_TIMEOUT=1800`), which also works to give it less. A compile is stopped as soon as nothing waits for it anymore.
 

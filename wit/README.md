@@ -2,16 +2,16 @@
 
 Each directory describes one plugin system schema version of dprint's Wasm plugin ABI in [WIT](https://component-model.bytecodealliance.org/design/wit.html), the interface definition language of the Wasm component model: what a plugin exports, what the host provides as imports, the byte-passing protocol between them, and the JSON payloads they exchange.
 
-| Schema | Package | dprint | dprint-core | Status |
-| --- | --- | --- | --- | --- |
-| 4 | `dprint:plugin@4.0.0` | 0.47.0 (2024-07-01) onwards | 0.67.0 onwards | current: what `generate_plugin_code!` emits |
-| 3 | `dprint:plugin@3.0.0` | 0.8.0 (2020-08-05) onwards | 0.27.0 to 0.66.x | still run by the current host |
-| 2 | `dprint:plugin@2.0.0` | 0.7.0 to 0.7.4 | 0.26.x | historical |
-| 1 | `dprint:plugin@1.0.0` | 0.4.0 to 0.6.x | 0.20.0-alpha3 to 0.25.x | historical |
+| Schema | Package               | dprint                      | dprint-core             | Status                                      |
+| ------ | --------------------- | --------------------------- | ----------------------- | ------------------------------------------- |
+| 4      | `dprint:plugin@4.0.0` | 0.47.0 (2024-07-01) onwards | 0.67.0 onwards          | current: what `generate_plugin_code!` emits |
+| 3      | `dprint:plugin@3.0.0` | 0.8.0 (2020-08-05) onwards  | 0.27.0 to 0.66.x        | still run by the current host               |
+| 2      | `dprint:plugin@2.0.0` | 0.7.0 to 0.7.4              | 0.26.x                  | historical                                  |
+| 1      | `dprint:plugin@1.0.0` | 0.4.0 to 0.6.x              | 0.20.0-alpha3 to 0.25.x | historical                                  |
 
 ## What these files are, and aren't
 
-A dprint plugin is a **core Wasm module**, not a component. It exports a linear `memory` and plain functions whose parameters and results are all `i32` (on wasm32 `u32`, `u8`, `usize` and pointers are one type), and it passes every payload as bytes through a buffer it owns. WIT can't express that core ABI directly (the component model's canonical ABI lifts and lowers values itself), so these files describe the ABI's *logical* interface:
+A dprint plugin is a **core Wasm module**, not a component. It exports a linear `memory` and plain functions whose parameters and results are all `i32` (on wasm32 `u32`, `u8`, `usize` and pointers are one type), and it passes every payload as bytes through a buffer it owns. WIT can't express that core ABI directly (the component model's canonical ABI lifts and lowers values itself), so these files describe the ABI's _logical_ interface:
 
 - each WIT function is one core export or import, with its core name and signature in its doc comment (`get_shared_bytes_ptr() -> *const u8` is `get-shared-bytes-ptr: func() -> pointer`);
 - `u32` stands for every `i32`; `pointer` is an offset into the plugin's memory; a `format-result` is the `u8` code 0, 1 or 2;

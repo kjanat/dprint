@@ -1,12 +1,15 @@
 //! dprint's built-in exec: formats files with external commands.
 //!
-//! This is the dprint-plugin-exec process plugin
-//! (https://github.com/dprint/dprint-plugin-exec, MIT licensed, see LICENSE)
-//! running inside the CLI. Running a command needs no plugin boundary: as a
-//! downloaded process plugin it only worked on platforms someone published a
-//! build of it for (FreeBSD has none, for example), and every file went through
-//! an extra process. Configs keep referencing the exec plugin as before; dprint
-//! serves those references itself instead of downloading the plugin.
+//! It started as the dprint-plugin-exec process plugin
+//! (https://github.com/dprint/dprint-plugin-exec, MIT licensed, see LICENSE),
+//! moved into the CLI. Running a command needs no plugin boundary: as a
+//! downloaded process plugin it only ran on platforms someone published a
+//! build for (FreeBSD has none, for example), and every file went through an
+//! extra process.
+//!
+//! It's a formatter of its own now, released with dprint (see [`BUILT_IN`]).
+//! Configuration files keep referencing the exec plugin as before, and dprint
+//! serves the references to the release it knows (see `legacy.rs`) with it.
 
 mod configuration;
 mod executable;
@@ -14,53 +17,44 @@ mod executable;
 pub use executable::find_with_path_ext;
 mod handler;
 pub mod input;
+mod legacy;
 mod template;
 
+pub use legacy::COMMANDS_RELEASE as EXEC_COMMANDS_RELEASE;
+pub use legacy::is_exec_plugin_reference;
+pub use legacy::knows_exec_plugin_commands;
+
 use crate::environment::Environment;
+use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginSourceReference;
-use crate::utils::PathSource;
 
 use super::in_process::InProcessPlugin;
 
-pub const EXEC_PLUGIN_NAME: &str = "dprint-plugin-exec";
-/// The dprint-plugin-exec release this was built from.
-pub const EXEC_PLUGIN_VERSION: &str = "0.7.3";
-/// The exec plugin releases the built-in exec serves references to. A config
-/// that asks for another version (or no specific one) gets that version, run
-/// as the process plugin, since the built-in exec only behaves like the
-/// release it was built from. A release is only added here together with
-/// tests that the built-in exec handles its configuration the same way.
-const SERVED_EXEC_PLUGIN_RELEASES: &[ServedRelease] = &[ServedRelease {
-  version: EXEC_PLUGIN_VERSION,
-  plugin_file_checksum: "a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa",
-  npm_tarball_checksum: "704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
-}];
+/// Changes whenever the built-in exec can format a file differently for the
+/// same configuration, which makes the incremental cache forget the files it
+/// formatted. For example: what it passes a command, how it chooses the
+/// commands for a file, or what it does with their output.
+/// `handler::test::a_change_in_formatting_bumps_the_cache_revision` fails when
+/// what it makes of a set of files changes.
+const CACHE_REVISION: u32 = 1;
 
-/// A release of the exec plugin the built-in exec serves references to.
-///
-/// A reference may pin a release's checksum, which is only served built in
-/// when it's that release's, so a pin keeps meaning that release. Another
-/// checksum gets the plugin it names, which then fails its checksum check
-/// like any plugin.
-struct ServedRelease {
-  version: &'static str,
-  /// Of its process plugin file (plugin.json), as a url reference pins it.
-  plugin_file_checksum: &'static str,
-  /// Of its npm package's tarball, as an npm reference pins it.
-  npm_tarball_checksum: &'static str,
-}
-/// The file of the exec process plugin in its npm package.
-const EXEC_PLUGIN_NPM_FILE: &str = "plugin.json";
+pub static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
+  name: "exec",
+  cache_revision: CACHE_REVISION,
+  serves_plugin: legacy::PLUGIN_NAME,
+  refers_to_served_plugin: is_exec_plugin_reference,
+};
+
 /// Set to `0` to download and run the exec process plugin instead.
 const BUILTIN_EXEC_ENV_VAR: &str = "DPRINT_BUILTIN_EXEC";
 
-/// Creates the built-in exec plugin when the reference is to a version of the
-/// exec plugin it serves.
+/// Creates the built-in exec when the reference is to an exec plugin release
+/// it serves.
 pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> Option<Box<dyn Plugin>> {
   if !is_builtin_exec_reference(environment, reference) {
     if is_exec_plugin_reference(reference) {
-      let reason = match served_release(reference) {
+      let reason = match legacy::served_release(reference) {
         Ok(_) => format!("{}=0", BUILTIN_EXEC_ENV_VAR),
         Err(reason) => reason,
       };
@@ -68,107 +62,23 @@ pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvi
     }
     return None;
   }
-  log_debug!(
-    environment,
-    "Using the built-in exec ({} {}) for {}",
-    EXEC_PLUGIN_NAME,
-    EXEC_PLUGIN_VERSION,
-    reference.display()
-  );
-  Some(Box::new(InProcessPlugin::new(handler::ExecHandler::default, input::exec_config_schema())))
+  log_debug!(environment, "Using the built-in exec for {}", reference.display());
+  Some(Box::new(InProcessPlugin::new(
+    handler::ExecHandler::default,
+    input::exec_config_schema(),
+    &BUILT_IN,
+  )))
 }
 
 /// Whether dprint serves the reference with the built-in exec rather than
 /// running the exec process plugin it refers to.
 pub fn is_builtin_exec_reference<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> bool {
-  served_release(reference).is_ok() && environment.env_var(BUILTIN_EXEC_ENV_VAR).is_none_or(|value| value != "0")
-}
-
-/// The release the built-in exec serves the reference as, or why it doesn't.
-fn served_release(reference: &PluginSourceReference) -> Result<&'static ServedRelease, String> {
-  let served_versions = || SERVED_EXEC_PLUGIN_RELEASES.iter().map(|release| release.version).collect::<Vec<_>>().join(", ");
-  let release = exec_plugin_reference_version(reference)
-    .and_then(|version| SERVED_EXEC_PLUGIN_RELEASES.iter().find(|release| release.version == version))
-    .ok_or_else(|| {
-      format!(
-        "the built-in exec ({} {}) only serves references to version {}.",
-        EXEC_PLUGIN_NAME,
-        EXEC_PLUGIN_VERSION,
-        served_versions()
-      )
-    })?;
-  let expected_checksum = match &reference.path_source {
-    PathSource::Npm(_) => release.npm_tarball_checksum,
-    PathSource::Remote(_) | PathSource::Local(_) => release.plugin_file_checksum,
-  };
-  match &reference.checksum {
-    Some(checksum) if checksum != expected_checksum => Err(format!(
-      "its checksum isn't the one of {} {} ({}), so it's checked against the plugin it names.",
-      EXEC_PLUGIN_NAME, release.version, expected_checksum
-    )),
-    _ => Ok(release),
-  }
-}
-
-/// Whether the reference is to a version of the exec plugin whose commands
-/// dprint knows how to read (ex. which program a command runs), which are
-/// the ones it serves built in, also when it's run as the separate plugin.
-pub fn knows_exec_plugin_commands(reference: &PluginSourceReference) -> bool {
-  served_release(reference).is_ok()
-}
-
-/// Whether the reference is to the exec plugin, in any version.
-pub fn is_exec_plugin_reference(reference: &PluginSourceReference) -> bool {
-  exec_plugin_reference(reference).is_some()
-}
-
-/// The exec plugin version the reference asks for, when it's to the exec
-/// plugin and names one.
-fn exec_plugin_reference_version(reference: &PluginSourceReference) -> Option<&str> {
-  exec_plugin_reference(reference).flatten()
+  legacy::served_release(reference).is_ok() && environment.env_var(BUILTIN_EXEC_ENV_VAR).is_none_or(|value| value != "0")
 }
 
 /// The program an exec command runs, split from its arguments the way exec does.
 pub fn exec_command_program(command: &str) -> Option<String> {
   configuration::split_command(command).into_iter().next()
-}
-
-/// `Some` when the reference is to the exec plugin, with the version it asks
-/// for when it names one.
-fn exec_plugin_reference(reference: &PluginSourceReference) -> Option<Option<&str>> {
-  match &reference.path_source {
-    // ex. npm:@dprint/exec@0.7.3/plugin.json, or without a version for the one
-    // installed in node_modules. Only the exec process plugin's file
-    // (plugin.json) can be served built in: any other file in the package is
-    // resolved as asked, so a wrong path is reported rather than replaced.
-    PathSource::Npm(npm) => {
-      (npm.specifier.name == "@dprint/exec").then(|| npm.specifier.version.as_deref().filter(|_| npm.specifier.path == EXEC_PLUGIN_NPM_FILE))
-    }
-    PathSource::Remote(remote) => {
-      let path = remote.url.path();
-      match remote.url.host_str() {
-        Some("plugins.dprint.dev") => {
-          if let Some(version) = path.strip_prefix("/exec-").and_then(|rest| rest.strip_suffix(".json")) {
-            // ex. https://plugins.dprint.dev/exec-0.5.0.json
-            Some(Some(version))
-          } else {
-            // ex. https://plugins.dprint.dev/dprint/dprint-plugin-exec/0.7.3/plugin.json,
-            // or latest.json for the latest release
-            path.strip_prefix("/dprint/dprint-plugin-exec/").map(|rest| rest.strip_suffix("/plugin.json"))
-          }
-        }
-        Some("github.com") => {
-          // ex. https://github.com/dprint/dprint-plugin-exec/releases/download/0.5.0/plugin.json,
-          // or releases/latest/download/plugin.json for the latest release
-          let rest = path.strip_prefix("/dprint/dprint-plugin-exec/releases/")?;
-          Some(rest.strip_prefix("download/").and_then(|rest| rest.strip_suffix("/plugin.json")))
-        }
-        _ => None,
-      }
-    }
-    // a local exec plugin is most likely a build being worked on, so run it
-    PathSource::Local(_) => None,
-  }
 }
 
 #[cfg(test)]
@@ -177,6 +87,7 @@ mod test {
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::test_helpers::run_test_cli;
+  use crate::utils::PathSource;
 
   fn parse_reference(text: &str, environment: &TestEnvironment) -> PluginSourceReference {
     let base = PathSource::new_local(crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
@@ -391,8 +302,8 @@ mod test {
   fn serves_only_references_to_the_version_it_was_built_from() {
     let environment = TestEnvironment::new();
     let is_builtin = |text: &str| is_builtin_exec_reference(&environment, &parse_reference(text, &environment));
-    // the version the built-in exec was built from, however it's referenced
-    assert_eq!(EXEC_PLUGIN_VERSION, "0.7.3");
+    // the release whose references it serves, however it's referenced
+    assert_eq!(legacy::COMMANDS_RELEASE, "0.7.3");
     assert!(is_builtin("npm:@dprint/exec@0.7.3/plugin.json"));
     assert!(is_builtin(&format!("npm:@dprint/exec@0.7.3/plugin.json@{}", NPM_TARBALL_CHECKSUM)));
     assert!(is_builtin("https://plugins.dprint.dev/exec-0.7.3.json"));
@@ -453,7 +364,7 @@ mod test {
       NPM_TARBALL_CHECKSUM.to_uppercase()
     )));
     assert_eq!(
-      served_release(&parse_reference("npm:@dprint/exec@0.7.3/plugin.json@abc", &environment)).err(),
+      legacy::served_release(&parse_reference("npm:@dprint/exec@0.7.3/plugin.json@abc", &environment)).err(),
       Some(format!(
         "its checksum isn't the one of dprint-plugin-exec 0.7.3 ({}), so it's checked against the plugin it names.",
         NPM_TARBALL_CHECKSUM

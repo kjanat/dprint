@@ -1,16 +1,16 @@
 [package]
-name = "dprint-core-macros"
-version = "0.1.0"
-authors = ["David Sherret <dsherret@gmail.com>"]
-edition = "2024"
-homepage = "https://github.com/dprint/dprint/tree/main/crates/core-macros"
-license = "MIT"
-repository = "https://github.com/dprint/dprint"
-description = "Core formatting macros for dprint-core."
+name                 = "dprint-core-macros"
+version              = "0.1.0"
+authors              = ["David Sherret <dsherret@gmail.com>"]
+edition.workspace    = true
+description          = "Core formatting macros for dprint-core."
+homepage             = "https://github.com/kjanat/dprint/tree/HEAD/crates/core-macros"
+repository.workspace = true
+license              = "MIT"
 
 [lib]
 proc-macro = true
 
 [dependencies]
 quote = "1.0"
-syn = { version = "1.0", features = ["full"] }
+syn   = { version = "1.0", features = ["full"] }

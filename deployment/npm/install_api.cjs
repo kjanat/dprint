@@ -292,7 +292,7 @@ function getLinuxFamily() {
   return getIsMusl() ? "musl" : "glibc";
 
   function getIsMusl() {
-    // code adapted from https://github.com/napi-rs/package-template/blob/main/index.js
+    // code adapted from https://github.com/napi-rs/package-template/blob/HEAD/index.js
     // which is in turn based on https://github.com/lovell/detect-libc (Apache 2.0 license)
     if (cachedIsMusl == null) {
       cachedIsMusl = innerGet();

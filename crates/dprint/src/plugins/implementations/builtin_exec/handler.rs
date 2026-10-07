@@ -69,17 +69,16 @@ impl AsyncPluginHandler for ExecHandler {
   type Configuration = Configuration;
 
   fn plugin_info(&self) -> PluginInfo {
-    // the plugin this was built from, so incremental caches and config
-    // tooling see the same plugin as when it was downloaded
-    let name = super::EXEC_PLUGIN_NAME.to_string();
-    let version = super::EXEC_PLUGIN_VERSION.to_string();
     PluginInfo {
-      name: name.clone(),
-      version: version.clone(),
+      name: super::BUILT_IN.name.to_string(),
+      // it's released with dprint
+      version: env!("CARGO_PKG_VERSION").to_string(),
       config_key: "exec".to_string(),
-      help_url: "https://github.com/dprint/dprint-plugin-exec".to_string(),
-      config_schema_url: format!("https://plugins.dprint.dev/dprint/{}/{}/schema.json", name, version),
-      update_url: Some(format!("https://plugins.dprint.dev/dprint/{}/latest.json", name)),
+      help_url: "https://dprint.dev/plugins/exec".to_string(),
+      // its schema is built in too (see `Plugin::config_schema`)
+      config_schema_url: String::new(),
+      // it's updated by upgrading dprint
+      update_url: None,
     }
   }
 
@@ -255,7 +254,7 @@ pub async fn format_bytes(
     return Err(FormatError::new(format!(
       concat!(
         "The original file text was greater than {} characters, but the formatted text was empty. ",
-        "Perhaps dprint-plugin-exec has been misconfigured?",
+        "Perhaps exec is misconfigured?",
       ),
       MIN_CHARS_TO_EMPTY
     )));
@@ -884,6 +883,67 @@ mod test {
     assert!(formatter.stopped(), "the process the formatter started should have been killed");
   }
 
+  /// Fails when the built-in exec formats one of these files differently. When
+  /// that's intended, bump `CACHE_REVISION` (in `mod.rs`) and record what it
+  /// makes of the files for the new revision here. The incremental cache
+  /// otherwise keeps skipping files that were formatted the old way.
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn a_change_in_formatting_bumps_the_cache_revision() {
+    let config = resolve(serde_json::json!({ "commands": [
+      // the first command for an extension formats the file alone
+      { "command": "tr a-z A-Z", "exts": ["up"] },
+      { "command": "tr A-Z a-z", "exts": ["up"] },
+      // every command whose associations match runs, in order
+      { "command": "tr x y", "associations": "**/*.chain" },
+      { "command": "tr y z", "associations": "**/*.chain" },
+      // the command gets the path as it is
+      { "command": "printf %s {{file_path}}", "exts": ["path"] },
+      { "command": "cat", "exts": ["same"] },
+      { "command": "true", "exts": ["empty"] },
+    ]}));
+    let files = [
+      ("a.up", "text\r\nno newline".to_string()),
+      ("a.chain", "x\n".to_string()),
+      ("dir/a b.path", String::new()),
+      ("a.same", "unchanged\n".to_string()),
+      ("short.empty", "1".repeat(100)),
+      ("long.empty", "1".repeat(101)),
+      ("a.none", "no command\n".to_string()),
+    ];
+    let mut made = Vec::new();
+    for (path, text) in files {
+      let result = format_bytes(
+        PathBuf::from(path),
+        text.into_bytes(),
+        config.clone(),
+        Arc::new(NullCancellationToken),
+        &SetupState::default(),
+      )
+      .await;
+      made.push(match result {
+        Ok(Some(bytes)) => format!("{}: {:?}", path, String::from_utf8(bytes).unwrap()),
+        Ok(None) => format!("{}: unchanged", path),
+        Err(_) => format!("{}: error", path),
+      });
+    }
+    assert_eq!(
+      (super::super::CACHE_REVISION, made),
+      (
+        1,
+        vec![
+          "a.up: \"TEXT\\r\\nNO NEWLINE\"".to_string(),
+          "a.chain: \"z\\n\"".to_string(),
+          "dir/a b.path: \"dir/a b.path\"".to_string(),
+          "a.same: unchanged".to_string(),
+          "short.empty: \"\"".to_string(),
+          "long.empty: error".to_string(),
+          "a.none: unchanged".to_string(),
+        ]
+      )
+    );
+  }
+
   #[cfg(unix)]
   #[tokio::test]
   async fn formats_with_stdin_and_stdout() {
@@ -903,7 +963,7 @@ mod test {
         concat!(
           "The original file text was greater than 100 characters, ",
           "but the formatted text was empty. ",
-          "Perhaps dprint-plugin-exec has been misconfigured?"
+          "Perhaps exec is misconfigured?"
         )
         .to_string()
       )

@@ -133,6 +133,8 @@ impl Write for TestPipeWriter {
   }
 }
 
+type RunCommandResult = (Vec<OsString>, io::Result<Option<i32>>);
+
 #[derive(Clone)]
 pub struct TestEnvironment {
   log_level: Arc<Mutex<LogLevel>>,
@@ -170,7 +172,7 @@ pub struct TestEnvironment {
   max_threads_count: Arc<Mutex<usize>>,
   current_exe_path: Arc<Mutex<PathBuf>>,
   is_terminal_interactive: Arc<Mutex<bool>>,
-  run_command_results: Arc<Mutex<Vec<(Vec<OsString>, io::Result<Option<i32>>)>>>,
+  run_command_results: Arc<Mutex<Vec<RunCommandResult>>>,
   /// Executables of processes that are pretending to be running, each paired
   /// with the number of times it will "restart" (re-lock its directory) after
   /// being killed. A directory containing one of these can't be removed
@@ -256,6 +258,22 @@ impl TestEnvironment {
 
   pub fn take_stdout_messages(&self) -> Vec<String> {
     self.stdout_messages.lock().drain(..).collect()
+  }
+
+  /// Compiles the Wasm plugins set up in the cache to native code, as the
+  /// first run that formats with them does.
+  pub fn compile_cached_wasm_plugins(&self) {
+    let Ok(entries) = self.dir_info(self.get_cache_dir().join("plugins")) else {
+      return;
+    };
+    for entry in entries {
+      if let DirEntry::File { path, .. } = entry
+        && path.extension().is_some_and(|extension| extension == "wasm")
+      {
+        let compiled = compile_wasm_once(&self.read_file_bytes(&path).unwrap());
+        self.write_file_bytes(path.with_extension("cwasm"), &compiled.bytes).unwrap();
+      }
+    }
   }
 
   pub fn clear_logs(&self) {
@@ -762,6 +780,14 @@ impl Environment for TestEnvironment {
     self.sys.fs_is_file_no_err(path)
   }
 
+  fn scan_file_system(&self) -> Arc<dyn tree_fucker::FileSystem> {
+    Arc::new(super::EnvironmentFileSystem::new(self.clone()))
+  }
+
+  fn dir_entry_path(&self, dir: &Path, name: &OsStr) -> PathBuf {
+    self.clean_path(dir.join(name))
+  }
+
   fn path_kind(&self, file_path: impl AsRef<Path>) -> Option<PathKind> {
     let path = self.clean_path(file_path);
     let metadata = self.sys.fs_symlink_metadata(path).ok()?;
@@ -962,25 +988,7 @@ impl Environment for TestEnvironment {
 
   fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
     self.wasm_compile_deadlines.lock().push(control.deadline());
-    use std::collections::hash_map::Entry;
-
-    static COMPILE_RESULTS: Lazy<Mutex<HashMap<u64, CompilationResult>>> = Lazy::new(Default::default);
-
-    let hash = get_bytes_hash(bytes);
-    {
-      // hold the lock while compiling in order to prevent other
-      // threads from compiling at the same time
-      let mut results = COMPILE_RESULTS.lock();
-      let entry = results.entry(hash);
-      match entry {
-        Entry::Occupied(entry) => Ok(entry.get().clone()),
-        Entry::Vacant(entry) => {
-          let value = crate::plugins::compile_wasm(bytes).unwrap();
-          entry.insert(value.clone());
-          Ok(value)
-        }
-      }
-    }
+    Ok(compile_wasm_once(bytes))
   }
 
   fn wasm_cache_key(&self) -> String {
@@ -1017,5 +1025,20 @@ impl Environment for TestEnvironment {
       path_dirs.remove(pos);
     }
     Ok(())
+  }
+}
+
+/// Compiles a Wasm module, once per module for all the tests.
+fn compile_wasm_once(bytes: &[u8]) -> CompilationResult {
+  use std::collections::hash_map::Entry;
+
+  static COMPILE_RESULTS: Lazy<Mutex<HashMap<u64, CompilationResult>>> = Lazy::new(Default::default);
+
+  // hold the lock while compiling in order to prevent other
+  // threads from compiling at the same time
+  let mut results = COMPILE_RESULTS.lock();
+  match results.entry(get_bytes_hash(bytes)) {
+    Entry::Occupied(entry) => entry.get().clone(),
+    Entry::Vacant(entry) => entry.insert(crate::plugins::compile_wasm(bytes).unwrap()).clone(),
   }
 }

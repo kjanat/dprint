@@ -17,7 +17,7 @@ permissions:
   contents: read
 jobs:
   publish-cargo:
-    if: github.repository == 'dprint/dprint'
+    if: github.repository_id == '1092062077'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,7 +33,7 @@ jobs:
           cargo publish ${{ (inputs.dry_run || false) && '--dry-run' || '' }}
   build-npm:
     name: npm build
-    if: github.repository == 'dprint/dprint'
+    if: github.repository_id == '1092062077'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -45,7 +45,7 @@ jobs:
       - name: Tar npm dist (preserves permissions)
         run: tar cf deployment/npm/dist.tar -C deployment/npm --exclude='node_modules' dist
       - name: Upload artifact npm-dist
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: npm-dist
           path: deployment/npm/dist.tar
@@ -74,7 +74,7 @@ jobs:
         with:
           node-version: 24.x
       - name: Download artifact npm-dist
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: npm-dist
           path: deployment/npm
@@ -198,7 +198,7 @@ jobs:
           node-version: 24.x
           registry-url: "https://registry.npmjs.org"
       - name: Download artifact npm-dist
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: npm-dist
           path: deployment/npm

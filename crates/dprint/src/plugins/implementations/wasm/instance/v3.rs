@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use anyhow::anyhow;
-use anyhow::bail;
 use dprint_core::configuration::ConfigKeyMap;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::configuration::GlobalConfiguration;
@@ -21,21 +19,14 @@ use dprint_core::plugins::HostFormatRequest;
 use dprint_core::plugins::NullCancellationToken;
 use dprint_core::plugins::PluginInfo;
 use serde::Serialize;
-use wasmtime::Caller;
-use wasmtime::Engine;
-use wasmtime::Memory;
-use wasmtime::TypedFunc;
-use wasmtime::WasmParams;
-use wasmtime::WasmResults;
 
 use crate::plugins::FormatConfig;
 use crate::plugins::implementations::wasm::WasmHostFormatSender;
-use crate::plugins::implementations::wasm::WasmInstance;
 
 use super::InitializedWasmPluginInstance;
 use super::Linker;
-use super::Store;
-use super::WasmHostState;
+use super::PluginExports;
+use super::checked_range;
 
 enum WasmFormatResult {
   NoChange,
@@ -46,9 +37,9 @@ enum WasmFormatResult {
 #[derive(Clone, Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 struct SyncPluginInfo {
   #[serde(flatten)]
-  pub info: PluginInfo,
+  info: PluginInfo,
   #[serde(flatten)]
-  pub file_matching: FileMatchingInfo,
+  file_matching: FileMatchingInfo,
 }
 
 #[derive(Default)]
@@ -67,9 +58,9 @@ impl SharedBytes {
   }
 }
 
-/// The host state for a v3 plugin, stored in the wasmtime `Store` data.
+/// The host state for a v3 plugin, kept in the store of the engine that
+/// runs it (see `WasmHostState`).
 pub struct ImportObjectEnvironmentV3 {
-  pub memory: Option<Memory>,
   pub token: Arc<dyn CancellationToken>,
   override_config: Option<ConfigKeyMap>,
   file_path: Option<PathBuf>,
@@ -80,6 +71,18 @@ pub struct ImportObjectEnvironmentV3 {
 }
 
 impl ImportObjectEnvironmentV3 {
+  pub fn new(host_format_sender: WasmHostFormatSender) -> Self {
+    Self {
+      token: Arc::new(NullCancellationToken),
+      override_config: None,
+      file_path: None,
+      formatted_text_store: Default::default(),
+      shared_bytes: SharedBytes::default(),
+      error_text_store: Default::default(),
+      host_format_sender,
+    }
+  }
+
   fn take_shared_bytes(&mut self) -> Vec<u8> {
     let data = std::mem::take(&mut self.shared_bytes.data);
     self.shared_bytes.index = 0;
@@ -99,98 +102,59 @@ pub fn add_identity_imports(linker: &mut Linker) -> Result<()> {
   Ok(())
 }
 
-pub fn create_pools_import_object(engine: &Engine, host_format_sender: WasmHostFormatSender) -> Result<(Linker, WasmHostState)> {
-  let state = ImportObjectEnvironmentV3 {
-    memory: None,
-    token: Arc::new(NullCancellationToken),
-    override_config: None,
-    file_path: None,
-    formatted_text_store: Default::default(),
-    shared_bytes: SharedBytes::default(),
-    error_text_store: Default::default(),
-    host_format_sender,
+pub fn host_clear_bytes(state: &mut ImportObjectEnvironmentV3, length: u32) {
+  state.shared_bytes = SharedBytes::with_size(length as usize);
+}
+
+pub fn host_read_buffer(memory: &[u8], state: &mut ImportObjectEnvironmentV3, buffer_pointer: u32, length: u32) -> Result<(), String> {
+  let source = checked_range(memory, buffer_pointer, length as usize)?;
+  let index = state.shared_bytes.index;
+  let Some(target) = state.shared_bytes.data.get_mut(index..index + length as usize) else {
+    return Err(format!("Reading {} bytes past the end of the shared bytes.", length));
   };
-  let mut linker = Linker::new(engine);
-  linker.func_wrap("dprint", "host_clear_bytes", host_clear_bytes)?;
-  linker.func_wrap("dprint", "host_read_buffer", host_read_buffer)?;
-  linker.func_wrap("dprint", "host_write_buffer", host_write_buffer)?;
-  linker.func_wrap("dprint", "host_take_override_config", host_take_override_config)?;
-  linker.func_wrap("dprint", "host_take_file_path", host_take_file_path)?;
-  linker.func_wrap("dprint", "host_format", host_format)?;
-  linker.func_wrap("dprint", "host_get_formatted_text", host_get_formatted_text)?;
-  linker.func_wrap("dprint", "host_get_error_text", host_get_error_text)?;
-  Ok((linker, WasmHostState::V3(state)))
+  target.copy_from_slice(&memory[source]);
+  state.shared_bytes.index += length as usize;
+  Ok(())
 }
 
-fn env<'a>(caller: &'a Caller<'_, WasmHostState>) -> &'a ImportObjectEnvironmentV3 {
-  match caller.data() {
-    WasmHostState::V3(state) => state,
-    _ => unreachable!("expected v3 host state"),
-  }
+pub fn host_write_buffer(memory: &mut [u8], state: &mut ImportObjectEnvironmentV3, buffer_pointer: u32, offset: u32, length: u32) -> Result<(), String> {
+  let (offset, length) = (offset as usize, length as usize);
+  let Some(chunk) = state.shared_bytes.data.get(offset..offset + length) else {
+    return Err(format!("Writing {} bytes from past the end of the shared bytes.", length));
+  };
+  let target = checked_range(memory, buffer_pointer, length)?;
+  memory[target].copy_from_slice(chunk);
+  Ok(())
 }
 
-fn env_mut<'a>(caller: &'a mut Caller<'_, WasmHostState>) -> &'a mut ImportObjectEnvironmentV3 {
-  match caller.data_mut() {
-    WasmHostState::V3(state) => state,
-    _ => unreachable!("expected v3 host state"),
-  }
-}
-
-fn host_clear_bytes(mut caller: Caller<'_, WasmHostState>, length: u32) {
-  env_mut(&mut caller).shared_bytes = SharedBytes::with_size(length as usize);
-}
-
-fn host_read_buffer(mut caller: Caller<'_, WasmHostState>, buffer_pointer: u32, length: u32) {
-  let memory = env(&caller).memory.unwrap();
-  let length = length as usize;
-  let mut tmp = vec![0u8; length];
-  memory.read(&caller, buffer_pointer as usize, &mut tmp).unwrap();
-  let env = env_mut(&mut caller);
-  let index = env.shared_bytes.index;
-  env.shared_bytes.data[index..index + length].copy_from_slice(&tmp);
-  env.shared_bytes.index += length;
-}
-
-fn host_write_buffer(mut caller: Caller<'_, WasmHostState>, buffer_pointer: u32, offset: u32, length: u32) {
-  let memory = env(&caller).memory.unwrap();
-  let offset = offset as usize;
-  let length = length as usize;
-  let chunk = env(&caller).shared_bytes.data[offset..offset + length].to_vec();
-  memory.write(&mut caller, buffer_pointer as usize, &chunk).unwrap();
-}
-
-fn host_take_override_config(mut caller: Caller<'_, WasmHostState>) {
-  let env = env_mut(&mut caller);
-  let bytes = env.take_shared_bytes();
+pub fn host_take_override_config(state: &mut ImportObjectEnvironmentV3) {
+  let bytes = state.take_shared_bytes();
   let config_key_map: ConfigKeyMap = serde_json::from_slice(&bytes).unwrap_or_default();
-  env.override_config.replace(config_key_map);
+  state.override_config.replace(config_key_map);
 }
 
-fn host_take_file_path(mut caller: Caller<'_, WasmHostState>) {
-  let env = env_mut(&mut caller);
-  let bytes = env.take_shared_bytes();
-  let file_path_str = String::from_utf8(bytes).unwrap();
-  env.file_path.replace(PathBuf::from(file_path_str));
+pub fn host_take_file_path(state: &mut ImportObjectEnvironmentV3) -> Result<(), String> {
+  let bytes = state.take_shared_bytes();
+  let file_path_str = String::from_utf8(bytes).map_err(|err| format!("Invalid file path: {err}"))?;
+  state.file_path.replace(PathBuf::from(file_path_str));
+  Ok(())
 }
 
-fn host_format(mut caller: Caller<'_, WasmHostState>) -> u32 {
-  let (override_config, file_path, file_bytes, token, host_format_sender) = {
-    let env = env_mut(&mut caller);
-    let override_config = env.override_config.take().unwrap_or_default();
-    let file_path = env.file_path.take().expect("Expected to have file path.");
-    let file_bytes = env.take_shared_bytes();
-    (override_config, file_path, file_bytes, env.token.clone(), env.host_format_sender.clone())
+pub fn host_format(state: &mut ImportObjectEnvironmentV3) -> Result<u32, String> {
+  let override_config = state.override_config.take().unwrap_or_default();
+  let Some(file_path) = state.file_path.take() else {
+    return Err("Expected to have file path.".to_string());
   };
   let request = HostFormatRequest {
     file_path,
-    file_bytes,
+    file_bytes: state.take_shared_bytes(),
     range: None,
     override_config,
-    token,
+    token: state.token.clone(),
   };
   // todo: worth it to use a oneshot channel library here?
   let (tx, rx) = std::sync::mpsc::channel();
-  let result = match host_format_sender.send((request, tx)) {
+  let result = match state.host_format_sender.send((request, tx)) {
     Ok(()) => match rx.recv() {
       Ok(result) => result,
       Err(_) => Ok(None), // receive error
@@ -198,10 +162,9 @@ fn host_format(mut caller: Caller<'_, WasmHostState>) -> u32 {
     Err(_) => Ok(None), // send error
   };
 
-  let env = env_mut(&mut caller);
-  match result {
+  Ok(match result {
     Ok(Some(formatted_text)) => {
-      env.formatted_text_store = formatted_text;
+      state.formatted_text_store = formatted_text;
       1 // change
     }
     Ok(None) => {
@@ -209,37 +172,35 @@ fn host_format(mut caller: Caller<'_, WasmHostState>) -> u32 {
     }
     // ignore critical error as we can just continue formatting
     Err(err) => {
-      env.error_text_store = err.to_string();
+      state.error_text_store = err.to_string();
       2 // error
     }
-  }
+  })
 }
 
-fn host_get_formatted_text(mut caller: Caller<'_, WasmHostState>) -> u32 {
-  let env = env_mut(&mut caller);
-  let formatted_bytes = std::mem::take(&mut env.formatted_text_store);
+pub fn host_get_formatted_text(state: &mut ImportObjectEnvironmentV3) -> u32 {
+  let formatted_bytes = std::mem::take(&mut state.formatted_text_store);
   let len = formatted_bytes.len();
-  env.shared_bytes = SharedBytes::from_bytes(formatted_bytes);
+  state.shared_bytes = SharedBytes::from_bytes(formatted_bytes);
   len as u32
 }
 
-fn host_get_error_text(mut caller: Caller<'_, WasmHostState>) -> u32 {
-  let env = env_mut(&mut caller);
-  let error_text = std::mem::take(&mut env.error_text_store);
+pub fn host_get_error_text(state: &mut ImportObjectEnvironmentV3) -> u32 {
+  let error_text = std::mem::take(&mut state.error_text_store);
   let len = error_text.len();
-  env.shared_bytes = SharedBytes::from_bytes(error_text.into_bytes());
+  state.shared_bytes = SharedBytes::from_bytes(error_text.into_bytes());
   len as u32
 }
 
-pub struct InitializedWasmPluginInstanceV3 {
-  wasm_functions: WasmFunctions,
+pub struct InitializedWasmPluginInstanceV3<TExports: PluginExports> {
+  wasm_functions: WasmFunctions<TExports>,
   buffer_size: usize,
   current_config_id: FormatConfigId,
 }
 
-impl InitializedWasmPluginInstanceV3 {
-  pub fn new(store: Store, instance: WasmInstance) -> Result<Self> {
-    let mut wasm_functions = WasmFunctions::new(store, instance)?;
+impl<TExports: PluginExports> InitializedWasmPluginInstanceV3<TExports> {
+  pub fn new(exports: TExports) -> Result<Self> {
+    let mut wasm_functions = WasmFunctions { exports };
     let buffer_size = wasm_functions.get_wasm_memory_buffer_size()?;
     Ok(Self {
       wasm_functions,
@@ -367,7 +328,7 @@ impl InitializedWasmPluginInstanceV3 {
   }
 }
 
-impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
+impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3<TExports> {
   fn plugin_info(&mut self) -> Result<PluginInfo> {
     self.sync_plugin_info().map(|i| i.info)
   }
@@ -410,7 +371,7 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
     if range.is_some() && range != Some(0..file_bytes.len()) {
       return Ok(None); // not supported for v3
     }
-    self.wasm_functions.instance.set_token(&mut self.wasm_functions.store, token);
+    self.wasm_functions.exports.set_token(token);
     self.ensure_config(config).map_err(FormatError::new)?;
     match self.inner_format_text(file_path, file_bytes, override_config) {
       Ok(inner) => inner,
@@ -419,142 +380,104 @@ impl InitializedWasmPluginInstance for InitializedWasmPluginInstanceV3 {
   }
 }
 
-struct WasmFunctions {
-  store: Store,
-  instance: WasmInstance,
-  memory: Memory,
+struct WasmFunctions<TExports: PluginExports> {
+  exports: TExports,
 }
 
-impl WasmFunctions {
-  pub fn new(mut store: Store, instance: WasmInstance) -> Result<Self> {
-    let memory = instance
-      .get_memory(&mut store, "memory")
-      .ok_or_else(|| anyhow!("Could not find memory export in plugin."))?;
-    Ok(WasmFunctions { instance, memory, store })
-  }
-
+impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn set_global_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_global_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_global_config", &[])
   }
 
   #[inline]
   pub fn set_plugin_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_plugin_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_plugin_config", &[])
   }
 
   #[inline]
   pub fn get_plugin_info(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_plugin_info")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_plugin_info")
   }
 
   #[inline]
   pub fn get_license_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_license_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_license_text")
   }
 
   #[inline]
   pub fn get_resolved_config(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_resolved_config")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_resolved_config")
   }
 
   #[inline]
   pub fn get_config_diagnostics(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_config_diagnostics")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_config_diagnostics")
   }
 
   #[inline]
   pub fn set_override_config(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_override_config")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_override_config", &[])
   }
 
   #[inline]
   pub fn set_file_path(&mut self) -> Result<()> {
-    let func = self.get_export::<(), ()>("set_file_path")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call("set_file_path", &[])
   }
 
   #[inline]
   pub fn format(&mut self) -> Result<WasmFormatResult> {
-    let func = self.get_export::<(), u32>("format")?;
-    Ok(func.call(&mut self.store, ()).map(|value| u8_to_format_result(value as u8))?)
+    let value = self.exports.call_u32("format", &[])?;
+    Ok(u8_to_format_result(value as u8))
   }
 
   #[inline]
   pub fn get_formatted_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_formatted_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_formatted_text")
   }
 
   #[inline]
   pub fn get_error_text(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_error_text")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_error_text")
   }
 
   #[inline]
   pub fn clear_shared_bytes(&mut self, capacity: usize) -> Result<()> {
-    let func = self.get_export::<u32, ()>("clear_shared_bytes")?;
-    Ok(func.call(&mut self.store, capacity as u32)?)
+    self.exports.call("clear_shared_bytes", &[capacity as u32])
   }
 
   #[inline]
   pub fn get_wasm_memory_buffer_size(&mut self) -> Result<usize> {
-    let func = self.get_export::<(), u32>("get_wasm_memory_buffer_size")?;
-    Ok(func.call(&mut self.store, ()).map(|value| value as usize)?)
+    self.call_len("get_wasm_memory_buffer_size")
   }
 
   #[inline]
   pub fn get_wasm_memory_buffer_ptr(&mut self) -> Result<u32> {
-    let func = self.get_export::<(), u32>("get_wasm_memory_buffer")?;
-    Ok(func.call(&mut self.store, ())?)
+    self.exports.call_u32("get_wasm_memory_buffer", &[])
   }
 
   #[inline]
   pub fn set_buffer_with_shared_bytes(&mut self, offset: usize, length: usize) -> Result<()> {
-    let func = self.get_export::<(u32, u32), ()>("set_buffer_with_shared_bytes")?;
-    Ok(func.call(&mut self.store, (offset as u32, length as u32))?)
+    self.exports.call("set_buffer_with_shared_bytes", &[offset as u32, length as u32])
   }
 
   #[inline]
   pub fn add_to_shared_bytes_from_buffer(&mut self, length: usize) -> Result<()> {
-    let func = self.get_export::<u32, ()>("add_to_shared_bytes_from_buffer")?;
-    Ok(func.call(&mut self.store, length as u32)?)
+    self.exports.call("add_to_shared_bytes_from_buffer", &[length as u32])
   }
 
   #[inline]
   fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.write(&mut self.store, offset, bytes)?;
-    Ok(())
+    self.exports.write_memory(offset, bytes)
   }
 
   #[inline]
   fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
-    let memory = self.memory;
-    memory.read(&self.store, offset, bytes)?;
-    Ok(())
+    self.exports.read_memory(offset, bytes)
   }
 
-  fn get_export<P, R>(&mut self, name: &str) -> Result<TypedFunc<P, R>>
-  where
-    P: WasmParams,
-    R: WasmResults,
-  {
-    match self.instance.get_function(&mut self.store, name) {
-      Some(func) => match func.typed::<P, R>(&self.store) {
-        Ok(typed_func) => Ok(typed_func),
-        Err(err) => bail!("Error creating function '{}'. Message: {:#}", name, err),
-      },
-      None => bail!("Could not find export in plugin with name '{}'.", name),
-    }
+  fn call_len(&mut self, name: &str) -> Result<usize> {
+    Ok(self.exports.call_u32(name, &[])? as usize)
   }
 }
 
