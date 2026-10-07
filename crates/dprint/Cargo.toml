@@ -24,6 +24,7 @@ dprint-core = { path = "../core", version = "=0.70.0", features = ["process", "w
 dunce = "=1.0.4"
 flate2 = "=1.1.9"
 fs3 = "=0.5.0"
+globset = "=0.4.18"
 ignore = "=0.4.23"
 ipnet = "2.11.0"
 jsonc-parser = { version = "=0.32.4", features = ["cst", "preserve_order"] }
@@ -105,6 +106,9 @@ wasmtime = { version = "=43.0.2", default-features = false, features = [
   "addr2line",
   "pulley",
 ] }
+[target."cfg(unix)".dependencies]
+signal-hook = "=0.3.18"
+
 [target."cfg(windows)".dependencies]
 winreg = "=0.55.0"
 

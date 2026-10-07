@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use super::InitializedPlugin;
 use super::implementations::WasmModuleCreator;
+use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
 use crate::environment::Environment;
 use crate::plugins::Plugin;
@@ -132,6 +133,9 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     };
     cell
       .get_or_try_init(|| async {
+        if let Some(plugin) = create_builtin_exec_plugin(&self.environment, &plugin_reference) {
+          return Ok(Rc::new(PluginWrapper::new(plugin)));
+        }
         match create_plugin(&self.plugin_cache, self.environment.clone(), &plugin_reference, &self.wasm_module_creator).await {
           Ok(plugin) => Ok(Rc::new(PluginWrapper::new(plugin))),
           Err(err) => {

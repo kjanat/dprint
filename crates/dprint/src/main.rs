@@ -38,6 +38,8 @@ fn main() {
     let args = std::env::args_os().skip(2).collect::<Vec<_>>();
     std::process::exit(plugins::run_wasm_compile_worker(&args));
   }
+  #[cfg(unix)]
+  kill_owned_children_on_termination();
   // wasm plugins run on blocking threads and execute wasm on the native stack,
   // so give blocking threads a stack large enough (see WASM_PLUGIN_THREAD_STACK_SIZE).
   let rt = tokio::runtime::Builder::new_current_thread()
@@ -56,8 +58,32 @@ fn main() {
             eprintln!("{}", result);
           }
         }
+        // exiting skips destructors, so kill the owned children here
+        dprint_core::owned_child::kill_all_owned_children();
         std::process::exit(err.exit_code);
       }
+    }
+  });
+}
+
+/// Child processes run in process groups of their own (see `OwnedChild`), so
+/// a terminal's Ctrl+C no longer reaches them. Kill them when dprint is
+/// interrupted or terminated, then end the way the signal would have.
+#[cfg(unix)]
+fn kill_owned_children_on_termination() {
+  use signal_hook::consts::signal::SIGHUP;
+  use signal_hook::consts::signal::SIGINT;
+  use signal_hook::consts::signal::SIGQUIT;
+  use signal_hook::consts::signal::SIGTERM;
+
+  let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGINT, SIGTERM, SIGHUP, SIGQUIT]) else {
+    return;
+  };
+  std::thread::spawn(move || {
+    if let Some(signal) = signals.forever().next() {
+      dprint_core::owned_child::kill_all_owned_children();
+      let _ = signal_hook::low_level::emulate_default_handler(signal);
+      std::process::exit(128 + signal);
     }
   });
 }
