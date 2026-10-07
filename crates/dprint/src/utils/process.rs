@@ -114,4 +114,63 @@ mod test {
     let results = get_running_pids_by_name("dprint-testing-not-exists").unwrap();
     assert!(results.is_empty());
   }
+
+  /// Checks with the system's process table that the processes an owned
+  /// child started die with it, on every platform the tests run on (dprint-core
+  /// only tests this on unix). On Windows this is what a `.cmd` shim does:
+  /// `cmd.exe` runs the actual program as a process of its own.
+  #[test]
+  fn kills_the_processes_an_owned_child_started() {
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use dprint_core::owned_child::OwnedChild;
+    use sysinfo::Pid;
+    use sysinfo::ProcessesToUpdate;
+    use sysinfo::System;
+
+    fn wait_until<T>(mut check: impl FnMut() -> Option<T>) -> Option<T> {
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_secs(10) {
+        if let Some(value) = check() {
+          return Some(value);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+      }
+      None
+    }
+
+    let mut command = if cfg!(windows) {
+      let mut command = Command::new("cmd");
+      command.args(["/c", "ping -n 61 127.0.0.1 > nul"]);
+      command
+    } else {
+      let mut command = Command::new("sh");
+      command.args(["-c", "sleep 61; true"]);
+      command
+    };
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let child = OwnedChild::spawn(&mut command).unwrap();
+    let child_pid = Pid::from_u32(child.id());
+
+    let mut system = System::new();
+    let started = wait_until(|| {
+      system.refresh_processes(ProcessesToUpdate::All, true);
+      system
+        .processes()
+        .iter()
+        .find(|(_, process)| process.parent() == Some(child_pid))
+        .map(|(pid, _)| *pid)
+    })
+    .expect("the child should start a process");
+
+    drop(child);
+    let ended = wait_until(|| {
+      system.refresh_processes(ProcessesToUpdate::Some(&[started]), true);
+      system.process(started).is_none().then_some(())
+    });
+    assert!(ended.is_some(), "the process the child started is still running");
+  }
 }

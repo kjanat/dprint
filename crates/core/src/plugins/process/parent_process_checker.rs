@@ -77,6 +77,7 @@ fn is_process_active(process_id: u32) -> bool {
 #[cfg(test)]
 mod test {
   use super::is_process_active;
+  use crate::owned_child::OwnedChild;
   use std::path::PathBuf;
   use std::process::Command;
 
@@ -84,17 +85,18 @@ mod test {
   fn should_tell_when_process_active() {
     let dprint_exe = get_dprint_exe();
     // launch a long running process
-    let mut child = Command::new(dprint_exe)
-      .arg("editor-service")
-      .arg("--parent-pid")
-      .arg(std::process::id().to_string())
-      .spawn()
-      .unwrap();
+    let mut child = OwnedChild::spawn(
+      Command::new(dprint_exe)
+        .arg("editor-service")
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string()),
+    )
+    .unwrap();
 
     let pid = child.id();
     assert_eq!(is_process_active(pid), true);
+    // also waits for it to exit
     child.kill().unwrap();
-    child.wait().unwrap();
     assert_eq!(is_process_active(pid), false);
   }
 

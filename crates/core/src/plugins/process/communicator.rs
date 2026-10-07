@@ -6,7 +6,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Child;
 use std::process::ChildStderr;
 use std::process::Command;
 use std::process::Stdio;
@@ -36,6 +35,7 @@ use crate::communication::SingleThreadMessageWriter;
 use crate::configuration::ConfigKeyMap;
 use crate::configuration::ConfigurationDiagnostic;
 use crate::configuration::GlobalConfiguration;
+use crate::owned_child::OwnedChild;
 use crate::plugins::ConfigChange;
 use crate::plugins::CriticalFormatError;
 use crate::plugins::FILE_MATCHING_INFO_ERROR_MESSAGE;
@@ -137,32 +137,11 @@ struct Context {
   host_format_callbacks: RcIdStore<HostFormatCallback>,
 }
 
-/// Kills the plugin process if it's dropped before the communicator takes
-/// ownership of it, ex. when the caller gives up on a plugin that never
-/// finishes the handshake.
-struct KillChildOnDrop(Option<Child>);
-
-impl KillChildOnDrop {
-  fn child(&mut self) -> &mut Child {
-    self.0.as_mut().unwrap()
-  }
-
-  fn into_inner(mut self) -> Child {
-    self.0.take().unwrap()
-  }
-}
-
-impl Drop for KillChildOnDrop {
-  fn drop(&mut self) {
-    if let Some(child) = &mut self.0 {
-      let _ = child.kill();
-    }
-  }
-}
-
 /// Communicates with a process plugin.
 pub struct ProcessPluginCommunicator {
-  child: RefCell<Option<Child>>,
+  /// The plugin process, which is killed (with any process it started) when
+  /// this is dropped.
+  child: RefCell<Option<OwnedChild>>,
   context: Rc<Context>,
 }
 
@@ -189,22 +168,23 @@ impl ProcessPluginCommunicator {
     }
 
     let shutdown_flag = Arc::new(AtomicFlag::default());
-    let mut child = KillChildOnDrop(Some(
+    // owned from the start, so it's killed if the caller gives up on it
+    // before the handshake finishes (ex. a plugin that never answers)
+    let mut child = OwnedChild::spawn(
       Command::new(executable_file_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|err| CommunicatorError::StartProcess {
-          executable: executable_file_path.display().to_string(),
-          args: args.join(" "),
-          error: err,
-        })?,
-    ));
+        .stdout(Stdio::piped()),
+    )
+    .map_err(|err| CommunicatorError::StartProcess {
+      executable: executable_file_path.display().to_string(),
+      args: args.join(" "),
+      error: err,
+    })?;
 
     // read and output stderr prefixed
-    let stderr = child.child().stderr.take().unwrap();
+    let stderr = child.take_stderr().unwrap();
     crate::async_runtime::spawn_blocking({
       let shutdown_flag = shutdown_flag.clone();
       let on_std_err = on_std_err.clone();
@@ -214,8 +194,8 @@ impl ProcessPluginCommunicator {
     });
 
     // verify the schema version
-    let mut stdout_reader = MessageReader::new(child.child().stdout.take().unwrap());
-    let mut stdin_writer = MessageWriter::new(child.child().stdin.take().unwrap());
+    let mut stdout_reader = MessageReader::new(child.take_stdout().unwrap());
+    let mut stdin_writer = MessageWriter::new(child.take_stdin().unwrap());
 
     let (mut stdout_reader, stdin_writer, schema_version) = crate::async_runtime::spawn_blocking(move || {
       let schema_version = get_plugin_schema_version(&mut stdout_reader, &mut stdin_writer).map_err(CommunicatorError::SchemaVerification)?;
@@ -225,7 +205,7 @@ impl ProcessPluginCommunicator {
 
     if schema_version != PLUGIN_SCHEMA_VERSION {
       // kill the child to prevent it from ouputting to stderr
-      let _ = child.child().kill();
+      let _ = child.kill();
       let err = if schema_version < PLUGIN_SCHEMA_VERSION {
         CommunicatorError::PluginTooOld {
           actual: schema_version,
@@ -293,7 +273,7 @@ impl ProcessPluginCommunicator {
     });
 
     Ok(Self {
-      child: RefCell::new(Some(child.into_inner())),
+      child: RefCell::new(Some(child)),
       context,
     })
   }
@@ -319,6 +299,8 @@ impl ProcessPluginCommunicator {
   pub fn kill(&self) {
     self.context.shutdown_flag.raise();
     if let Some(mut child) = self.child.borrow_mut().take() {
+      // also reaps it, so it doesn't linger as a zombie in a long running
+      // process such as `dprint lsp`
       let _ignore = child.kill();
     }
   }

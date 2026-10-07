@@ -16,6 +16,7 @@ pub use wasm::WASM_CACHE_VERSION;
 pub use wasm::WASM_PLUGIN_THREAD_STACK_SIZE;
 
 pub use wasm::COMPILE_WORKER_ARG as WASM_COMPILE_WORKER_ARG;
+pub use wasm::CompileControl as WasmCompileControl;
 pub use wasm::WasmModuleCreator;
 #[cfg(test)]
 pub use wasm::compile as compile_wasm;

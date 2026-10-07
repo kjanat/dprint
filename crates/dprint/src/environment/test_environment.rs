@@ -883,7 +883,7 @@ impl Environment for TestEnvironment {
     *self.log_level.lock()
   }
 
-  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8]) -> Result<CompilationResult> {
+  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], _control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
     use std::collections::hash_map::Entry;
 
     static COMPILE_RESULTS: Lazy<Mutex<HashMap<u64, CompilationResult>>> = Lazy::new(Default::default);
