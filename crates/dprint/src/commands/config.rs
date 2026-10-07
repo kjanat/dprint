@@ -534,6 +534,21 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
       };
 
       for (config_plugin_reference, config_plugin) in get_config_file_plugins(plugin_resolver, config_plugins.to_vec()).await {
+        // the configuration already has the plugin, served built in
+        if let Ok(config_plugin) = &config_plugin
+          && let Some(built_in) = config_plugin.built_in()
+          && plugin
+            .as_source_reference()
+            .is_ok_and(|reference| (built_in.refers_to_served_plugin)(&reference))
+        {
+          log_warn!(
+            environment,
+            "Skipping {}. The configuration file already has it, served by dprint's built-in {}.",
+            plugin_name_or_url,
+            built_in.name
+          );
+          return Ok(None);
+        }
         if let Ok(config_plugin) = config_plugin
           && let Some(update_url) = &config_plugin.info().update_url
           && let Ok(update_url) = Url::parse(update_url)
@@ -1385,6 +1400,15 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
         }));
       }
     };
+    if let Some(built_in) = plugin.built_in() {
+      log_debug!(
+        environment,
+        "Skipping {}. It's served by dprint's built-in {}, which updates with dprint.",
+        plugin_reference.display(),
+        built_in.name
+      );
+      return None;
+    }
     // a user who pinned a checksum keeps one on the entry that replaces it
     let old_had_checksum = plugin_reference.checksum.is_some();
 
@@ -2043,7 +2067,7 @@ async fn get_config_file_plugin_names<TEnvironment: Environment>(
     .await
     .into_iter()
     .filter_map(|(plugin_reference, plugin_result)| match plugin_result {
-      Ok(plugin) => Some(plugin.info().name.to_string()),
+      Ok(plugin) => Some(plugin.referenced_plugin_name().to_string()),
       Err(err) => {
         log_warn!(environment, "Failed resolving plugin: {}\n\n{:#}", plugin_reference.path_source.display(), err);
         None
@@ -4177,6 +4201,50 @@ mod test {
     run_test_cli(vec!["config", "update"], &environment).unwrap();
     // should be empty because nothing to upgrade
     assert!(environment.take_stderr_messages().is_empty());
+  }
+
+  /// A reference to the exec plugin release that the built-in exec serves.
+  const SERVED_EXEC_REFERENCE: &str = "https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa";
+
+  /// A configuration that references the exec plugin release that the
+  /// built-in exec serves, while a newer release of the exec plugin exists.
+  fn served_exec_environment() -> TestEnvironment {
+    let newer_release = json!({
+      "schemaVersion": 1,
+      "url": "https://plugins.dprint.dev/exec-0.8.0.json",
+      "version": "0.8.0"
+    })
+    .to_string();
+    TestEnvironmentBuilder::new()
+      .with_default_config(|config| {
+        config.add_plugin(SERVED_EXEC_REFERENCE);
+      })
+      .add_remote_file("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json", &newer_release)
+      .add_remote_file("https://plugins.dprint.dev/dprint/exec/latest.json", &newer_release)
+      .build()
+  }
+
+  #[test]
+  fn config_update_leaves_a_reference_served_built_in() {
+    // the built-in exec is updated by upgrading dprint, not by moving the
+    // reference to another release of the exec plugin
+    let environment = served_exec_environment();
+    let config_text = environment.read_file("/dprint.json").unwrap();
+    run_test_cli(vec!["config", "update"], &environment).unwrap();
+    assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
+    assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
+  }
+
+  #[test]
+  fn config_add_leaves_a_plugin_served_built_in() {
+    let environment = served_exec_environment();
+    let config_text = environment.read_file("/dprint.json").unwrap();
+    run_test_cli(vec!["config", "add", "exec"], &environment).unwrap();
+    assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
+    assert_eq!(
+      environment.take_stderr_messages(),
+      vec!["Skipping exec. The configuration file already has it, served by dprint's built-in exec."]
+    );
   }
 
   #[test]

@@ -20,6 +20,7 @@ pub use resolution_cache::PluginResolutionCache;
 pub use resolver::*;
 pub use types::*;
 
+pub use implementations::EXEC_COMMANDS_RELEASE;
 pub use implementations::WASM_COMPILE_WORKER_ARG;
 pub use implementations::WASM_PLUGIN_THREAD_STACK_SIZE;
 pub use implementations::WasmCompileControl;

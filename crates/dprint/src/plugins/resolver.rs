@@ -14,10 +14,12 @@ use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
 use crate::environment::Environment;
+use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginResolutionCache;
 use crate::plugins::PluginSourceReference;
+use crate::plugins::referenced_plugin_name;
 use crate::utils::AsyncCell;
 
 pub struct PluginWrapper {
@@ -39,6 +41,17 @@ impl PluginWrapper {
 
   pub fn is_process_plugin(&self) -> bool {
     self.plugin.is_process_plugin()
+  }
+
+  /// Set when the plugin is a formatter built into dprint.
+  pub fn built_in(&self) -> Option<&'static BuiltInFormatter> {
+    self.plugin.built_in()
+  }
+
+  /// Name of the plugin a configuration file refers to for this one (see
+  /// [`referenced_plugin_name`]).
+  pub fn referenced_plugin_name(&self) -> &str {
+    referenced_plugin_name(self.plugin.as_ref())
   }
 
   /// The schema of the plugin's configuration when it's built into dprint.

@@ -14,7 +14,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
   </div>
 </div>
 
-The CLI has version 0.7.3 of this plugin built in. When a config references that version (ex. `npm:@dprint/exec@0.7.3/plugin.json` or `https://plugins.dprint.dev/exec-0.7.3.json`), the CLI runs it in its own process rather than downloading it, so it works on every platform the CLI does (ex. FreeBSD). A reference to another version, or to none in particular (ex. `npm:@dprint/exec` resolved from `node_modules`), gets the plugin it asks for, downloaded and run as a separate process like before. So does a reference with a checksum other than 0.7.3's (of its npm package for an `npm:` reference, or of its `plugin.json` for a url), which then fails the checksum check like any plugin, so a checksum keeps pinning what it pins. To run the separate plugin process for 0.7.3 too, set `DPRINT_BUILTIN_EXEC=0`.
+The CLI has exec built in. When a config references version 0.7.3 of this plugin (ex. `npm:@dprint/exec@0.7.3/plugin.json` or `https://plugins.dprint.dev/exec-0.7.3.json`), the CLI formats with its built-in exec rather than downloading the plugin, so it works on every platform the CLI does (ex. FreeBSD). A reference to another version, or to none in particular (ex. `npm:@dprint/exec` resolved from `node_modules`), gets the plugin it asks for, downloaded and run as a separate process like before. So does a reference with a checksum other than 0.7.3's (of its npm package for an `npm:` reference, or of its `plugin.json` for a url), which then fails the checksum check like any plugin, so a checksum keeps pinning what it pins. To run the separate plugin process for 0.7.3 too, set `DPRINT_BUILTIN_EXEC=0`.
 
 Compared to the downloaded plugin, the built-in one:
 
@@ -25,6 +25,8 @@ Compared to the downloaded plugin, the built-in one:
 - On Windows, finds commands through the `PATHEXT` extensions like the Windows shell does, so `.cmd` and `.bat` commands (ex. ones installed with `npm install -g`) work.
 - Passes `{{file_path}}`, `{{line_width}}`, `{{use_tabs}}`, `{{indent_width}}`, `{{cwd}}` and `{{timeout}}` to commands as they are, where the plugin escaped them for HTML (ex. a `&` in a file path became `&amp;`). They may also be written `{{ file_path }}` or `{{{file_path}}}`, and `\{{` is a literal `{{`. Anything else in `{{` and `}}` (ex. `{{filePath}}`) is reported as a configuration error, rather than failing each file.
 - Has its configuration schema built in, so [`dprint schema`](/config#schema) and the language server describe all of the options above without downloading it.
+
+The built-in exec is part of the CLI, not a release of this plugin. It's named `exec` (ex. in `dprint help` and in configuration diagnostics), has the CLI's version, and is updated by upgrading the CLI: `dprint config update` and `dprint add exec` leave a reference it serves as it is. When an upgrade changes how it formats a file, the incremental cache forgets the files it formatted, and only then.
 
 ### Commands in remote configuration
 

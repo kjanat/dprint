@@ -134,8 +134,19 @@ impl PluginWithConfig {
     use std::hash::Hash;
     // list everything in here that would affect formatting, with the strings'
     // `Hash`, which ends them, so where one ends is part of the hash
-    self.info().name.hash(hasher);
-    self.info().version.hash(hasher);
+    match self.plugin.built_in() {
+      // released with dprint, so its cache revision says how it formats, not
+      // dprint's version (which changes for unrelated reasons)
+      Some(built_in) => {
+        "dprint built-in".hash(hasher);
+        built_in.name.hash(hasher);
+        built_in.cache_revision.hash(hasher);
+      }
+      None => {
+        self.info().name.hash(hasher);
+        self.info().version.hash(hasher);
+      }
+    }
 
     // serialize the config keys in order to prevent the hash from changing
     let sorted_config = self.format_config.plugin.iter().collect::<BTreeMap<_, _>>();
@@ -1177,14 +1188,19 @@ async fn resolve_plugin_config<TEnvironment: Environment>(
 /// The same plugin may end up specified more than once with different sources
 /// (ex. a config pinning a newer version of a plugin that the config it extends
 /// also specifies). Plugins are ordered by descending precedence, so the first
-/// entry for a name wins.
+/// entry for a name wins. A built-in counts as the plugin it serves references
+/// to, so one exec reference served built in and another run as the process
+/// plugin are still the same plugin.
 ///
 /// This can't be done when resolving the configuration because a plugin's name
 /// is only known once it has been resolved.
 fn filter_duplicate_plugin_names(plugins: Vec<Rc<PluginWrapper>>) -> Vec<Rc<PluginWrapper>> {
   let mut names = HashSet::with_capacity(plugins.len());
 
-  plugins.into_iter().filter(|plugin| names.insert(plugin.info().name.clone())).collect()
+  plugins
+    .into_iter()
+    .filter(|plugin| names.insert(plugin.referenced_plugin_name().to_string()))
+    .collect()
 }
 
 /// `property_origins` are where the plugin's properties are from, when that's
@@ -1234,6 +1250,83 @@ mod test {
   use crate::plugins::TestPlugin;
 
   use super::*;
+
+  fn plugin_with_config(plugin: TestPlugin) -> PluginWithConfig {
+    PluginWithConfig::new(
+      Rc::new(PluginWrapper::new(Box::new(plugin))),
+      PluginWithConfigOptions {
+        property_origins: Default::default(),
+        associations: None,
+        format_config: Arc::new(FormatConfig {
+          id: FormatConfigId::from_raw(1),
+          global: Default::default(),
+          plugin: Default::default(),
+        }),
+        file_matching: FileMatchingInfo {
+          file_extensions: vec!["txt".to_string()],
+          file_names: vec![],
+          additive: false,
+        },
+        overrides: Vec::new(),
+        serialized_resolved_config: "{}".to_string(),
+      },
+    )
+  }
+
+  fn refers_to_nothing(_reference: &crate::plugins::PluginSourceReference) -> bool {
+    false
+  }
+
+  static BUILT_IN: crate::plugins::BuiltInFormatter = crate::plugins::BuiltInFormatter {
+    name: "built-in",
+    cache_revision: 1,
+    serves_plugin: "dprint-plugin-built-in",
+    refers_to_served_plugin: refers_to_nothing,
+  };
+  static BUILT_IN_REVISED: crate::plugins::BuiltInFormatter = crate::plugins::BuiltInFormatter { cache_revision: 2, ..BUILT_IN };
+
+  #[test]
+  fn incremental_hash_of_a_built_in_is_its_cache_revision_not_its_version() {
+    let hash = |plugin: TestPlugin| get_plugin_hash(&plugin_with_config(plugin));
+    let built_in = |built_in, version| {
+      TestPlugin::new("built-in", "built-in", vec!["txt"], vec![])
+        .built_in(built_in)
+        .with_version(version)
+    };
+    // released with dprint, so its version is dprint's, which changes for
+    // reasons that have nothing to do with how it formats
+    assert_eq!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN, "0.59.0")));
+    // its cache revision changes when it formats differently
+    assert_ne!(hash(built_in(&BUILT_IN, "0.58.0")), hash(built_in(&BUILT_IN_REVISED, "0.58.0")));
+    // a loaded plugin is still identified by its name and version
+    let loaded = |version| TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).with_version(version);
+    assert_ne!(hash(loaded("1.0.0")), hash(loaded("1.0.1")));
+    assert_ne!(hash(loaded("1.0.0")), hash(built_in(&BUILT_IN, "1.0.0")));
+  }
+
+  #[test]
+  fn a_built_in_is_the_same_plugin_as_the_one_it_serves() {
+    let plugins = vec![
+      Rc::new(PluginWrapper::new(Box::new(
+        TestPlugin::new("built-in", "built-in", vec!["txt"], vec![]).built_in(&BUILT_IN),
+      ))),
+      // the external plugin it serves, ex. a release it doesn't serve
+      // referenced by a configuration file it extends
+      Rc::new(PluginWrapper::new(Box::new(TestPlugin::new(
+        "dprint-plugin-built-in",
+        "built-in",
+        vec!["txt"],
+        vec![],
+      )))),
+      Rc::new(PluginWrapper::new(Box::new(TestPlugin::new("other", "other", vec!["md"], vec![])))),
+    ];
+    let names = filter_duplicate_plugin_names(plugins)
+      .iter()
+      .map(|plugin| plugin.info().name.clone())
+      .collect::<Vec<_>>();
+    // the first one has precedence
+    assert_eq!(names, vec!["built-in", "other"]);
+  }
 
   // a plugin can derive values at resolution time that aren't present in the
   // raw config map (ex. the exec plugin folds the contents of `cacheKeyFiles`
