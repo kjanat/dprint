@@ -1,13 +1,8 @@
 use dprint_core::configuration::ConfigKeyMap;
-use dprint_core::configuration::ConfigKeyValue;
 use dprint_core::configuration::ConfigurationDiagnostic;
 use dprint_core::configuration::GlobalConfiguration;
 use dprint_core::configuration::RECOMMENDED_GLOBAL_CONFIGURATION;
 use dprint_core::configuration::ResolveConfigurationResult;
-use dprint_core::configuration::get_nullable_value;
-use dprint_core::configuration::get_nullable_vec;
-use dprint_core::configuration::get_unknown_property_diagnostics;
-use dprint_core::configuration::get_value;
 use globset::GlobMatcher;
 use serde::Serialize;
 use serde::Serializer;
@@ -17,6 +12,12 @@ use std::fs::read_to_string;
 use std::path::Path;
 use std::path::PathBuf;
 
+use super::input::Associations;
+use super::input::ExecCommandInput;
+use super::input::ExecConfigInput;
+use super::input::default_setup_timeout;
+use super::input::default_stdin;
+use super::input::default_timeout;
 use super::template::validate_template;
 
 #[derive(Clone, Serialize)]
@@ -89,75 +90,71 @@ fn serialize_glob<S: Serializer>(value: &Option<GlobMatcher>, s: S) -> Result<S:
 }
 
 impl Configuration {
-  /// Resolves configuration from a collection of key value strings.
+  /// Resolves the plugin's configuration: the values are read as what the
+  /// configuration may hold (see [`ExecConfigInput`], which is also what its
+  /// schema describes), and that is resolved to what formatting runs with.
+  /// A value that isn't what it may be is a diagnostic saying where, and
+  /// nothing more is resolved from it.
   pub fn resolve(config: ConfigKeyMap, global_config: &GlobalConfiguration) -> ResolveConfigurationResult<Configuration> {
-    let mut diagnostics = vec![];
-    let mut config = config;
+    let (input, mut diagnostics) = match dprint_config_model::from_values::<ExecConfigInput>(config) {
+      Ok(input) => (input, Vec::new()),
+      Err(err) => (
+        ExecConfigInput {
+          commands: Some(Vec::new()),
+          ..Default::default()
+        },
+        vec![ConfigurationDiagnostic {
+          property_name: err.path,
+          message: err.message,
+        }],
+      ),
+    };
 
     let mut resolved_config = Configuration {
       is_valid: true,
       cache_key: "0".to_string(),
-      line_width: get_value(
-        &mut config,
-        "lineWidth",
-        global_config.line_width.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.line_width),
-        &mut diagnostics,
-      ),
-      use_tabs: get_value(
-        &mut config,
-        "useTabs",
-        global_config.use_tabs.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.use_tabs),
-        &mut diagnostics,
-      ),
-      indent_width: get_value(
-        &mut config,
-        "indentWidth",
-        global_config.indent_width.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.indent_width),
-        &mut diagnostics,
-      ),
+      line_width: input
+        .line_width
+        .unwrap_or(global_config.line_width.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.line_width)),
+      use_tabs: input
+        .use_tabs
+        .unwrap_or(global_config.use_tabs.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.use_tabs)),
+      indent_width: input
+        .indent_width
+        .unwrap_or(global_config.indent_width.unwrap_or(RECOMMENDED_GLOBAL_CONFIGURATION.indent_width)),
       commands: Vec::new(),
-      timeout: get_value(&mut config, "timeout", 30, &mut diagnostics),
-      // setup commands often install a tool, which can take a while
-      setup_timeout: get_value(&mut config, "setupTimeout", 300, &mut diagnostics),
+      timeout: input.timeout.unwrap_or_else(default_timeout),
+      setup_timeout: input.setup_timeout.unwrap_or_else(default_setup_timeout),
     };
 
-    let root_cache_key = get_nullable_value::<String>(&mut config, "cacheKey", &mut diagnostics);
+    let names = ExecConfigInput::property_names();
     let mut cache_key_file_hashes = Vec::new();
-
-    let root_cwd = get_nullable_value(&mut config, "cwd", &mut diagnostics);
-
-    if let Some(commands) = config.swap_remove("commands").and_then(|c| c.into_array()) {
-      for (i, element) in commands.into_iter().enumerate() {
-        let Some(command_obj) = element.into_object() else {
-          diagnostics.push(ConfigurationDiagnostic {
-            property_name: "commands".to_string(),
-            message: "Expected to find only objects in the array.".to_string(),
-          });
-          continue;
-        };
-        let result = parse_command_obj(command_obj, root_cwd.as_ref());
-        diagnostics.extend(result.1.into_iter().map(|mut diagnostic| {
-          diagnostic.property_name = format!("commands[{}].{}", i, diagnostic.property_name);
-          diagnostic
-        }));
-        if let Some(mut command_config) = result.0 {
-          if let Some(cache_key_files_hash) = command_config.cache_key_files_hash.take() {
-            cache_key_file_hashes.push(cache_key_files_hash);
+    match input.commands {
+      Some(commands) => {
+        for (i, command) in commands.into_iter().enumerate() {
+          let (command_config, command_diagnostics) = resolve_command(command, input.cwd.as_deref());
+          diagnostics.extend(command_diagnostics.into_iter().map(|mut diagnostic| {
+            diagnostic.property_name = format!("{}[{}].{}", names.commands, i, diagnostic.property_name);
+            diagnostic
+          }));
+          if let Some(mut command_config) = command_config {
+            if let Some(cache_key_files_hash) = command_config.cache_key_files_hash.take() {
+              cache_key_file_hashes.push(cache_key_files_hash);
+            }
+            resolved_config.commands.push(command_config);
           }
-
-          resolved_config.commands.push(command_config);
         }
       }
-    } else {
-      diagnostics.push(ConfigurationDiagnostic {
-        property_name: "commands".to_string(),
-        message: "Expected to find a \"commands\" array property (see https://github.com/dprint/dprint-plugin-exec for instructions)".to_string(),
-      });
+      None => diagnostics.push(ConfigurationDiagnostic {
+        property_name: names.commands.clone(),
+        message: format!(
+          "Expected to find a \"{}\" array property (see https://github.com/dprint/dprint-plugin-exec for instructions)",
+          names.commands
+        ),
+      }),
     }
 
-    diagnostics.extend(get_unknown_property_diagnostics(config));
-
-    if let Some(cache_key) = compute_cache_key(root_cache_key, &cache_key_file_hashes) {
+    if let Some(cache_key) = compute_cache_key(input.cache_key, &cache_key_file_hashes) {
       resolved_config.cache_key = cache_key;
     }
 
@@ -170,49 +167,37 @@ impl Configuration {
   }
 }
 
-fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
+/// Resolves one command. A diagnostic's property is the command's.
+fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
+  let names = ExecCommandInput::property_names();
   let mut diagnostics = Vec::new();
-  let mut command = split_command(&get_value(&mut command_obj, "command", String::default(), &mut diagnostics));
-  if command.is_empty() {
+  let mut parts = split_command(&command.command);
+  if parts.is_empty() {
     diagnostics.push(ConfigurationDiagnostic {
-      property_name: "command".to_string(),
+      property_name: names.command.clone(),
       message: "Expected to find a command name.".to_string(),
     });
     return (None, diagnostics);
   }
 
-  for arg in command.iter().skip(1) {
+  for arg in parts.iter().skip(1) {
     if let Err(err) = validate_template(arg) {
       diagnostics.push(ConfigurationDiagnostic {
-        property_name: "command".to_string(),
+        property_name: names.command.clone(),
         message: format!("Invalid template in argument '{}': {}", arg, err),
       });
     }
   }
 
-  let cwd = get_cwd(get_nullable_value(&mut command_obj, "cwd", &mut diagnostics).or_else(|| root_cwd.map(ToOwned::to_owned)));
+  let cwd = get_cwd(command.cwd.or_else(|| root_cwd.map(ToOwned::to_owned)));
 
-  let cache_key_files = get_nullable_vec(
-    &mut command_obj,
-    "cacheKeyFiles",
-    |value, i, diagnostics| match value {
-      ConfigKeyValue::String(value) => Some(cwd.join(value)),
-      _ => {
-        diagnostics.push(ConfigurationDiagnostic {
-          property_name: format!("cacheKeyFiles[{}]", i),
-          message: "Expected string element.".to_string(),
-        });
-        None
-      }
-    },
-    &mut diagnostics,
-  );
-
-  // compute the hash separately from the config read so we don't do the disk ops if the config is invalid.
-  let cache_key_files_hash = {
-    if let Some(cache_key_files) = cache_key_files {
+  // computed here rather than when formatting so an unreadable file is a
+  // configuration diagnostic
+  let cache_key_files_hash = match command.cache_key_files {
+    Some(cache_key_files) => {
       let mut hasher = Sha256::new();
       for file in cache_key_files {
+        let file = cwd.join(file);
         // plugin config resolution has no environment to read files with,
         // so this reads them directly like the exec process plugin does
         #[allow(clippy::disallowed_methods)]
@@ -220,7 +205,7 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
           Ok(contents) => contents,
           Err(err) => {
             diagnostics.push(ConfigurationDiagnostic {
-              property_name: "cacheKeyFiles".to_string(),
+              property_name: names.cache_key_files.clone(),
               message: format!("Unable to read file '{}': {}.", file.display(), err),
             });
             return (None, diagnostics);
@@ -229,80 +214,67 @@ fn parse_command_obj(mut command_obj: ConfigKeyMap, root_cwd: Option<&String>) -
         hasher.update(contents);
       }
       Some(format!("{:x}", hasher.finalize()))
-    } else {
-      None
     }
+    None => None,
   };
 
-  let setup_command = parse_setup_command(&mut command_obj, &mut diagnostics);
+  let setup_command = command.setup_command.and_then(|raw| resolve_setup_command(&raw, &mut diagnostics));
+
+  let associations = match command.associations {
+    None => None,
+    Some(Associations::One(glob)) => Some(glob),
+    Some(Associations::Many(mut globs)) => match globs.len() {
+      0 => None,
+      1 => globs.pop(),
+      _ => {
+        diagnostics.push(ConfigurationDiagnostic {
+          property_name: names.associations.clone(),
+          message: "Unfortunately multiple globs haven't been implemented yet. Please provide a single glob or consider contributing this feature.".to_string(),
+        });
+        None
+      }
+    },
+  };
+  let associations = associations.and_then(|glob| {
+    let mut builder = globset::GlobBuilder::new(&glob);
+    builder.case_insensitive(cfg!(windows));
+    match builder.build() {
+      Ok(glob) => Some(glob.compile_matcher()),
+      Err(err) => {
+        diagnostics.push(ConfigurationDiagnostic {
+          message: format!("Error parsing associations glob: {:#}", err),
+          property_name: names.associations.clone(),
+        });
+        None
+      }
+    }
+  });
 
   let config = CommandConfiguration {
-    executable: command.remove(0),
-    args: command,
+    executable: parts.remove(0),
+    args: parts,
     setup_command,
-    associations: {
-      let maybe_value = command_obj.swap_remove("associations").and_then(|value| match value {
-        ConfigKeyValue::String(value) => Some(value),
-        ConfigKeyValue::Array(mut value) => match value.len() {
-          0 => None,
-          1 => match value.remove(0) {
-            ConfigKeyValue::String(value) => Some(value),
-            _ => {
-              diagnostics.push(ConfigurationDiagnostic {
-                property_name: "associations".to_string(),
-                message: "Expected string value in array.".to_string(),
-              });
-              None
-            }
-          },
-          _ => {
-            diagnostics.push(ConfigurationDiagnostic {
-              property_name: "associations".to_string(),
-              message: "Unfortunately multiple globs haven't been implemented yet. Please provide a single glob or consider contributing this feature."
-                .to_string(),
-            });
-            None
-          }
-        },
-        _ => {
-          diagnostics.push(ConfigurationDiagnostic {
-            property_name: "associations".to_string(),
-            message: "Expected string or array value.".to_string(),
-          });
-          None
-        }
-      });
-
-      maybe_value.and_then(|value| {
-        let mut builder = globset::GlobBuilder::new(&value);
-        builder.case_insensitive(cfg!(windows));
-        match builder.build() {
-          Ok(glob) => Some(glob.compile_matcher()),
-          Err(err) => {
-            diagnostics.push(ConfigurationDiagnostic {
-              message: format!("Error parsing associations glob: {:#}", err),
-              property_name: "associations".to_string(),
-            });
-            None
-          }
-        }
-      })
-    },
+    associations,
     cwd,
-    stdin: get_value(&mut command_obj, "stdin", true, &mut diagnostics),
-    file_extensions: take_string_or_string_vec(&mut command_obj, "exts", &mut diagnostics)
+    stdin: command.stdin.unwrap_or_else(default_stdin),
+    file_extensions: command
+      .exts
+      .map(Vec::from)
+      .unwrap_or_default()
       .into_iter()
       .map(|ext| if ext.starts_with('.') { ext } else { format!(".{}", ext) })
-      .collect::<Vec<_>>(),
-    file_names: take_string_or_string_vec(&mut command_obj, "fileNames", &mut diagnostics),
+      .collect(),
+    file_names: command.file_names.map(Vec::from).unwrap_or_default(),
     cache_key_files_hash,
   };
-  diagnostics.extend(get_unknown_property_diagnostics(command_obj));
 
   if diagnostics.is_empty() && config.file_names.is_empty() && config.file_extensions.is_empty() && config.associations.is_none() {
     diagnostics.push(ConfigurationDiagnostic {
-      property_name: "exts".to_string(),
-      message: "You must specify either: exts (recommended), fileNames, or associations".to_string(),
+      property_name: names.exts.clone(),
+      message: format!(
+        "You must specify either: {} (recommended), {}, or {}",
+        names.exts, names.file_names, names.associations
+      ),
     })
   }
 
@@ -350,9 +322,8 @@ fn split_first_part(text: &str) -> (&str, &str) {
   }
 }
 
-fn parse_setup_command(command_obj: &mut ConfigKeyMap, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
-  let raw = get_nullable_value::<String>(command_obj, "setupCommand", diagnostics)?;
-  let mut parts = split_command(&raw);
+fn resolve_setup_command(raw: &str, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
+  let mut parts = split_command(raw);
   if parts.is_empty() {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: "setupCommand".to_string(),
@@ -364,37 +335,6 @@ fn parse_setup_command(command_obj: &mut ConfigKeyMap, diagnostics: &mut Vec<Con
     executable: parts.remove(0),
     args: parts,
   })
-}
-
-fn take_string_or_string_vec(command_obj: &mut ConfigKeyMap, key: &str, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Vec<String> {
-  command_obj
-    .swap_remove(key)
-    .map(|values| match values {
-      ConfigKeyValue::String(value) => vec![value],
-      ConfigKeyValue::Array(elements) => {
-        let mut values = Vec::with_capacity(elements.len());
-        for (i, element) in elements.into_iter().enumerate() {
-          match element {
-            ConfigKeyValue::String(value) => {
-              values.push(value);
-            }
-            _ => diagnostics.push(ConfigurationDiagnostic {
-              property_name: format!("{}[{}]", key, i),
-              message: "Expected string element.".to_string(),
-            }),
-          }
-        }
-        values
-      }
-      _ => {
-        diagnostics.push(ConfigurationDiagnostic {
-          property_name: key.to_string(),
-          message: "Expected string or array value.".to_string(),
-        });
-        vec![]
-      }
-    })
-    .unwrap_or_default()
 }
 
 // commands run in the process' cwd by default, like in the exec process plugin
@@ -541,33 +481,41 @@ mod tests {
       }],
     );
 
-    let unresolved_config = parse_config(json!({
-      "commands": [{
-        "command": "command",
-        "associations": [true]
-      }],
-    }));
-    run_diagnostics_test(
-      unresolved_config,
-      vec![ConfigurationDiagnostic {
-        property_name: "commands[0].associations".to_string(),
-        message: "Expected string value in array.".to_string(),
-      }],
-    );
+    // what the value may be is the input's to say (see `input.rs`)
+    for associations in [json!([true]), json!(true)] {
+      let unresolved_config = parse_config(json!({
+        "commands": [{
+          "command": "command",
+          "associations": associations
+        }],
+      }));
+      run_diagnostics_test(
+        unresolved_config,
+        vec![ConfigurationDiagnostic {
+          property_name: "commands[0].associations".to_string(),
+          message: "Expected a glob or an array with one glob.".to_string(),
+        }],
+      );
+    }
+  }
 
-    let unresolved_config = parse_config(json!({
-      "commands": [{
-        "command": "command",
-        "associations": true
-      }],
-    }));
-    run_diagnostics_test(
-      unresolved_config,
-      vec![ConfigurationDiagnostic {
-        property_name: "commands[0].associations".to_string(),
-        message: "Expected string or array value.".to_string(),
-      }],
+  #[test]
+  fn a_value_that_isnt_what_it_may_be_is_one_diagnostic_saying_where() {
+    // nothing else is resolved from it, so the rest is the defaults
+    let result = Configuration::resolve(
+      parse_config(json!({ "timeout": 5, "commands": [{ "command": "fmt", "exts": ["txt"], "cwd": 1 }] })),
+      &Default::default(),
     );
+    assert_eq!(
+      result.diagnostics,
+      vec![ConfigurationDiagnostic {
+        property_name: "commands[0].cwd".to_string(),
+        message: "invalid type: integer `1`, expected a string".to_string(),
+      }]
+    );
+    assert!(!result.config.is_valid);
+    assert_eq!(result.config.timeout, 30);
+    assert_eq!(result.config.commands.len(), 0);
   }
 
   #[test]

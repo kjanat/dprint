@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::bail;
 use once_cell::sync::Lazy;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
@@ -145,6 +146,14 @@ pub struct TestEnvironment {
   remote_file_redirects: Arc<Mutex<HashMap<String, String>>>,
   /// Last auth header seen for each URL.
   remote_file_auth: Arc<Mutex<HashMap<String, Option<String>>>>,
+  /// How long each URL takes to respond, or `None` when it never does.
+  remote_file_delays: Arc<Mutex<HashMap<String, Option<std::time::Duration>>>>,
+  /// How many times each URL was downloaded.
+  remote_file_downloads: Arc<Mutex<HashMap<String, usize>>>,
+  /// Paths that can't be renamed to, which an atomic write does.
+  failing_rename_targets: Arc<Mutex<Vec<PathBuf>>>,
+  /// The deadline of each wasm plugin compile.
+  wasm_compile_deadlines: Arc<Mutex<Vec<Option<std::time::Instant>>>>,
   selection_result: Arc<Mutex<usize>>,
   multi_selection_result: Arc<Mutex<Option<Vec<usize>>>>,
   /// The items of the last multi-selection prompt, rendered for assertions.
@@ -195,6 +204,10 @@ impl TestEnvironment {
       remote_files: Default::default(),
       remote_file_redirects: Default::default(),
       remote_file_auth: Default::default(),
+      remote_file_delays: Default::default(),
+      remote_file_downloads: Default::default(),
+      failing_rename_targets: Default::default(),
+      wasm_compile_deadlines: Default::default(),
       selection_result: Arc::new(Mutex::new(0)),
       multi_selection_result: Arc::new(Mutex::new(None)),
       multi_selection_items: Default::default(),
@@ -278,6 +291,40 @@ impl TestEnvironment {
       Some(Err(err)) => Err(anyhow!("{:#}", err)),
       None => Ok(None),
     }
+  }
+
+  /// Makes the url take the time to respond, or never respond when it's
+  /// `None`. Like a real download, it gives up at the deadline it's
+  /// downloaded under (see `run_before_deadline`).
+  pub fn delay_remote_file(&self, url: &str, delay: Option<std::time::Duration>) {
+    self.remote_file_delays.lock().insert(url.to_string(), delay);
+  }
+
+  /// How many times the url was downloaded.
+  pub fn remote_file_download_count(&self, url: &str) -> usize {
+    self.remote_file_downloads.lock().get(url).copied().unwrap_or(0)
+  }
+
+  /// The deadline of each wasm plugin compile since this was last called.
+  pub fn take_wasm_compile_deadlines(&self) -> Vec<Option<std::time::Instant>> {
+    self.wasm_compile_deadlines.lock().drain(..).collect()
+  }
+
+  /// Makes renaming a file to the path fail, which is the last step of an
+  /// atomic write.
+  pub fn fail_renames_to(&self, path: impl AsRef<Path>) {
+    let path = self.clean_path(path);
+    self.failing_rename_targets.lock().push(path);
+  }
+
+  fn check_rename_target(&self, path: &Path) -> io::Result<()> {
+    if self.failing_rename_targets.lock().iter().any(|target| target == path) {
+      return Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("Error renaming to '{}': permission denied", path.display()),
+      ));
+    }
+    Ok(())
   }
 
   pub fn add_remote_file_redirect(&self, from: &str, to: &str) {
@@ -509,6 +556,7 @@ impl BaseFsRemoveFile for TestEnvironment {
 
 impl BaseFsRename for TestEnvironment {
   fn base_fs_rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+    self.check_rename_target(&self.clean_path(to))?;
     (*self.sys).base_fs_rename(from, to)
   }
 }
@@ -539,8 +587,27 @@ impl SystemTimeNow for TestEnvironment {
 
 #[async_trait(?Send)]
 impl UrlDownloader for TestEnvironment {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>) -> Result<Option<DownloadedFile>> {
+  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     self.remote_file_auth.lock().insert(url.to_string(), auth.map(|s| s.to_string()));
+    *self.remote_file_downloads.lock().entry(url.to_string()).or_default() += 1;
+
+    let delay = self.remote_file_delays.lock().get(url.as_str()).copied();
+    if let Some(delay) = delay {
+      let response = async {
+        match delay {
+          Some(delay) => tokio::time::sleep(delay).await,
+          None => std::future::pending().await,
+        }
+      };
+      match crate::utils::current_deadline() {
+        Some(deadline) => {
+          if tokio::time::timeout_at(deadline.into(), response).await.is_err() {
+            bail!("Error downloading {} - Timed out.", url);
+          }
+        }
+        None => response.await,
+      }
+    }
 
     // check for a redirect first
     let redirects = self.remote_file_redirects.lock();
@@ -552,7 +619,16 @@ impl UrlDownloader for TestEnvironment {
     }
     drop(redirects);
 
-    Ok(self.get_remote_file(url.as_str())?.map(|content| DownloadedFile {
+    let Some(content) = self.get_remote_file(url.as_str())? else {
+      return Ok(None);
+    };
+    // the real downloader refuses it by its length, before reading it
+    if let Some(max_len) = max_len
+      && content.len() > max_len
+    {
+      return Err(super::response_too_large_error(url, Some(content.len()), max_len));
+    }
+    Ok(Some(DownloadedFile {
       headers: Default::default(),
       content,
     }))
@@ -599,6 +675,7 @@ impl Environment for TestEnvironment {
   fn rename(&self, path_from: impl AsRef<Path>, path_to: impl AsRef<Path>) -> io::Result<()> {
     let path_from = self.clean_path(path_from);
     let path_to = self.clean_path(path_to);
+    self.check_rename_target(&path_to)?;
     self.sys.fs_rename(&path_from, &path_to)
   }
 
@@ -883,7 +960,8 @@ impl Environment for TestEnvironment {
     *self.log_level.lock()
   }
 
-  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], _control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+    self.wasm_compile_deadlines.lock().push(control.deadline());
     use std::collections::hash_map::Entry;
 
     static COMPILE_RESULTS: Lazy<Mutex<HashMap<u64, CompilationResult>>> = Lazy::new(Default::default);

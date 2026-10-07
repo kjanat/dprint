@@ -11,11 +11,13 @@
 //! decides what a command with a relative path runs, local commands included,
 //! so it's only used with `"playWithFire": true`.
 //!
-//! This is written for the exec plugin's 0.7.3 configuration, so it fails
-//! closed: of the other remote exec properties, at the root or in an override,
-//! only the ones 0.7.3 has that don't decide what runs are used without
-//! `"playWithFire": true` (any others might, ex. ones a later version adds),
-//! and a remote command with properties 0.7.3 doesn't have only runs with it.
+//! This is written for the exec plugin's 0.7.3 configuration (the built-in
+//! exec's, see `ExecConfigInput`, which is where its properties are spelled),
+//! so it fails closed: of the other remote exec properties, at the root or in
+//! an override, only the ones 0.7.3 has that don't decide what runs are used
+//! without `"playWithFire": true` (any others might, ex. ones a later version
+//! adds), and a remote command that isn't one 0.7.3 reads (ex. with a
+//! property it doesn't have) only runs with it.
 //! Nor does remote configuration set how long a command may run (`timeout`,
 //! `setupTimeout`) without it: a remote command runs within the local
 //! configuration's limits.
@@ -46,7 +48,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use anyhow::bail;
+use anyhow::anyhow;
+use dprint_config_model::ValueError;
+use dprint_config_model::from_value;
 use dprint_core::configuration::ConfigKeyValue;
 use indexmap::IndexMap;
 
@@ -60,25 +64,36 @@ use super::config_settings::merge_config_map_into;
 use crate::environment::Environment;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::exec_command_program;
+use crate::plugins::exec_input::ExecCommandInput;
+use crate::plugins::exec_input::ExecCommandPropertyNames;
+use crate::plugins::exec_input::ExecConfigInput;
+use crate::plugins::exec_input::ExecPropertyNames;
+use crate::plugins::exec_input::PlayWithFire;
 use crate::plugins::is_builtin_exec_reference;
 use crate::plugins::is_exec_plugin_reference;
 use crate::plugins::knows_exec_plugin_commands;
 use crate::utils::PathSource;
 
 const EXEC_CONFIG_KEY: &str = "exec";
-const COMMANDS_KEY: &str = "commands";
-const PLAY_WITH_FIRE_KEY: &str = "playWithFire";
-const CWD_KEY: &str = "cwd";
-const CACHE_KEY_FILES_KEY: &str = "cacheKeyFiles";
-/// The exec plugin 0.7.3 properties that neither decide what runs nor for how
-/// long, which remote configuration may specify without `"playWithFire": true`.
-const UNRESTRICTED_KEYS: &[&str] = &["lineWidth", "indentWidth", "useTabs", "cacheKey"];
-/// The exec plugin 0.7.3 properties that set how long a command may run (in
-/// seconds): a remote command runs within the local configuration's limits,
-/// so remote configuration only sets them with `"playWithFire": true`.
-const TIME_LIMIT_KEYS: &[&str] = &["timeout", "setupTimeout"];
-/// The properties of an exec plugin 0.7.3 command.
-const COMMAND_KEYS: &[&str] = &["command", "exts", "fileNames", "associations", "stdin", "cwd", "cacheKeyFiles", "setupCommand"];
+
+/// The exec plugin 0.7.3's properties, as a configuration spells them: the
+/// type the built-in exec reads its configuration as is where they're
+/// spelled, and this policy goes by them.
+fn names() -> &'static ExecPropertyNames {
+  ExecConfigInput::property_names()
+}
+
+/// The properties of an exec plugin 0.7.3 command, likewise.
+fn command_names() -> &'static ExecCommandPropertyNames {
+  ExecCommandInput::property_names()
+}
+
+/// Whether an exec property sets how long a command may run (in seconds): a
+/// remote command runs within the local configuration's limits, so remote
+/// configuration only sets them with `"playWithFire": true`.
+fn is_time_limit(key: &str) -> bool {
+  key == names().timeout || key == names().setup_timeout
+}
 
 /// What remote configuration files specified for the exec plugin while
 /// resolving a configuration. It's set aside rather than merged until the
@@ -166,8 +181,9 @@ struct IgnoredSourceCommands {
 struct IgnoredReasons {
   /// The programs they run that aren't allowed.
   programs: Vec<String>,
-  /// Their properties the exec plugin 0.7.3 doesn't have.
-  properties: Vec<String>,
+  /// Why they aren't commands the exec plugin 0.7.3 reads (ex. a property it
+  /// doesn't have), as reading them as its command type says.
+  not_commands: Vec<String>,
   /// The programs they run by a relative path in a `cwd` of their own.
   relative_programs: Vec<String>,
   /// The programs they run by name in a `cwd` of their own, which the PATH's
@@ -189,7 +205,7 @@ impl IgnoredReasons {
       }
     }
     add(&mut self.programs, other.programs);
-    add(&mut self.properties, other.properties);
+    add(&mut self.not_commands, other.not_commands);
     add(&mut self.relative_programs, other.relative_programs);
     add(&mut self.named_programs, other.named_programs);
     add(&mut self.batch_files, other.batch_files);
@@ -248,15 +264,15 @@ impl RemoteExec {
   ) -> Vec<PluginSourceReference> {
     if let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) {
       // a remote configuration can't allow itself to run commands
-      let mut has_play_with_fire = exec_config.properties.shift_remove(PLAY_WITH_FIRE_KEY).is_some();
+      let mut has_play_with_fire = exec_config.properties.shift_remove(&names().play_with_fire).is_some();
       for override_config in &mut exec_config.overrides {
-        has_play_with_fire |= override_config.properties.shift_remove(PLAY_WITH_FIRE_KEY).is_some();
+        has_play_with_fire |= override_config.properties.shift_remove(&names().play_with_fire).is_some();
       }
       if has_play_with_fire {
         log_warn!(
           environment,
           "Note: \"{}\" is ignored in remote configuration ({}). Specify it in a local configuration file.",
-          PLAY_WITH_FIRE_KEY,
+          names().play_with_fire,
           source.display()
         );
       }
@@ -265,9 +281,9 @@ impl RemoteExec {
         _ => None,
       };
       let has_higher_precedence = |key: &str| resolved_exec_config.is_some_and(|exec_config| exec_config.properties.contains_key(key));
-      if let Some(commands) = exec_config.properties.shift_remove(COMMANDS_KEY)
+      if let Some(commands) = exec_config.properties.shift_remove(&names().commands)
         && self.commands.is_none()
-        && !has_higher_precedence(COMMANDS_KEY)
+        && !has_higher_precedence(&names().commands)
       {
         self.commands = Some(RemoteValue {
           value: commands,
@@ -336,7 +352,7 @@ impl RemoteExec {
     // the working directory commands without one of their own run in: the
     // local configuration's (a remote one is only used with "playWithFire": true)
     let root_cwd = match config_map.get(EXEC_CONFIG_KEY) {
-      Some(ConfigMapValue::PluginConfig(exec_config)) => match exec_config.properties.get(CWD_KEY) {
+      Some(ConfigMapValue::PluginConfig(exec_config)) => match exec_config.properties.get(&names().cwd) {
         Some(ConfigKeyValue::String(cwd)) => Some(cwd.as_str()),
         _ => None,
       },
@@ -349,8 +365,8 @@ impl RemoteExec {
       && let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY)
     {
       // these have precedence over any commands of lower precedence local configuration
-      exec_config.properties.insert(COMMANDS_KEY.to_string(), commands);
-      origins.set_plugin_property(EXEC_CONFIG_KEY, COMMANDS_KEY, &remote.source);
+      exec_config.properties.insert(names().commands.clone(), commands);
+      origins.set_plugin_property(EXEC_CONFIG_KEY, &names().commands, &remote.source);
     }
     for (key, remote) in self.restricted {
       if matches!(policy, Policy::AnyProgram) {
@@ -454,9 +470,9 @@ fn make_exec_config(
             "checked against \"{}\" for the exec plugin 0.7.3, and this configuration uses {}. ",
             "To run them, specify \"{}\": true in the exec configuration of a local configuration file."
           ),
-          PLAY_WITH_FIRE_KEY,
+          names().play_with_fire,
           exec_plugin.display(),
-          PLAY_WITH_FIRE_KEY,
+          names().play_with_fire,
         );
       }
       policy = Policy::None;
@@ -500,7 +516,7 @@ fn make_exec_config(
           "To use it, specify \"{}\" in the exec configuration of a local configuration file ",
           "(`true` or the programs its commands may run)."
         ),
-        PLAY_WITH_FIRE_KEY,
+        names().play_with_fire,
       );
     }
     return Ok(None);
@@ -516,7 +532,7 @@ fn make_exec_config(
         log_warn!(
           environment,
           "Note: The exec plugin in remote configuration is ignored, as none of the exec commands are allowed by \"{}\".",
-          PLAY_WITH_FIRE_KEY,
+          names().play_with_fire,
         );
       }
       Ok(None)
@@ -531,7 +547,7 @@ fn scope_has_commands(scope: &RemoteExecScope) -> bool {
       remote
         .overrides
         .iter()
-        .any(|override_config| override_config.properties.contains_key(COMMANDS_KEY))
+        .any(|override_config| override_config.properties.contains_key(&names().commands))
     })
 }
 
@@ -541,45 +557,46 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
     match policy {
       Policy::Programs(_) => {
         let why = &ignored.reasons;
+        let play_with_fire = &names().play_with_fire;
         let mut reasons = Vec::new();
         if !why.programs.is_empty() {
-          reasons.push(format!("run programs not listed in \"{}\": {}", PLAY_WITH_FIRE_KEY, why.programs.join(", ")));
+          reasons.push(format!("run programs not listed in \"{}\": {}", play_with_fire, why.programs.join(", ")));
         }
-        if !why.properties.is_empty() {
+        if !why.not_commands.is_empty() {
           reasons.push(format!(
-            "have properties the exec plugin 0.7.3 doesn't, which only run with \"{}\": true: {}",
-            PLAY_WITH_FIRE_KEY,
-            why.properties.join(", ")
+            "aren't commands the exec plugin 0.7.3 reads, which only run with \"{}\": true: {}",
+            play_with_fire,
+            why.not_commands.join(", ")
           ));
         }
         if !why.relative_programs.is_empty() {
           reasons.push(format!(
             "run a program by a relative path in a \"{}\" they set, which decides what that path is, so only with \"{}\": true: {}",
-            CWD_KEY,
-            PLAY_WITH_FIRE_KEY,
+            command_names().cwd,
+            play_with_fire,
             why.relative_programs.join(", ")
           ));
         }
         if !why.named_programs.is_empty() {
           reasons.push(format!(
             "run a program by name in a \"{}\" they set, which a relative entry of the PATH (ex. \".\") is searched in, so only with \"{}\": true: {}",
-            CWD_KEY,
-            PLAY_WITH_FIRE_KEY,
+            command_names().cwd,
+            play_with_fire,
             why.named_programs.join(", ")
           ));
         }
         if !why.batch_files.is_empty() {
           reasons.push(format!(
             "run a batch file, which runs through cmd.exe, which can't be given arguments safely, so only with \"{}\": true: {}",
-            PLAY_WITH_FIRE_KEY,
+            play_with_fire,
             why.batch_files.join(", ")
           ));
         }
         if !why.cache_key_files.is_empty() {
           reasons.push(format!(
             "read files on this machine to key their cache (\"{}\"), which only \"{}\": true allows: {}",
-            CACHE_KEY_FILES_KEY,
-            PLAY_WITH_FIRE_KEY,
+            command_names().cache_key_files,
+            play_with_fire,
             why.cache_key_files.join(", ")
           ));
         }
@@ -599,7 +616,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
           "(`true` or the programs they may run)."
         ),
         ignored.source,
-        PLAY_WITH_FIRE_KEY,
+        names().play_with_fire,
       ),
     }
   }
@@ -612,14 +629,16 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
       ),
       key,
       source,
-      if key == CWD_KEY {
+      if key == names().cwd {
         "it decides what commands run"
-      } else if TIME_LIMIT_KEYS.contains(&key.as_str()) {
+      } else if is_time_limit(&key) {
         "it sets how long a command may run on this machine"
+      } else if names().contains(&key) {
+        "dprint doesn't know whether it decides what runs"
       } else {
         "the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does"
       },
-      PLAY_WITH_FIRE_KEY,
+      names().play_with_fire,
     );
   }
 }
@@ -684,7 +703,7 @@ impl RemoteExecProvenance {
 
 /// Whether the exec configuration has commands.
 fn has_commands(config_map: &ConfigMap) -> bool {
-  matches!(config_map.get(EXEC_CONFIG_KEY), Some(ConfigMapValue::PluginConfig(exec_config)) if exec_config.properties.contains_key(COMMANDS_KEY))
+  matches!(config_map.get(EXEC_CONFIG_KEY), Some(ConfigMapValue::PluginConfig(exec_config)) if exec_config.properties.contains_key(&names().commands))
 }
 
 /// A remote override with what the policy allows of its commands and the
@@ -698,10 +717,10 @@ fn allowed_override(
   ignored_properties: &mut IgnoredProperties,
   lookup: &ProgramLookup,
 ) -> Option<RawPluginConfigOverride> {
-  if let Some(commands) = override_config.properties.shift_remove(COMMANDS_KEY)
+  if let Some(commands) = override_config.properties.shift_remove(&names().commands)
     && let Some(commands) = allowed_commands_value(commands, policy, source, ignored_commands, lookup)
   {
-    override_config.properties.insert(COMMANDS_KEY.to_string(), commands);
+    override_config.properties.insert(names().commands.clone(), commands);
   }
   if !matches!(policy, Policy::AnyProgram) {
     override_config.properties.retain(|key, _| {
@@ -716,9 +735,14 @@ fn allowed_override(
 }
 
 /// Whether remote configuration may specify an exec property without
-/// `"playWithFire": true`. `commands` is checked on its own.
+/// `"playWithFire": true`: the exec plugin 0.7.3 properties that neither
+/// decide what runs nor for how long. `commands` is checked on its own. Any
+/// other property (ex. one a later version adds) is restricted.
 fn is_unrestricted(key: &str) -> bool {
-  key == COMMANDS_KEY || UNRESTRICTED_KEYS.contains(&key)
+  let names = names();
+  [&names.commands, &names.line_width, &names.indent_width, &names.use_tabs, &names.cache_key]
+    .into_iter()
+    .any(|unrestricted| unrestricted == key)
 }
 
 /// The remote `commands` value the policy allows, if any. A value that isn't
@@ -761,40 +785,38 @@ fn allowed_commands(
     }
     Policy::AnyProgram => commands,
     Policy::Programs(programs) => {
-      let (allowed, not_allowed): (Vec<_>, Vec<_>) = commands.into_iter().partition(|command| command_allowed(command, programs, lookup));
-      let not_allowed_programs = not_allowed
-        .iter()
-        .flat_map(command_programs)
-        .filter(|program| !is_allowed(program, programs))
-        .collect::<Vec<_>>();
-      let unknown_properties = not_allowed.iter().flat_map(unknown_command_keys).collect::<Vec<_>>();
-      let relative_programs = not_allowed.iter().flat_map(programs_relative_to_own_cwd).collect::<Vec<_>>();
-      let named_programs = not_allowed
-        .iter()
-        .flat_map(|command| programs_named_in_own_cwd(command, lookup))
-        .collect::<Vec<_>>();
-      let batch_files = not_allowed
-        .iter()
-        .flat_map(|command| programs_in_batch_files(command, lookup))
-        .collect::<Vec<_>>();
-      let cache_key_files = not_allowed.iter().flat_map(command_cache_key_files).collect::<Vec<_>>();
+      // a command is checked as the exec plugin 0.7.3 reads it, so one it
+      // doesn't read that way (ex. with a property it doesn't have, which
+      // might change what runs) isn't allowed
+      let (allowed, not_allowed): (Vec<_>, Vec<_>) = commands
+        .into_iter()
+        .partition(|command| read_command(command).is_ok_and(|command| command_allowed(&command, programs, lookup)));
+      let mut reasons = IgnoredReasons::default();
+      for command in &not_allowed {
+        match read_command(command) {
+          Err(err) => reasons.not_commands.push(err.to_string()),
+          Ok(command) => {
+            reasons
+              .programs
+              .extend(command_programs(&command).into_iter().filter(|program| !is_allowed(program, programs)));
+            reasons.relative_programs.extend(programs_relative_to_own_cwd(&command));
+            reasons.named_programs.extend(programs_named_in_own_cwd(&command, lookup));
+            reasons.batch_files.extend(programs_in_batch_files(&command, lookup));
+            reasons.cache_key_files.extend(command.cache_key_files.unwrap_or_default());
+          }
+        }
+      }
       if !not_allowed.is_empty() {
-        ignored.add(
-          source,
-          not_allowed.len(),
-          IgnoredReasons {
-            programs: not_allowed_programs,
-            properties: unknown_properties,
-            relative_programs,
-            named_programs,
-            batch_files,
-            cache_key_files,
-          },
-        );
+        ignored.add(source, not_allowed.len(), reasons);
       }
       allowed
     }
   }
+}
+
+/// Reads a remote command the way the exec plugin 0.7.3 does.
+fn read_command(command: &ConfigKeyValue) -> Result<ExecCommandInput, ValueError> {
+  from_value(command.clone())
 }
 
 /// Takes the policy out of the exec configuration, which by now only has what
@@ -803,72 +825,43 @@ fn take_policy(config_map: &mut ConfigMap) -> Result<Option<Policy>> {
   let Some(ConfigMapValue::PluginConfig(exec_config)) = config_map.get_mut(EXEC_CONFIG_KEY) else {
     return Ok(None);
   };
-  Ok(Some(match exec_config.properties.shift_remove(PLAY_WITH_FIRE_KEY) {
-    None => return Ok(None),
-    Some(ConfigKeyValue::Bool(false)) => Policy::None,
-    Some(ConfigKeyValue::Bool(true)) => Policy::AnyProgram,
-    Some(ConfigKeyValue::Array(values)) => Policy::Programs(
-      values
-        .into_iter()
-        .map(|value| match value {
-          ConfigKeyValue::String(program) => Ok(program),
-          _ => bail!("Expected the \"exec.{}\" programs to be strings.", PLAY_WITH_FIRE_KEY),
-        })
-        .collect::<Result<_>>()?,
-    ),
-    Some(_) => bail!("Expected \"exec.{}\" to be true, false, or an array of programs.", PLAY_WITH_FIRE_KEY),
+  let Some(value) = exec_config.properties.shift_remove(&names().play_with_fire) else {
+    return Ok(None);
+  };
+  let play_with_fire: PlayWithFire = from_value(value).map_err(|err| anyhow!("{}.{}: {}", EXEC_CONFIG_KEY, names().play_with_fire, err))?;
+  Ok(Some(match play_with_fire {
+    PlayWithFire::Any(false) => Policy::None,
+    PlayWithFire::Any(true) => Policy::AnyProgram,
+    PlayWithFire::Programs(programs) => Policy::Programs(programs),
   }))
 }
 
-/// The programs a command object runs: its command and its setup command.
-fn command_programs(command: &ConfigKeyValue) -> Vec<String> {
-  let ConfigKeyValue::Object(command) = command else {
-    return Vec::new();
-  };
-  ["command", "setupCommand"]
+/// The programs a command runs: its command and its setup command.
+fn command_programs(command: &ExecCommandInput) -> Vec<String> {
+  [Some(&command.command), command.setup_command.as_ref()]
     .into_iter()
-    .filter_map(|key| match command.get(key) {
-      Some(ConfigKeyValue::String(text)) => exec_command_program(text),
-      _ => None,
-    })
+    .flatten()
+    .filter_map(|text| exec_command_program(text))
     .collect()
 }
 
 /// Whether a remote command only runs programs the list allows.
-fn command_allowed(command: &ConfigKeyValue, programs: &[String], lookup: &ProgramLookup) -> bool {
-  let ConfigKeyValue::Object(object) = command else {
-    return false;
-  };
-  // a command must say what it runs to be checked, other properties than
-  // the exec plugin 0.7.3's might change what it runs, its own working
-  // directory decides what a program it runs by a relative path (or, with a
-  // relative PATH entry, by name) is, and reading files isn't running a
-  // program
-  matches!(object.get("command"), Some(ConfigKeyValue::String(_)))
-    && unknown_command_keys(command).is_empty()
-    && programs_relative_to_own_cwd(command).is_empty()
+fn command_allowed(command: &ExecCommandInput, programs: &[String], lookup: &ProgramLookup) -> bool {
+  // a command's own working directory decides what a program it runs by a
+  // relative path (or, with a relative PATH entry, by name) is, a batch file
+  // can't be vouched for, and reading files isn't running a program
+  programs_relative_to_own_cwd(command).is_empty()
     && programs_named_in_own_cwd(command, lookup).is_empty()
     && programs_in_batch_files(command, lookup).is_empty()
-    && command_cache_key_files(command).is_empty()
+    && command.cache_key_files.as_ref().is_none_or(|files| files.is_empty())
     && command_programs(command).iter().all(|program| is_allowed(program, programs))
-}
-
-/// The properties of a command the exec plugin 0.7.3 doesn't have.
-fn unknown_command_keys(command: &ConfigKeyValue) -> Vec<String> {
-  match command {
-    ConfigKeyValue::Object(object) => object.keys().filter(|key| !COMMAND_KEYS.contains(&key.as_str())).cloned().collect(),
-    _ => Vec::new(),
-  }
 }
 
 /// The programs a command runs by a relative path (ex. `./formatter`) while
 /// setting the working directory (`cwd`) that path is relative to. A list of
 /// programs allows the path, but the command would decide what file it is.
-fn programs_relative_to_own_cwd(command: &ConfigKeyValue) -> Vec<String> {
-  let ConfigKeyValue::Object(object) = command else {
-    return Vec::new();
-  };
-  if !object.contains_key(CWD_KEY) {
+fn programs_relative_to_own_cwd(command: &ExecCommandInput) -> Vec<String> {
+  if command.cwd.is_none() {
     return Vec::new();
   }
   command_programs(command).into_iter().filter(|program| is_relative_path(program)).collect()
@@ -937,18 +930,15 @@ impl ProgramLookup {
 
 /// The programs a command runs that are batch files on Windows (see
 /// [`ProgramLookup::batch_file`]).
-fn programs_in_batch_files(command: &ConfigKeyValue, lookup: &ProgramLookup) -> Vec<String> {
+fn programs_in_batch_files(command: &ExecCommandInput, lookup: &ProgramLookup) -> Vec<String> {
   command_programs(command).iter().filter_map(|program| lookup.batch_file(program)).collect()
 }
 
 /// The programs a command runs by name (ex. `tombi`) while setting the
 /// working directory (`cwd`), when the PATH has a relative entry, which is
 /// searched in that directory: then the command would decide what file it is.
-fn programs_named_in_own_cwd(command: &ConfigKeyValue, lookup: &ProgramLookup) -> Vec<String> {
-  let ConfigKeyValue::Object(object) = command else {
-    return Vec::new();
-  };
-  if !lookup.names_in_cwd || !object.contains_key(CWD_KEY) {
+fn programs_named_in_own_cwd(command: &ExecCommandInput, lookup: &ProgramLookup) -> Vec<String> {
+  if !lookup.names_in_cwd || command.cwd.is_none() {
     return Vec::new();
   }
   command_programs(command).into_iter().filter(|program| is_name(program)).collect()
@@ -959,27 +949,6 @@ fn programs_named_in_own_cwd(command: &ConfigKeyValue, lookup: &ProgramLookup) -
 fn is_name(program: &str) -> bool {
   let path = Path::new(program);
   !path.is_absolute() && path.components().count() == 1
-}
-
-/// The files a command has the exec plugin read on this machine (its
-/// `cacheKeyFiles`, in its working directory) to key its cache: that's reading
-/// files, which a list of programs doesn't allow, so any value but none or an
-/// empty list counts.
-fn command_cache_key_files(command: &ConfigKeyValue) -> Vec<String> {
-  let ConfigKeyValue::Object(object) = command else {
-    return Vec::new();
-  };
-  match object.get(CACHE_KEY_FILES_KEY) {
-    None | Some(ConfigKeyValue::Null) => Vec::new(),
-    Some(ConfigKeyValue::Array(files)) => files
-      .iter()
-      .map(|file| match file {
-        ConfigKeyValue::String(file) => file.clone(),
-        _ => "(not a path)".to_string(),
-      })
-      .collect(),
-    Some(_) => vec!["(not a list)".to_string()],
-  }
 }
 
 /// Whether a program is a path relative to the command's working directory,

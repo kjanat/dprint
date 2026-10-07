@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/config-model",
   "crates/core",
   "crates/core-macros",
   "crates/development",
@@ -21,6 +22,10 @@ similar = "2.7.0"
 sys_traits = "=0.1.28"
 thiserror = "2.0.18"
 tokio = { version = "1.37.0", features = ["rt", "time", "macros", "rt-multi-thread"] }
+
+[patch.crates-io]
+# unreleased fixes on top of 0.6.1
+boon = { git = "https://github.com/santhosh-tekuri/boon", rev = "b487e6a75097d8719b185486269c8723f0176ed7" }
 
 # Build release with debug symbols: cargo build --profile=release-with-debug
 [profile.release-with-debug]

@@ -32,6 +32,8 @@ use super::config_layer::ConfigReference;
 use super::config_layer::LayerOrigin;
 use super::remote_exec::RemoteExec;
 use super::resolve_main_config_path::ResolvedConfigPathWithText;
+use super::resolve_main_config_path::get_default_config_file_in_ancestor_directories;
+use super::resolve_main_config_path::resolve_global_config_path_and_text;
 use super::resolve_main_config_path::resolve_main_config_path_and_bytes;
 
 /// A configuration with the configuration files it consists of combined: the
@@ -215,7 +217,7 @@ pub async fn resolve_config_from_path_with_bytes<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, None, environment).await
+  resolve_config_file(config_path_and_text, Ancestor::None, environment).await
 }
 
 /// Resolves a configuration file in a directory within the directory of the
@@ -226,7 +228,30 @@ pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Enviro
   ancestor: &ResolvedConfig,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
-  resolve_config_file(config_path_and_text, Some(ancestor), environment).await
+  resolve_config_file(config_path_and_text, Ancestor::Resolved(ancestor), environment).await
+}
+
+/// Resolves a configuration file the way it's used for the files in its
+/// directory when dprint formats from an ancestor directory: when it
+/// specifies `"inherit": true`, it inherits the configuration of the closest
+/// ancestor directory with a configuration file, or else the global
+/// configuration file, which is resolved the same way.
+pub async fn resolve_config_with_ancestors_from_path_with_bytes<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  environment: &TEnvironment,
+) -> Result<ResolvedConfig, ResolveConfigError> {
+  resolve_config_file(config_path_and_text, Ancestor::FromDirectories, environment).await
+}
+
+/// What a configuration file inherits when it specifies `"inherit": true`.
+#[derive(Clone, Copy)]
+enum Ancestor<'a> {
+  /// Nothing, as it's the configuration in use.
+  None,
+  /// The configuration it's a descendant of.
+  Resolved(&'a ResolvedConfig),
+  /// The configuration of its ancestor directories.
+  FromDirectories,
 }
 
 /// Resolves a configuration file in three steps: its layers are collected,
@@ -234,7 +259,7 @@ pub async fn resolve_descendant_config_from_path_with_bytes<TEnvironment: Enviro
 /// last the ancestor's configuration is inherited when it says to.
 async fn resolve_config_file<TEnvironment: Environment>(
   config_path_and_text: &ResolvedConfigPathWithText,
-  ancestor: Option<&ResolvedConfig>,
+  ancestor: Ancestor<'_>,
   environment: &TEnvironment,
 ) -> Result<ResolvedConfig, ResolveConfigError> {
   let root = ConfigDocument {
@@ -267,12 +292,48 @@ async fn resolve_config_file<TEnvironment: Environment>(
   }
   remote_exec.apply(&mut config.plugins, environment)?;
 
-  if let Some(ancestor) = ancestor
-    && collected.inherit
-  {
-    config.inherit(ancestor, environment)?;
+  if collected.inherit {
+    match ancestor {
+      Ancestor::None => {}
+      Ancestor::Resolved(ancestor) => config.inherit(ancestor, environment)?,
+      Ancestor::FromDirectories => {
+        if let Some(ancestor) = resolve_ancestor_directories_config(config_path_and_text, environment).await? {
+          config.inherit(&ancestor, environment)?;
+        }
+      }
+    }
   }
   Ok(config)
+}
+
+/// Resolves the configuration a local configuration file is a descendant of
+/// when dprint formats from an ancestor directory: the closest ancestor
+/// directory's configuration file, or else the global configuration file.
+async fn resolve_ancestor_directories_config<TEnvironment: Environment>(
+  config_path_and_text: &ResolvedConfigPathWithText,
+  environment: &TEnvironment,
+) -> Result<Option<ResolvedConfig>, ResolveConfigError> {
+  if config_path_and_text.is_global_config {
+    return Ok(None);
+  }
+  let Some(config_dir) = config_path_and_text.source.maybe_local_path().and_then(|path| path.parent()) else {
+    return Ok(None);
+  };
+  let ancestor_path = match config_dir.parent() {
+    Some(parent_dir) => get_default_config_file_in_ancestor_directories(environment, parent_dir.as_ref())?,
+    None => None,
+  };
+  let ancestor_path = match ancestor_path {
+    Some(path) => path,
+    None => match resolve_global_config_path_and_text(environment).map_err(anyhow::Error::from)? {
+      Some(path) if path.source != config_path_and_text.source => path,
+      _ => return Ok(None),
+    },
+  };
+  // the ancestor's directories are above it, so this ends
+  Box::pin(resolve_config_file(&ancestor_path, Ancestor::FromDirectories, environment))
+    .await
+    .map(Some)
 }
 
 /// A configuration file whose directives were used.
@@ -1188,8 +1249,7 @@ lineWidth = 80
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": { "test": 4 }, // should ignore
-            "otherProp2": "a",
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1209,7 +1269,6 @@ lineWidth = 80
             "extends": "https://dprint.dev/test.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin.wasm"],
             "lineWidth": 1,
-            "otherProp": 6,
             "test": {
                 "prop": 5
             },
@@ -1234,8 +1293,7 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("otherProp2"), ConfigMapValue::from_str("a")),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1391,7 +1449,7 @@ lineWidth = 80
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": 6,
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1406,8 +1464,8 @@ lineWidth = 80
       "https://dprint.dev/test2.json",
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin3.wasm"],
-            "otherProp": 7,
-            "asdf": 4,
+            "useTabs": false,
+            "indentWidth": 4,
             "test": {
                 "other": "test2"
             }
@@ -1447,8 +1505,8 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("asdf"), ConfigMapValue::from_i32(4)),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
+        (String::from("indentWidth"), ConfigMapValue::from_i32(4)),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1485,7 +1543,7 @@ lineWidth = 80
             "extends": "https://dprint.dev/test2.json",
             "plugins": ["https://plugins.dprint.dev/test-plugin2.wasm"],
             "lineWidth": 4,
-            "otherProp": 6,
+            "useTabs": true,
             "test": {
                 "prop": 6,
                 "other": "test"
@@ -1500,8 +1558,8 @@ lineWidth = 80
       "https://dprint.dev/test2.json",
       r#"{
             "plugins": ["https://plugins.dprint.dev/test-plugin3.wasm"],
-            "otherProp": 7,
-            "asdf": 4,
+            "useTabs": false,
+            "indentWidth": 4,
             "test": {
                 "other": "test2"
             }
@@ -1511,8 +1569,8 @@ lineWidth = 80
     environment.add_remote_file(
       "https://dprint.dev/test3.json",
       r#"{
-            "asdf": 4,
-            "newProp": "test"
+            "indentWidth": 4,
+            "newLineKind": "lf"
         }"#
         .as_bytes(),
     );
@@ -1549,9 +1607,9 @@ lineWidth = 80
 
       let expected_config_map = ConfigMap::from([
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
-        (String::from("otherProp"), ConfigMapValue::from_i32(6)),
-        (String::from("asdf"), ConfigMapValue::from_i32(4)),
-        (String::from("newProp"), ConfigMapValue::from_str("test")),
+        (String::from("useTabs"), ConfigMapValue::from_bool(true)),
+        (String::from("indentWidth"), ConfigMapValue::from_i32(4)),
+        (String::from("newLineKind"), ConfigMapValue::from_str("lf")),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {
@@ -1586,7 +1644,7 @@ lineWidth = 80
       "https://dprint.dev/test.json",
       r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#
         .as_bytes(),
     );
@@ -1594,7 +1652,7 @@ lineWidth = 80
       "https://dprint.dev/dir/test.json",
       r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#
         .as_bytes(),
     );
@@ -1602,7 +1660,7 @@ lineWidth = 80
       "https://dprint.dev/otherDir/test.json",
       r#"{
             "extends": "https://test.dprint.dev/test.json",
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#
         .as_bytes(),
     );
@@ -1613,21 +1671,21 @@ lineWidth = 80
                 "other.json",
                 "dir/test.json"
             ],
-            "prop4": 4,
+            "test": { "prop4": 4 },
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://test.dprint.dev/other.json",
       r#"{
-            "prop5": 5,
+            "test": { "prop5": 5 },
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://test.dprint.dev/dir/test.json",
       r#"{
-            "prop6": 6,
+            "test": { "prop6": 6 },
         }"#
         .as_bytes(),
     );
@@ -1636,14 +1694,20 @@ lineWidth = 80
       let result = get_result("https://dprint.dev/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-        (String::from("prop4"), ConfigMapValue::from_i32(4)),
-        (String::from("prop5"), ConfigMapValue::from_i32(5)),
-        (String::from("prop6"), ConfigMapValue::from_i32(6)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+            ("prop4", ConfigKeyValue::from_i32(4)),
+            ("prop5", ConfigKeyValue::from_i32(5)),
+            ("prop6", ConfigKeyValue::from_i32(6)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1656,7 +1720,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .unwrap();
@@ -1664,14 +1728,14 @@ lineWidth = 80
       "https://dprint.dev/dir/test.json",
       r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#
         .as_bytes(),
     );
     environment.add_remote_file(
       "https://dprint.dev/otherDir/test.json",
       r#"{
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#
         .as_bytes(),
     );
@@ -1680,11 +1744,17 @@ lineWidth = 80
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1696,20 +1766,20 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .write_file(
         &PathBuf::from("/dir/test.json"),
         r#"{
             "extends": "../otherDir/test.json",
-            "prop2": 2
+            "test": { "prop2": 2 }
         }"#,
       )
       .write_file(
         &PathBuf::from("/otherDir/test.json"),
         r#"{
-            "prop3": 3
+            "test": { "prop3": 3 }
         }"#,
       )
       .build();
@@ -1718,11 +1788,17 @@ lineWidth = 80
       let result = get_result("/test.json", &environment).await.unwrap();
       assert_eq!(environment.take_stdout_messages().len(), 0);
 
-      let expected_config_map = ConfigMap::from([
-        (String::from("prop1"), ConfigMapValue::from_i32(1)),
-        (String::from("prop2"), ConfigMapValue::from_i32(2)),
-        (String::from("prop3"), ConfigMapValue::from_i32(3)),
-      ]);
+      let expected_config_map = ConfigMap::from([(
+        String::from("test"),
+        plugin_config(
+          &[
+            ("prop1", ConfigKeyValue::from_i32(1)),
+            ("prop2", ConfigKeyValue::from_i32(2)),
+            ("prop3", ConfigKeyValue::from_i32(3)),
+          ],
+          &[],
+        ),
+      )]);
       assert_eq!(result.plugins.config, expected_config_map);
     });
   }
@@ -1734,7 +1810,7 @@ lineWidth = 80
       "https://dprint.dev/test.json",
       r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#
         .as_bytes(),
     );
@@ -2463,7 +2539,7 @@ lineWidth = 80
 
     assert_eq!(
       get_error(r##"{ "#!/bin/sh": "" }"##),
-      "Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.\n    at /test.json"
+      "Error deserializing. shebangs: Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.\n    at /test.json"
     );
     for extension in [".", "*.sh", " sh", "tar.gz"] {
       assert!(
@@ -2474,7 +2550,7 @@ lineWidth = 80
     }
     assert_eq!(
       get_error(r##"{ "/bin/sh": "sh" }"##),
-      "Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.\n    at /test.json"
+      "Error deserializing. shebangs: Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.\n    at /test.json"
     );
     assert!(get_error(r##"{ " #!/bin/sh": "sh" }"##).contains("to be a shebang line starting with '#!'"));
     assert!(get_error(r##"{ "#!/bin/sh\ntext": "sh" }"##).contains("to be a shebang line starting with '#!'"));
@@ -2497,7 +2573,10 @@ lineWidth = 80
 
     environment.clone().run_in_runtime(async move {
       let err = get_result("/test.json", &environment).await.err().unwrap();
-      assert!(err.to_string().contains("Expected a string file extension for shebang '#!/bin/sh'"));
+      assert_eq!(
+        err.to_string(),
+        "Error deserializing. shebangs.#!/bin/sh: invalid type: integer `5`, expected a string\n    at /test.json"
+      );
     });
   }
 
@@ -2992,7 +3071,10 @@ lineWidth = 80
         ],
         async |environment, paths| resolve(environment, paths, "dprint").await,
       );
-      assert_eq!(result.unwrap_err(), "Expected boolean in 'incremental' property.\n    at /base.json");
+      assert_eq!(
+        result.unwrap_err(),
+        "Error deserializing. incremental: invalid type: string \"yes\", expected a boolean\n    at /base.json"
+      );
     }
   }
 
@@ -3454,7 +3536,7 @@ lineWidth = 80
       .err();
       assert_eq!(
         err,
-        Some("Expected \"exec.playWithFire\" to be true, false, or an array of programs.".to_string())
+        Some("exec.playWithFire: Expected true, false or an array of the programs remote commands may run.".to_string())
       );
     }
 
@@ -3792,8 +3874,9 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that have properties ",
-            "the exec plugin 0.7.3 doesn't, which only run with \"playWithFire\": true: shell"
+            "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands ",
+            "the exec plugin 0.7.3 reads, which only run with \"playWithFire\": true: shell: unknown field `shell`, expected one of ",
+            "`command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`"
           )
           .to_string(),
           ignored_property("shell"),
@@ -3999,8 +4082,9 @@ lineWidth = 80
         result.messages,
         vec![
           concat!(
-            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that read files on this machine ",
-            "to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret, (not a list)"
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
+            "which only run with \"playWithFire\": true: cacheKeyFiles: invalid type: string \"x\", expected a sequence, ",
+            "or that read files on this machine to key their cache (\"cacheKeyFiles\"), which only \"playWithFire\": true allows: /etc/passwd, ../secret"
           )
           .to_string()
         ]
@@ -4207,7 +4291,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "https://dprint.dev/dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .unwrap();
@@ -4233,7 +4317,7 @@ lineWidth = 80
         &PathBuf::from("/test.json"),
         r#"{
             "extends": "dir/test.json",
-            "prop1": 1
+            "test": { "prop1": 1 }
         }"#,
       )
       .write_file(

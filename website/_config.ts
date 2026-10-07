@@ -78,11 +78,12 @@ async function shortHash(content: string | Uint8Array): Promise<string> {
 }
 
 async function copyConfigSchema() {
-  // the dprint CLI crate is the source of truth for the config schema (it
-  // embeds the file at compile time for LSP completions). Pull it in here so
-  // it's served at https://dprint.dev/schemas/v0.json. This generated file is
+  // the config schema is generated from the configuration types in the
+  // dprint-config-model crate, which keeps the published copy up to date
+  // (see its `the_published_schema_is_the_generated_one` test). Pull it in
+  // here so it's served at https://dprint.dev/schemas/v0.json. This copy is
   // gitignored.
-  const source = new URL("../crates/dprint/src/commands/lsp/config_schema.json", import.meta.url);
+  const source = new URL("../crates/config-model/schema/v0.json", import.meta.url);
   const destDir = new URL("./src/assets/schemas/", import.meta.url);
   await Deno.mkdir(destDir, { recursive: true });
   await Deno.copyFile(source, new URL("v0.json", destDir));

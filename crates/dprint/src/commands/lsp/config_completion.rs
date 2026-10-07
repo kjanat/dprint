@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
+use dprint_config_model::PluginSchema;
+use dprint_config_model::SchemaDocument;
+use dprint_config_model::build_config_schema;
+use dprint_config_model::root_schema;
 use jsonc_parser::Scanner;
 use jsonc_parser::tokens::Token;
 use serde_json::Value;
@@ -17,26 +21,17 @@ use crate::environment::Environment;
 use super::config::LspPluginsScopeContainer;
 use super::text::LineIndex;
 
-/// The dprint configuration file JSON schema, embedded at compile time so that
-/// completions for the well-known root keys work without any network access.
-///
-/// This crate is the source of truth for the schema. The website build copies
-/// this file to `website/src/assets/schemas/v0.json` so it's also served at
-/// https://dprint.dev/schemas/v0.json (see `website/_config.ts`).
-const DPRINT_CONFIG_SCHEMA: &str = include_str!("config_schema.json");
-
 /// Provides completions and hover information for dprint configuration files.
 ///
-/// This is intentionally isolated from the rest of the language server: it owns
-/// the base schema, fetches and caches each resolved plugin's configuration
-/// schema, then stitches them together into a [`CompositeSchema`] that drives
-/// schema-aware suggestions. The actual analysis ([`completions_for`] and
-/// [`hover_for`]) is pure and operates only on text + a composite schema, which
-/// keeps it easy to test without a running environment.
+/// The schema they come from is the one `dprint schema` generates for the
+/// configuration file's plugins (see [`build_config_schema`]): each resolved
+/// plugin's configuration schema is fetched (and cached) and composed into
+/// it. The actual analysis ([`completions_for`] and [`hover_for`]) is pure
+/// and operates only on text + that schema, which keeps it easy to test
+/// without a running environment.
 pub struct ConfigCompletions<TEnvironment: Environment> {
   environment: TEnvironment,
   scope_container: Rc<LspPluginsScopeContainer<TEnvironment>>,
-  base_schema: Rc<Value>,
   /// Cache of plugin config schemas by url. `None` means the url was empty or
   /// the schema failed to download/parse, so we don't keep retrying it.
   schema_cache: RefCell<HashMap<String, Option<Rc<Value>>>>,
@@ -54,11 +49,9 @@ pub fn is_config_uri(uri: &Url) -> bool {
 
 impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
   pub fn new(environment: TEnvironment, scope_container: Rc<LspPluginsScopeContainer<TEnvironment>>) -> Self {
-    let base_schema = serde_json::from_str(DPRINT_CONFIG_SCHEMA).expect("dprint config schema should be valid json");
     Self {
       environment,
       scope_container,
-      base_schema: Rc::new(base_schema),
       schema_cache: Default::default(),
     }
   }
@@ -66,18 +59,18 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
   pub async fn completions(&self, file_path: &Path, file_text: &str, position: lsp::Position) -> Option<Vec<lsp::CompletionItem>> {
     let line_index = LineIndex::new(file_text);
     let offset: usize = u32::from(line_index.offset(position).ok()?) as usize;
-    let schema = self.build_composite_schema(file_path).await;
+    let schema = self.build_schema(file_path).await;
     Some(completions_for(&schema, file_text, &line_index, offset))
   }
 
   pub async fn hover(&self, file_path: &Path, file_text: &str, position: lsp::Position) -> Option<lsp::Hover> {
     let line_index = LineIndex::new(file_text);
     let offset: usize = u32::from(line_index.offset(position).ok()?) as usize;
-    let schema = self.build_composite_schema(file_path).await;
+    let schema = self.build_schema(file_path).await;
     hover_for(&schema, file_text, &line_index, offset)
   }
 
-  async fn build_composite_schema(&self, file_path: &Path) -> CompositeSchema {
+  async fn build_schema(&self, file_path: &Path) -> ConfigSchema {
     let mut plugins = Vec::new();
     if let Some(parent) = file_path.parent() {
       // a parse error while the user is mid-edit just means we fall back to
@@ -85,19 +78,21 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
       if let Ok(Some(scope)) = self.scope_container.resolve_by_path(parent).await {
         for plugin in scope.plugins.values() {
           let info = plugin.info();
-          let schema = self.fetch_schema(&info.config_schema_url).await;
-          plugins.push(PluginSchema {
+          let schema = match plugin.plugin.config_schema() {
+            // built into dprint, so there's nothing to download
+            Some(schema) => serde_json::from_str(schema).ok().map(Rc::new),
+            None => self.fetch_schema(&info.config_schema_url).await,
+          };
+          plugins.push(ConfigPlugin {
             config_key: info.config_key.clone(),
             name: info.name.clone(),
             schema,
+            url: Url::parse(&info.config_schema_url).ok(),
           });
         }
       }
     }
-    CompositeSchema {
-      base: self.base_schema.clone(),
-      plugins,
-    }
+    ConfigSchema::new(plugins)
   }
 
   async fn fetch_schema(&self, url: &str) -> Option<Rc<Value>> {
@@ -131,143 +126,89 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
   }
 }
 
-/// The dprint base schema combined with the resolved plugins' schemas.
-struct CompositeSchema {
-  base: Rc<Value>,
-  plugins: Vec<PluginSchema>,
-}
-
-struct PluginSchema {
+/// A plugin of the configuration file, with its configuration schema.
+struct ConfigPlugin {
   config_key: String,
   name: String,
   /// The plugin's configuration schema. `None` when the plugin doesn't expose
   /// one or it couldn't be downloaded.
   schema: Option<Rc<Value>>,
+  url: Option<Url>,
 }
 
-impl CompositeSchema {
-  fn base_root(&self) -> SchemaRef<'_> {
+/// The configuration file's schema, with the plugins' schemas composed in.
+struct ConfigSchema {
+  document: SchemaDocument,
+  /// The plugins' config keys and names.
+  plugins: Vec<(String, String)>,
+}
+
+impl ConfigSchema {
+  fn new(plugins: Vec<ConfigPlugin>) -> Self {
+    let names = plugins.iter().map(|plugin| (plugin.config_key.clone(), plugin.name.clone())).collect();
+    let schemas = plugins
+      .into_iter()
+      .map(|plugin| PluginSchema {
+        config_key: plugin.config_key,
+        // a plugin without one still has dprint's properties of its table
+        schema: plugin.schema.map(|schema| (*schema).clone()).unwrap_or(Value::Bool(true)),
+        url: plugin.url,
+      })
+      .collect();
+    let root = match build_config_schema(schemas) {
+      Ok(schema) => schema.schema,
+      Err(_) => root_schema(),
+    };
+    Self {
+      document: SchemaDocument::new(root),
+      plugins: names,
+    }
+  }
+
+  fn root(&self) -> SchemaRef<'_> {
     SchemaRef {
-      doc: &self.base,
-      node: &self.base,
+      document: &self.document,
+      pointer: String::new(),
     }
   }
 
-  /// The base schema's `additionalProperties`, which describes the properties
-  /// common to every plugin's config section (ex. `locked`, `associations`).
-  fn base_plugin_section(&self) -> Option<SchemaRef<'_>> {
-    self.base.get("additionalProperties").map(|node| SchemaRef { doc: &self.base, node })
-  }
-
-  /// The schema describing a single entry of a plugin section's `overrides`
-  /// (an object with `files` plus arbitrary plugin config).
-  fn base_override_item(&self) -> Option<SchemaRef<'_>> {
-    override_item(self.base_plugin_section()?.property("overrides")?)
-  }
-
-  fn plugin_by_key(&self, key: &str) -> Option<&PluginSchema> {
-    self.plugins.iter().find(|p| p.config_key == key)
-  }
-
-  fn plugin_root<'a>(&'a self, plugin: &'a PluginSchema) -> Option<SchemaRef<'a>> {
-    plugin.schema.as_ref().map(|schema| SchemaRef { doc: schema, node: schema })
-  }
-
-  /// Resolves the object or array located at `path` into the set of schema
-  /// nodes that describe it. Suggestions are the union across the set, which is
-  /// how plugin sections merge the plugin's own schema with the common section
-  /// properties, and how `overrides` entries merge `files` with plugin config.
-  fn schema_set_for_path(&self, path: &[PathSeg]) -> SchemaSet<'_> {
-    // a top level plugin config section is handled specially
-    if let Some(PathSeg::Key(key)) = path.first()
-      && let Some(plugin) = self.plugin_by_key(key)
-    {
-      return self.plugin_section_set(plugin, &path[1..]);
-    }
-
-    // otherwise navigate within the base schema
-    let mut current = self.base_root();
+  /// Resolves the object or array located at `path` into the schema that
+  /// describes it.
+  fn schema_for_path(&self, path: &[PathSeg]) -> Option<SchemaRef<'_>> {
+    let mut current = self.root();
     for seg in path {
-      current = match navigate(current, seg) {
-        Some(node) => node,
-        None => return SchemaSet::empty(),
-      };
+      current = navigate(current, seg)?;
     }
-    SchemaSet::single(current)
-  }
-
-  fn plugin_section_set<'a>(&'a self, plugin: &'a PluginSchema, rest: &[PathSeg]) -> SchemaSet<'a> {
-    // the plugin section object itself: the plugin's own schema plus the
-    // properties common to every section (locked, associations, overrides)
-    if rest.is_empty() {
-      let mut refs = Vec::new();
-      refs.extend(self.plugin_root(plugin));
-      refs.extend(self.base_plugin_section());
-      return SchemaSet { refs };
-    }
-
-    // inside `overrides`: each entry is an override object, regardless of
-    // whether `overrides` was written as a single object or an array
-    if matches!(&rest[0], PathSeg::Key(key) if key == "overrides") {
-      let mut after = &rest[1..];
-      if after.first() == Some(&PathSeg::Elem) {
-        after = &after[1..];
-      }
-      // an override object accepts `files` plus the plugin's own config
-      let mut refs = Vec::new();
-      refs.extend(self.base_override_item());
-      refs.extend(self.plugin_root(plugin));
-      navigate_set(SchemaSet { refs }, after)
-    } else {
-      // a nested property of the plugin's own config
-      let Some(root) = self.plugin_root(plugin) else {
-        return SchemaSet::empty();
-      };
-      navigate_set(SchemaSet::single(root), rest)
-    }
+    Some(current)
   }
 
   /// Collects the property names that can be suggested for the object at
   /// `path`, excluding any already present in `existing_keys`.
   fn name_options(&self, path: &[PathSeg], existing_keys: &[String]) -> Vec<NameOption> {
     let mut options: Vec<NameOption> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
-    let push = |options: &mut Vec<NameOption>, seen: &mut Vec<String>, option: NameOption| {
-      if seen.iter().any(|n| n == &option.name) || existing_keys.iter().any(|k| k == &option.name) {
-        return;
-      }
-      seen.push(option.name.clone());
-      options.push(option);
+    let Some(schema) = self.schema_for_path(path) else {
+      return options;
     };
-
-    for (name, prop) in self.schema_set_for_path(path).property_names() {
+    for (name, prop) in schema.property_names() {
+      if options.iter().any(|option| option.name == name) || existing_keys.contains(&name) {
+        continue;
+      }
       let prop = prop.deref();
-      push(
-        &mut options,
-        &mut seen,
-        NameOption {
+      // at the root, every resolved plugin's config key is a property
+      let plugin = path.is_empty().then(|| self.plugins.iter().find(|(key, _)| *key == name)).flatten();
+      options.push(match plugin {
+        Some((_, plugin_name)) => NameOption {
+          name,
+          detail: Some("plugin".to_string()),
+          documentation: Some(format!("Configuration for the \"{}\" plugin.", plugin_name)),
+        },
+        None => NameOption {
           name,
           detail: prop.type_label(),
           documentation: prop.description().map(str::to_string),
         },
-      );
+      });
     }
-
-    // at the root, every resolved plugin's config key is a valid property
-    if path.is_empty() {
-      for plugin in &self.plugins {
-        push(
-          &mut options,
-          &mut seen,
-          NameOption {
-            name: plugin.config_key.clone(),
-            detail: Some("plugin".to_string()),
-            documentation: Some(format!("Configuration for the \"{}\" plugin.", plugin.name)),
-          },
-        );
-      }
-    }
-
     options
   }
 
@@ -275,62 +216,14 @@ impl CompositeSchema {
   /// `path` (ex. the variants of an enum, or `true`/`false`). When `key` is
   /// `None` the suggestions are for an array element.
   fn value_options(&self, path: &[PathSeg], key: Option<&str>) -> Vec<ValueOption> {
-    self.schema_set_for_path(path).value_options_for(key)
-  }
-}
-
-/// One or more schema nodes describing the same object or array. Property and
-/// value suggestions are the union across all of them, with the first node
-/// taking precedence on conflicts.
-struct SchemaSet<'a> {
-  refs: Vec<SchemaRef<'a>>,
-}
-
-impl<'a> SchemaSet<'a> {
-  fn empty() -> Self {
-    SchemaSet { refs: Vec::new() }
-  }
-
-  fn single(node: SchemaRef<'a>) -> Self {
-    SchemaSet { refs: vec![node] }
-  }
-
-  fn property_names(&self) -> Vec<(String, SchemaRef<'a>)> {
-    let mut result: Vec<(String, SchemaRef<'a>)> = Vec::new();
-    for node in &self.refs {
-      for (name, prop) in node.property_names() {
-        if !result.iter().any(|(existing, _)| existing == &name) {
-          result.push((name, prop));
-        }
-      }
-    }
-    result
-  }
-
-  fn property(&self, key: &str) -> Option<SchemaRef<'a>> {
-    self.refs.iter().find_map(|node| node.property(key))
-  }
-
-  fn item(&self) -> Option<SchemaRef<'a>> {
-    self.refs.iter().find_map(|node| node.item())
-  }
-
-  fn value_options_for(&self, key: Option<&str>) -> Vec<ValueOption> {
-    let mut result: Vec<ValueOption> = Vec::new();
-    for node in &self.refs {
-      let target = match key {
-        Some(key) => node.property(key),
-        None => node.item(),
-      };
-      if let Some(target) = target {
-        for option in target.value_options() {
-          if !result.iter().any(|existing| existing.insert_text == option.insert_text) {
-            result.push(option);
-          }
-        }
-      }
-    }
-    result
+    let Some(schema) = self.schema_for_path(path) else {
+      return Vec::new();
+    };
+    let target = match key {
+      Some(key) => schema.property(key),
+      None => schema.item(),
+    };
+    target.map(|target| target.value_options()).unwrap_or_default()
   }
 }
 
@@ -341,125 +234,105 @@ fn navigate<'a>(schema: SchemaRef<'a>, seg: &PathSeg) -> Option<SchemaRef<'a>> {
   }
 }
 
-fn navigate_set<'a>(set: SchemaSet<'a>, segs: &[PathSeg]) -> SchemaSet<'a> {
-  let mut refs = Vec::new();
-  for node in set.refs {
-    let mut current = Some(node);
-    for seg in segs {
-      current = current.and_then(|node| navigate(node, seg));
-    }
-    refs.extend(current);
-  }
-  SchemaSet { refs }
-}
-
-/// Digs the override-entry object schema out of a plugin section's `overrides`
-/// property, which is an `anyOf` of a single object or an array of them.
-fn override_item(schema: SchemaRef<'_>) -> Option<SchemaRef<'_>> {
-  let schema = schema.deref();
-  if schema.node.get("properties").is_some() {
-    return Some(schema);
-  }
-  if let Some(item) = schema.item()
-    && item.deref().node.get("properties").is_some()
-  {
-    return Some(item);
-  }
-  for keyword in ["anyOf", "oneOf", "allOf"] {
-    if let Some(Value::Array(branches)) = schema.node.get(keyword) {
-      for branch in branches {
-        if let Some(found) = override_item(SchemaRef { doc: schema.doc, node: branch }) {
-          return Some(found);
-        }
-      }
-    }
-  }
-  None
-}
-
-/// A reference into a JSON schema document. `doc` is the root used for `$ref`
-/// resolution; `node` is the current schema object.
-#[derive(Clone, Copy)]
+/// A schema within the configuration schema, by its JSON pointer, which is
+/// what its `$ref`s are resolved against (see [`SchemaDocument::resolve`]).
+#[derive(Clone)]
 struct SchemaRef<'a> {
-  doc: &'a Value,
-  node: &'a Value,
+  document: &'a SchemaDocument,
+  pointer: String,
 }
 
 impl<'a> SchemaRef<'a> {
-  /// Follows any `$ref` (a `#/...` JSON pointer within the same document).
-  fn deref(self) -> SchemaRef<'a> {
-    let mut node = self.node;
+  fn node(&self) -> Option<&'a Value> {
+    self.document.node(&self.pointer)
+  }
+
+  fn child(&self, segment: &str) -> SchemaRef<'a> {
+    SchemaRef {
+      document: self.document,
+      pointer: format!("{}/{}", self.pointer, segment.replace('~', "~0").replace('/', "~1")),
+    }
+  }
+
+  /// Follows any `$ref`.
+  fn deref(&self) -> SchemaRef<'a> {
+    let mut current = self.clone();
     for _ in 0..10 {
-      let Some(Value::String(reference)) = node.get("$ref") else {
+      let Some(Value::String(reference)) = current.node().and_then(|node| node.get("$ref")) else {
         break;
       };
-      match resolve_pointer(self.doc, reference) {
-        Some(target) => node = target,
+      match self.document.resolve(reference, &current.pointer) {
+        Some(target) => {
+          current = SchemaRef {
+            document: self.document,
+            pointer: target,
+          }
+        }
         None => break,
       }
     }
-    SchemaRef { doc: self.doc, node }
+    current
   }
 
-  fn property(self, key: &str) -> Option<SchemaRef<'a>> {
+  /// The schemas combined into this one (deref'd): what its `allOf`,
+  /// `anyOf` and `oneOf` list.
+  fn branches(&self) -> Vec<SchemaRef<'a>> {
     let me = self.deref();
-    if let Some(prop) = me.node.get("properties").and_then(|p| p.get(key)) {
-      return Some(SchemaRef { doc: self.doc, node: prop });
-    }
+    let mut branches = Vec::new();
     for keyword in ["allOf", "anyOf", "oneOf"] {
-      if let Some(Value::Array(branches)) = me.node.get(keyword) {
-        for branch in branches {
-          if let Some(found) = (SchemaRef { doc: self.doc, node: branch }).property(key) {
-            return Some(found);
-          }
-        }
+      if let Some(Value::Array(schemas)) = me.node().and_then(|node| node.get(keyword)) {
+        branches.extend((0..schemas.len()).map(|index| me.child(keyword).child(&index.to_string())));
       }
     }
-    match me.node.get("additionalProperties") {
-      Some(node @ Value::Object(_)) => Some(SchemaRef { doc: self.doc, node }),
+    branches
+  }
+
+  fn property(&self, key: &str) -> Option<SchemaRef<'a>> {
+    let me = self.deref();
+    let node = me.node()?;
+    if node.get("properties").and_then(|properties| properties.get(key)).is_some() {
+      return Some(me.child("properties").child(key));
+    }
+    for branch in me.branches() {
+      if let Some(found) = branch.property(key) {
+        return Some(found);
+      }
+    }
+    match node.get("additionalProperties") {
+      Some(Value::Object(_)) => Some(me.child("additionalProperties")),
       _ => None,
     }
   }
 
-  fn item(self) -> Option<SchemaRef<'a>> {
+  fn item(&self) -> Option<SchemaRef<'a>> {
     let me = self.deref();
-    match me.node.get("items") {
+    let node = me.node()?;
+    match node.get("items") {
       // only single-schema arrays are handled (not tuple validation)
-      Some(node @ (Value::Object(_) | Value::Bool(_))) => Some(SchemaRef { doc: self.doc, node }),
-      _ => {
-        for keyword in ["allOf", "anyOf", "oneOf"] {
-          if let Some(Value::Array(branches)) = me.node.get(keyword) {
-            for branch in branches {
-              if let Some(found) = (SchemaRef { doc: self.doc, node: branch }).item() {
-                return Some(found);
-              }
-            }
-          }
-        }
-        None
-      }
+      Some(Value::Object(_) | Value::Bool(_)) => Some(me.child("items")),
+      _ => me.branches().into_iter().find_map(|branch| branch.item()),
     }
   }
 
-  fn property_names(self) -> Vec<(String, SchemaRef<'a>)> {
+  fn property_names(&self) -> Vec<(String, SchemaRef<'a>)> {
     let me = self.deref();
-    let mut result = Vec::new();
-    if let Some(Value::Object(props)) = me.node.get("properties") {
-      for (name, node) in props {
-        result.push((name.clone(), SchemaRef { doc: self.doc, node }));
+    let mut result: Vec<(String, SchemaRef<'a>)> = Vec::new();
+    if let Some(Value::Object(props)) = me.node().and_then(|node| node.get("properties")) {
+      for name in props.keys() {
+        result.push((name.clone(), me.child("properties").child(name)));
       }
     }
-    for keyword in ["allOf", "anyOf", "oneOf"] {
-      if let Some(Value::Array(branches)) = me.node.get(keyword) {
-        for branch in branches {
-          result.extend((SchemaRef { doc: self.doc, node: branch }).property_names());
+    for branch in me.branches() {
+      for (name, prop) in branch.property_names() {
+        if !result.iter().any(|(existing, _)| *existing == name) {
+          result.push((name, prop));
         }
       }
     }
     result
   }
 
-  fn value_options(self) -> Vec<ValueOption> {
+  fn value_options(&self) -> Vec<ValueOption> {
     let me = self.deref();
     let mut options: Vec<ValueOption> = Vec::new();
     let push = |options: &mut Vec<ValueOption>, value: &Value, documentation: Option<String>| {
@@ -469,24 +342,26 @@ impl<'a> SchemaRef<'a> {
         options.push(option);
       }
     };
+    let Some(node) = me.node() else {
+      return options;
+    };
 
-    if let Some(Value::Array(values)) = me.node.get("enum") {
+    if let Some(Value::Array(values)) = node.get("enum") {
       for value in values {
         push(&mut options, value, None);
       }
     }
-    if let Some(value) = me.node.get("const") {
+    if let Some(value) = node.get("const") {
       push(&mut options, value, me.description().map(str::to_string));
     }
+    // the options of each alternative, however deep the alternatives go (ex.
+    // an optional property's `anyOf` of its `oneOf` of values and `null`)
     for keyword in ["oneOf", "anyOf"] {
-      if let Some(Value::Array(branches)) = me.node.get(keyword) {
-        for branch in branches {
-          let branch_ref = (SchemaRef { doc: self.doc, node: branch }).deref();
-          if let Some(value) = branch_ref.node.get("const") {
-            push(&mut options, value, branch_ref.description().map(str::to_string));
-          } else if let Some(Value::Array(values)) = branch_ref.node.get("enum") {
-            for value in values {
-              push(&mut options, value, None);
+      if let Some(Value::Array(branches)) = node.get(keyword) {
+        for index in 0..branches.len() {
+          for option in me.child(keyword).child(&index.to_string()).value_options() {
+            if !options.iter().any(|o| o.insert_text == option.insert_text) {
+              options.push(option);
             }
           }
         }
@@ -500,27 +375,34 @@ impl<'a> SchemaRef<'a> {
     options
   }
 
-  fn description(self) -> Option<&'a str> {
-    self.node.get("description").and_then(|d| d.as_str())
+  fn description(&self) -> Option<&'a str> {
+    self.node()?.get("description").and_then(|d| d.as_str())
   }
 
-  fn has_type(self, name: &str) -> bool {
-    match self.node.get("type") {
+  fn has_type(&self, name: &str) -> bool {
+    match self.node().and_then(|node| node.get("type")) {
       Some(Value::String(s)) => s == name,
       Some(Value::Array(arr)) => arr.iter().any(|v| v.as_str() == Some(name)),
       _ => false,
     }
   }
 
-  fn type_label(self) -> Option<String> {
-    match self.node.get("type") {
+  fn type_label(&self) -> Option<String> {
+    let node = self.node()?;
+    match node.get("type") {
       Some(Value::String(s)) => Some(s.clone()),
+      // (`null` reads as the property left out, so it isn't a type of its value)
       Some(Value::Array(arr)) => {
-        let joined = arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+        let joined = arr
+          .iter()
+          .filter_map(|v| v.as_str())
+          .filter(|kind| *kind != "null")
+          .collect::<Vec<_>>()
+          .join(" | ");
         (!joined.is_empty()).then_some(joined)
       }
       _ => {
-        if self.node.get("enum").is_some() || self.node.get("oneOf").is_some() || self.node.get("anyOf").is_some() {
+        if node.get("enum").is_some() || node.get("oneOf").is_some() || node.get("anyOf").is_some() {
           Some("enum".to_string())
         } else {
           None
@@ -528,19 +410,6 @@ impl<'a> SchemaRef<'a> {
       }
     }
   }
-}
-
-fn resolve_pointer<'a>(doc: &'a Value, reference: &str) -> Option<&'a Value> {
-  let pointer = reference.strip_prefix('#')?;
-  if pointer.is_empty() {
-    return Some(doc);
-  }
-  let mut current = doc;
-  for part in pointer.split('/').skip(1) {
-    let part = part.replace("~1", "/").replace("~0", "~");
-    current = current.get(&part)?;
-  }
-  Some(current)
 }
 
 struct NameOption {
@@ -793,7 +662,7 @@ fn container_path(stack: &[Frame]) -> Vec<PathSeg> {
     .collect()
 }
 
-fn completions_for(schema: &CompositeSchema, text: &str, line_index: &LineIndex, offset: usize) -> Vec<lsp::CompletionItem> {
+fn completions_for(schema: &ConfigSchema, text: &str, line_index: &LineIndex, offset: usize) -> Vec<lsp::CompletionItem> {
   let tokens = scan_tokens(text);
   let Some(analysis) = analyze(&tokens, offset) else {
     return Vec::new();
@@ -825,7 +694,7 @@ fn completions_for(schema: &CompositeSchema, text: &str, line_index: &LineIndex,
   }
 }
 
-fn value_items(schema: &CompositeSchema, analysis: &Analysis, range: lsp::Range, key: Option<&str>) -> Vec<lsp::CompletionItem> {
+fn value_items(schema: &ConfigSchema, analysis: &Analysis, range: lsp::Range, key: Option<&str>) -> Vec<lsp::CompletionItem> {
   schema
     .value_options(&analysis.container_path, key)
     .into_iter()
@@ -850,23 +719,23 @@ fn value_items(schema: &CompositeSchema, analysis: &Analysis, range: lsp::Range,
     .collect()
 }
 
-fn hover_for(schema: &CompositeSchema, text: &str, line_index: &LineIndex, offset: usize) -> Option<lsp::Hover> {
+fn hover_for(schema: &ConfigSchema, text: &str, line_index: &LineIndex, offset: usize) -> Option<lsp::Hover> {
   let tokens = scan_tokens(text);
   // find the token under the cursor (inclusive of its end so hovering the last
   // character still resolves)
   let idx = tokens.iter().position(|t| t.is_editable() && t.start <= offset && offset <= t.end)?;
   let analysis = analyze(&tokens, tokens[idx].start)?;
 
-  let set = schema.schema_set_for_path(&analysis.container_path);
+  let container = schema.schema_for_path(&analysis.container_path)?;
   let target = match &analysis.position {
     // the token is a property name
     Position::ObjectKey => {
       let key = tokens[idx].scalar_text()?;
-      set.property(key)?
+      container.property(key)?
     }
     // the token is a value
-    Position::ObjectValue { key } => set.property(key)?,
-    Position::ArrayValue => set.item()?,
+    Position::ObjectValue { key } => container.property(key)?,
+    Position::ArrayValue => container.item()?,
   };
   let target = target.deref();
 
@@ -914,37 +783,41 @@ mod test {
     (text_with_marker.replacen('%', "", 1), offset)
   }
 
-  fn base_only() -> CompositeSchema {
-    CompositeSchema {
-      base: Rc::new(serde_json::from_str(DPRINT_CONFIG_SCHEMA).unwrap()),
-      plugins: Vec::new(),
+  fn base_only() -> ConfigSchema {
+    ConfigSchema::new(Vec::new())
+  }
+
+  fn typescript_plugin(schema: Option<Value>) -> ConfigPlugin {
+    ConfigPlugin {
+      config_key: "typescript".to_string(),
+      name: "TypeScript".to_string(),
+      schema: schema.map(Rc::new),
+      url: Some(Url::parse("https://plugins.dprint.dev/typescript/schema.json").unwrap()),
     }
   }
 
-  fn with_typescript_plugin() -> CompositeSchema {
-    let mut schema = base_only();
-    schema.plugins.push(PluginSchema {
-      config_key: "typescript".to_string(),
-      name: "TypeScript".to_string(),
-      schema: Some(Rc::new(serde_json::json!({
-        "type": "object",
-        "properties": {
-          "semiColons": {
-            "type": "string",
-            "description": "How to use semi-colons.",
-            "oneOf": [
-              { "const": "always", "description": "Always uses semi-colons." },
-              { "const": "asNeeded", "description": "Only when necessary." }
-            ]
-          },
-          "lineWidth": { "type": "number", "description": "Plugin specific line width." }
+  fn with_typescript_plugin() -> ConfigSchema {
+    ConfigSchema::new(vec![typescript_plugin(Some(serde_json::json!({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "definitions": {
+        "semiColons": {
+          "type": "string",
+          "description": "How to use semi-colons.",
+          "oneOf": [
+            { "const": "always", "description": "Always uses semi-colons." },
+            { "const": "asNeeded", "description": "Only when necessary." }
+          ]
         }
-      }))),
-    });
-    schema
+      },
+      "properties": {
+        "semiColons": { "$ref": "#/definitions/semiColons" },
+        "lineWidth": { "type": "number", "description": "Plugin specific line width." }
+      }
+    })))])
   }
 
-  fn complete(schema: &CompositeSchema, text_with_marker: &str) -> Vec<lsp::CompletionItem> {
+  fn complete(schema: &ConfigSchema, text_with_marker: &str) -> Vec<lsp::CompletionItem> {
     let (text, offset) = at_cursor(text_with_marker);
     completions_for(schema, &text, &LineIndex::new(&text), offset)
   }
@@ -968,9 +841,36 @@ mod test {
   }
 
   #[test]
-  fn embedded_schema_is_valid_json() {
-    // ensures the include_str! path stays valid and the schema parses
-    base_only();
+  fn completes_the_built_in_exec_properties_without_downloading() {
+    use crate::environment::TestEnvironmentBuilder;
+    use crate::plugins::PluginCache;
+    use crate::plugins::PluginResolver;
+
+    // no plugin files are served, so this would fail if it tried to download
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        r#"{
+  "plugins": ["https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa"],
+  "exec": { "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }
+}"#,
+      )
+      .build();
+    environment.clone().run_in_runtime(async move {
+      let plugin_resolver = Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone())));
+      let scope_container = Rc::new(LspPluginsScopeContainer::new(environment.clone(), plugin_resolver, None));
+      let completions = ConfigCompletions::new(environment.clone(), scope_container);
+      let items = completions
+        .completions(Path::new("/dprint.json"), r#"{ "exec": {  } }"#, lsp::Position::new(0, 12))
+        .await
+        .unwrap();
+      let labels = labels(&items);
+      // what only the built-in exec has
+      assert!(labels.contains(&"playWithFire".to_string()), "{:?}", labels);
+      assert!(labels.contains(&"setupTimeout".to_string()), "{:?}", labels);
+      // and dprint's properties of every plugin table
+      assert!(labels.contains(&"associations".to_string()), "{:?}", labels);
+    });
   }
 
   #[test]
@@ -983,6 +883,7 @@ mod test {
     // a property name should be inserted quoted
     assert_eq!(new_text(item(&items, "lineWidth")), "\"lineWidth\"");
     assert_eq!(item(&items, "lineWidth").kind, Some(lsp::CompletionItemKind::PROPERTY));
+    assert_eq!(item(&items, "lineWidth").detail.as_deref(), Some("integer"));
   }
 
   #[test]
@@ -1009,6 +910,7 @@ mod test {
     assert_eq!(labels, vec!["auto", "crlf", "lf", "system"]);
     assert_eq!(new_text(item(&items, "auto")), "\"auto\"");
     assert_eq!(item(&items, "auto").kind, Some(lsp::CompletionItemKind::VALUE));
+    assert!(item(&items, "crlf").documentation.is_some());
   }
 
   #[test]
@@ -1032,6 +934,9 @@ mod test {
     let typescript = item(&items, "typescript");
     assert_eq!(new_text(typescript), "\"typescript\"");
     assert_eq!(typescript.detail.as_deref(), Some("plugin"));
+    assert!(
+      matches!(&typescript.documentation, Some(lsp::Documentation::MarkupContent(content)) if content.value == "Configuration for the \"TypeScript\" plugin.")
+    );
   }
 
   #[test]
@@ -1047,6 +952,7 @@ mod test {
 
   #[test]
   fn completes_plugin_nested_enum_values() {
+    // (through the plugin schema's own reference)
     let items = complete(&with_typescript_plugin(), "{ \"typescript\": { \"semiColons\": % } }");
     assert_eq!(labels(&items), vec!["always", "asNeeded"]);
   }
@@ -1078,14 +984,15 @@ mod test {
   #[test]
   fn completes_overrides_without_plugin_schema() {
     // a plugin with no schema still offers the common override `files` key
-    let mut schema = base_only();
-    schema.plugins.push(PluginSchema {
+    let schema = ConfigSchema::new(vec![ConfigPlugin {
       config_key: "exec".to_string(),
       name: "Exec".to_string(),
       schema: None,
-    });
-    let items = complete(&schema, "{ \"exec\": { \"overrides\": [{ % }] } }");
-    assert!(labels(&items).contains(&"files".to_string()));
+      url: None,
+    }]);
+    assert!(labels(&complete(&schema, "{ \"exec\": { \"overrides\": [{ % }] } }")).contains(&"files".to_string()));
+    assert!(labels(&complete(&schema, "{ \"exec\": { % } }")).contains(&"associations".to_string()));
+    assert_eq!(item(&complete(&schema, "{ % }"), "exec").detail.as_deref(), Some("plugin"));
   }
 
   #[test]

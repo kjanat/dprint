@@ -252,13 +252,16 @@ impl SystemTimeNow for RealEnvironment {
 
 #[async_trait(?Send)]
 impl UrlDownloader for RealEnvironment {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>) -> Result<Option<DownloadedFile>> {
+  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     log_debug!(self, "Downloading url: {}", url);
 
     let downloader = self.url_downloader.clone();
     let url = url.clone();
     let auth = auth.map(|s| s.to_string());
-    dprint_core::async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref())).await?
+    // the download gives up at the deadline itself, so it doesn't keep going
+    // once what it's for has given up
+    let deadline = crate::utils::current_deadline();
+    dprint_core::async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref(), deadline, max_len)).await?
   }
 }
 

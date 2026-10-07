@@ -65,11 +65,36 @@ Property names with a dot in them are quoted, like they are in JSON. Arrays of o
 
 Create one with `dprint init --config dprint.toml`. Commands that edit the configuration (ex. `dprint add` and `dprint config update`) keep its comments and layout. A configuration can extend a TOML file and vice versa (see [extending](#extending-a-different-configuration-file)), and `--config` also takes TOML text.
 
-The `#:schema` comment gives editors that read it (ex. [tombi](https://github.com/tombi-toml/tombi)) dprint's schema of the file. The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
+### Schema
+
+`dprint schema` prints a JSON schema of the configuration file that includes each plugin's configuration, so an editor can validate and complete the plugins' properties too. Save it next to the configuration file and refer to it:
+
+```shellsession
+dprint schema > dprint.schema.json
+```
+
+<!-- dprint-ignore -->
+```toml
+#:schema ./dprint.schema.json
+```
+
+In a JSON configuration file, that's `"$schema": "./dprint.schema.json"`. Any editor or language server that reads JSON schemas can use it (ex. [tombi](https://github.com/tombi-toml/tombi) for TOML). The plugins' schemas are versioned, so when there's a `dprint.schema.json` next to the configuration file, `dprint add`, `dprint config update` and `dprint init` (when it adds plugins to an existing configuration file) regenerate it. After `dprint add --package-json`, that's with the version added to `package.json`, before it's installed.
+
+That's done once the configuration file (and `package.json`) is changed, and takes at most about 30 seconds, downloads included. When a plugin's schema can't be retrieved (ex. its download fails, it's over 8 MiB, or it isn't valid JSON), or it takes longer, the schema file is kept as it was rather than replaced with one missing that plugin's configuration, and dprint warns about it. The configuration file stays changed either way. Likewise, `dprint schema` errors rather than prints a schema without a plugin whose schema it couldn't retrieve, unless `--allow-incomplete` is specified.
+
+The schema describes one configuration file, so it doesn't require what another file may provide (ex. the commands of an [extended](#extending-a-different-configuration-file) configuration). For a configuration file that [inherits](#directory-specific-configuration) (`"inherit": true`), it includes the plugins it inherits, from the configuration file of the closest ancestor directory with one (or else the global configuration file).
+
+The schema is JSON schema 2020-12, which bundles schemas by embedding each as a resource of its own: each plugin's schema is under `$defs`, keeping its `$id` (or getting the url it was downloaded from as one) and its references, which are resolved against that as in the plugin's own document. Where a plugin's schema is of an earlier draft (draft-04 to 2019-09), the syntax that draft had for the same thing is translated (ex. an `items` array becomes `prefixItems`, and what a draft before 2019-09 ignored next to a `$ref` is dropped); a schema of a draft dprint doesn't know is referred to by its url instead, which `dprint schema` warns about, as editors may then report dprint's own properties of that plugin's table (ex. `associations`) as unknown. The same goes for a plugin schema whose table is described by another file (ex. a `$ref` to another url). What's under a keyword that isn't JSON schema's (ex. an editor extension's `x-` keyword) is kept as it is.
+
+A plugin's schema describes the plugin's own properties: what dprint hands the plugin is its table without `associations`, `locked` and `overrides`, and each override without `files`. So its properties apply in the table, and in each override (where nothing is required) as far as the schema declares them unconditionally: what it says on a condition (ex. in an `anyOf` branch) isn't checked in an override, as the table the override is merged into decides the condition. A plugin schema that describes its table as a whole (ex. with `maxProperties` or `propertyNames`), which can't say what it does of that, isn't applied at all. `dprint schema` warns about both.
+
+dprint's own part of the schema (the configuration file's properties, and what every plugin's table has) is generated from the types dprint reads a configuration file into, so what dprint accepts and what the schema says are one definition. The schema of the built-in [exec plugin](/plugins/exec) is generated the same way from what it reads its configuration into, and comes with dprint rather than being downloaded, so it describes what this version accepts (ex. `playWithFire` and `setupTimeout`).
+
+The TOML plugin puts a space after the `#` of every comment by default, which turns `#:schema` into `# :schema`, a comment tombi doesn't read. Either set `"comment.forceLeadingSpace": false` in the `toml` configuration, or give the file its schema in `tombi.toml` instead:
 
 ```toml
 [[schemas]]
-path = "https://dprint.dev/schemas/v0.json"
+path = "dprint.schema.json"
 include = ["dprint.toml"]
 ```
 

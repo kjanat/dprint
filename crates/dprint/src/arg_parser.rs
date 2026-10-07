@@ -147,6 +147,7 @@ impl CliArgs {
       SubCommand::StdInFmt(..)
         | SubCommand::EditorInfo
         | SubCommand::OutputResolvedConfig(..)
+        | SubCommand::Schema(..)
         | SubCommand::IncrementalState
         | SubCommand::Completions(..)
         | SubCommand::Check(CheckSubCommand { json: true, .. })
@@ -188,6 +189,7 @@ pub enum SubCommand {
   ClearCache,
   OutputFilePaths(OutputFilePathsSubCommand),
   OutputResolvedConfig(OutputResolvedConfigSubCommand),
+  Schema(SchemaSubCommand),
   IncrementalState,
   OutputFormatTimes(OutputFormatTimesSubCommand),
   Version,
@@ -233,6 +235,7 @@ impl SubCommand {
       SubCommand::Config(_)
       | SubCommand::ClearCache
       | SubCommand::OutputResolvedConfig(_)
+      | SubCommand::Schema(_)
       | SubCommand::IncrementalState
       | SubCommand::Version
       | SubCommand::License
@@ -321,6 +324,13 @@ pub enum ConfigSubCommand {
 #[derive(Debug, PartialEq, Eq)]
 pub struct OutputFilePathsSubCommand {
   pub patterns: FilePatternArgs,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SchemaSubCommand {
+  /// Whether to print the schema without the plugins whose schema couldn't
+  /// be retrieved, rather than erroring.
+  pub allow_incomplete: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -563,6 +573,9 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     }),
     ("resolved-config", matches) => SubCommand::OutputResolvedConfig(OutputResolvedConfigSubCommand {
       file_path: matches.get_one::<String>("file").map(String::from),
+    }),
+    ("schema", matches) => SubCommand::Schema(SchemaSubCommand {
+      allow_incomplete: matches.get_flag("allow-incomplete"),
     }),
     ("incremental-state", _) => SubCommand::IncrementalState,
     ("format-times", matches) => SubCommand::OutputFormatTimes(OutputFormatTimesSubCommand {
@@ -1146,6 +1159,17 @@ EXAMPLES:
             .value_hint(clap::ValueHint::AnyPath)
             .num_args(1)
             .required(false)
+        )
+    )
+    .subcommand(
+      Command::new("schema")
+        .alias("output-schema")
+        .about("Prints a JSON schema of the configuration file, including the plugins' configuration.")
+        .arg(
+          Arg::new("allow-incomplete")
+            .long("allow-incomplete")
+            .help("Prints the schema without the configuration of the plugins whose schema couldn't be retrieved, rather than erroring.")
+            .action(clap::ArgAction::SetTrue),
         )
     )
     .subcommand(

@@ -74,20 +74,45 @@ pub struct DownloadedFile {
   pub content: Vec<u8>,
 }
 
+/// The error for a response that's over the length a download allows (see
+/// [`UrlDownloader::download_file_with_limit`]), with its length when the
+/// response says it.
+pub fn response_too_large_error(url: &Url, len: Option<usize>, max_len: usize) -> anyhow::Error {
+  match len {
+    Some(len) => anyhow::anyhow!(
+      "Error downloading {} - The response is {} bytes, over the limit of {} bytes.",
+      url,
+      len,
+      max_len
+    ),
+    None => anyhow::anyhow!("Error downloading {} - The response is over the limit of {} bytes.", url, max_len),
+  }
+}
+
 #[async_trait(?Send)]
 pub trait UrlDownloader {
   /// Downloads a file without following redirects. Returns the raw response
   /// headers and content. A redirect response will have a `location` header
-  /// and empty content.
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>) -> Result<Option<DownloadedFile>>;
+  /// and empty content. A response over `max_len` bytes, when that's given,
+  /// is an error (see [`response_too_large_error`]) rather than read: what it
+  /// says its length is is checked before any of it is read, and otherwise
+  /// at most that many bytes and one are.
+  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>>;
 
   /// Downloads a file, following redirects, and returns `None` on 404.
   async fn download_file<'a>(&self, url: &'a Url, auth: Option<&str>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
+    self.download_file_with_limit(url, auth, None).await
+  }
+
+  /// Downloads a file of at most `max_len` bytes (see
+  /// [`UrlDownloader::download_file_no_redirects`]), following redirects,
+  /// and returns `None` on 404.
+  async fn download_file_with_limit<'a>(&self, url: &'a Url, auth: Option<&str>, max_len: Option<usize>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
     let original_origin = (url.scheme().to_string(), url.host_str().map(|h| h.to_string()), url.port_or_known_default());
     let mut current_url = Cow::Borrowed(url);
     let mut current_auth = auth;
     for _ in 0..=10 {
-      let result = match self.download_file_no_redirects(&current_url, current_auth).await? {
+      let result = match self.download_file_no_redirects(&current_url, current_auth, max_len).await? {
         Some(r) => r,
         None => return Ok((current_url, None)),
       };

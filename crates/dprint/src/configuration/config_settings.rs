@@ -273,9 +273,6 @@ pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -
       ConfigMapValue::KeyValue(key_value) => {
         target.entry(key).or_insert(ConfigMapValue::KeyValue(key_value));
       }
-      ConfigMapValue::Vec(items) => {
-        target.entry(key).or_insert(ConfigMapValue::Vec(items));
-      }
       ConfigMapValue::PluginConfig(obj) => {
         if let Some(target_obj) = target.get_mut(&key) {
           if let ConfigMapValue::PluginConfig(target_obj) = target_obj {
