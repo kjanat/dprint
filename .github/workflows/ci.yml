@@ -3,19 +3,37 @@ on:
   push:
     branches: [main, master]
     tags: ["*"]
-    paths-ignore: &ignore
+    paths-ignore:
       - .github/*
       - deployment/**
       - website/**
   # every pull request, so a stacked one (based on another's branch) is tested too
   pull_request:
-    paths-ignore: *ignore
 permissions: { contents: read }
 concurrency:
   group: "${{ github.workflow }}-${{ github.head_ref || github.run_id }}"
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-slim
+    permissions: { pull-requests: read }
+    outputs: { code: "${{ steps.filter.outputs.code }}" }
+    steps:
+      - id: filter
+        shell: bash
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          PR: "${{ github.event.pull_request.number }}"
+        run: |-
+          code=true
+          if [[ -n "${PR}" ]]; then
+            files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --jq '.[].filename')"
+            grep -qvE '^(\.github/[^/]+|deployment/.+|website/.+)$' <<< "${files}" || code=false
+          fi
+          echo "code=${code}" >> "${GITHUB_OUTPUT}"
   build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: "${{ matrix.target }}"
     runs-on: "${{ matrix.os }}"
     defaults: { run: { shell: bash } }
@@ -226,16 +244,19 @@ jobs:
         if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/main'' || startsWith(github.ref, ''refs/tags/'')) && matrix.zigbuild_glibc != '''''
         run: |-
           max_glibc=$(objdump -T target/${{ matrix.target }}/debug/dprint | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
-          echo "Binary requires glibc $max_glibc (max allowed: ${{ matrix.zigbuild_glibc }})"
-          test "$(printf '%s\n%s\n' "$max_glibc" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)" = "${{ matrix.zigbuild_glibc }}"
+          echo "Binary requires glibc ${max_glibc} (max allowed: ${{ matrix.zigbuild_glibc }})"
+          greatest_glibc=$(printf '%s\n%s\n' "${max_glibc}" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)
+          test "${greatest_glibc}" = "${{ matrix.zigbuild_glibc }}"
       - name: Build cross (Debug)
         if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/main'' || startsWith(github.ref, ''refs/tags/'')) && matrix.cross == ''true'''
         run: "cross build -p dprint --locked --target ${{ matrix.target }}"
       - name: Build musl image (Debug)
         if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/main'' || startsWith(github.ref, ''refs/tags/'')) && matrix.musl_image != '''''
         run: |-
-          docker run --rm -v "$GITHUB_WORKSPACE":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }}"
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/target"
+          docker run --rm -v "${GITHUB_WORKSPACE}":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }}"
+          build_uid=$(id -u)
+          build_gid=$(id -g)
+          sudo chown -R "${build_uid}:${build_gid}" "${GITHUB_WORKSPACE}/target"
       - name: Build test plugins (Debug)
         if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/main'' || startsWith(github.ref, ''refs/tags/'')) && matrix.run_tests == ''true'' && !startsWith(github.ref, ''refs/tags/'')'
         run: "${{ matrix.cargo }} build -p test-process-plugin --locked --target ${{ matrix.cargo_target }}"
@@ -256,8 +277,10 @@ jobs:
       - name: Build musl image (Release)
         if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.musl_image != '''''
         run: |-
-          docker run --rm -v "$GITHUB_WORKSPACE":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }} --release"
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/target"
+          docker run --rm -v "${GITHUB_WORKSPACE}":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }} --release"
+          build_uid=$(id -u)
+          build_gid=$(id -g)
+          sudo chown -R "${build_uid}:${build_gid}" "${GITHUB_WORKSPACE}/target"
       - name: Build test plugins (Release)
         if: 'matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'')'
         run: "${{ matrix.cargo }} build -p test-process-plugin --locked --target ${{ matrix.cargo_target }} --release"
@@ -271,15 +294,17 @@ jobs:
         if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.zigbuild_glibc != '''''
         run: |-
           max_glibc=$(objdump -T target/${{ matrix.target }}/release/dprint | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
-          echo "Binary requires glibc $max_glibc (max allowed: ${{ matrix.zigbuild_glibc }})"
-          test "$(printf '%s\n%s\n' "$max_glibc" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)" = "${{ matrix.zigbuild_glibc }}"
+          echo "Binary requires glibc ${max_glibc} (max allowed: ${{ matrix.zigbuild_glibc }})"
+          greatest_glibc=$(printf '%s\n%s\n' "${max_glibc}" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)
+          test "${greatest_glibc}" = "${{ matrix.zigbuild_glibc }}"
       - name: Pre-release (x86_64-apple-darwin)
         id: pre_release_x86_64_apple_darwin
         if: 'matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
         run: |-
           cd target/x86_64-apple-darwin/release
           zip -r dprint-x86_64-apple-darwin.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-x86_64-apple-darwin.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-x86_64-apple-darwin.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (x86_64-apple-darwin)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
@@ -292,7 +317,8 @@ jobs:
         run: |-
           cd target/aarch64-apple-darwin/release
           zip -r dprint-aarch64-apple-darwin.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-aarch64-apple-darwin.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-aarch64-apple-darwin.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (aarch64-apple-darwin)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
@@ -309,9 +335,11 @@ jobs:
         if: 'matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
         run: |-
           (cd target/x86_64-pc-windows-msvc/release && 7z a -mx9 dprint-x86_64-pc-windows-msvc.zip dprint.exe)
-          echo "ZIP_CHECKSUM=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
           mv deployment/installer/dprint-x86_64-pc-windows-msvc-installer.exe target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe
-          echo "INSTALLER_CHECKSUM=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe | awk '{print $1}')
+          echo "INSTALLER_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (x86_64-pc-windows-msvc)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
@@ -325,7 +353,8 @@ jobs:
         if: 'matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
         run: |-
           (cd target/aarch64-pc-windows-msvc/release && 7z a -mx9 dprint-aarch64-pc-windows-msvc.zip dprint.exe)
-          echo "ZIP_CHECKSUM=$(sha256sum target/aarch64-pc-windows-msvc/release/dprint-aarch64-pc-windows-msvc.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(sha256sum target/aarch64-pc-windows-msvc/release/dprint-aarch64-pc-windows-msvc.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (aarch64-pc-windows-msvc)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
@@ -338,7 +367,8 @@ jobs:
         run: |-
           cd target/x86_64-unknown-linux-gnu/release
           zip -r dprint-x86_64-unknown-linux-gnu.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-x86_64-unknown-linux-gnu.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-x86_64-unknown-linux-gnu.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (x86_64-unknown-linux-gnu)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
@@ -351,7 +381,8 @@ jobs:
         run: |-
           cd target/x86_64-unknown-linux-musl/release
           zip -r dprint-x86_64-unknown-linux-musl.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-x86_64-unknown-linux-musl.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-x86_64-unknown-linux-musl.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (x86_64-unknown-linux-musl)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
@@ -364,7 +395,8 @@ jobs:
         run: |-
           cd target/aarch64-unknown-linux-gnu/release
           zip -r dprint-aarch64-unknown-linux-gnu.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-aarch64-unknown-linux-gnu.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-aarch64-unknown-linux-gnu.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (aarch64-unknown-linux-gnu)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
@@ -377,7 +409,8 @@ jobs:
         run: |-
           cd target/aarch64-unknown-linux-musl/release
           zip -r dprint-aarch64-unknown-linux-musl.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-aarch64-unknown-linux-musl.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-aarch64-unknown-linux-musl.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (aarch64-unknown-linux-musl)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
@@ -390,7 +423,8 @@ jobs:
         run: |-
           cd target/riscv64gc-unknown-linux-gnu/release
           zip -r dprint-riscv64gc-unknown-linux-gnu.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-riscv64gc-unknown-linux-gnu.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-riscv64gc-unknown-linux-gnu.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (riscv64gc-unknown-linux-gnu)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
@@ -403,7 +437,8 @@ jobs:
         run: |-
           cd target/loongarch64-unknown-linux-gnu/release
           zip -r dprint-loongarch64-unknown-linux-gnu.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-loongarch64-unknown-linux-gnu.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-loongarch64-unknown-linux-gnu.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (loongarch64-unknown-linux-gnu)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
@@ -416,7 +451,8 @@ jobs:
         run: |-
           cd target/loongarch64-unknown-linux-musl/release
           zip -r dprint-loongarch64-unknown-linux-musl.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-loongarch64-unknown-linux-musl.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-loongarch64-unknown-linux-musl.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (loongarch64-unknown-linux-musl)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
@@ -429,7 +465,8 @@ jobs:
         run: |-
           cd target/powerpc64le-unknown-linux-gnu/release
           zip -r dprint-powerpc64le-unknown-linux-gnu.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-powerpc64le-unknown-linux-gnu.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-powerpc64le-unknown-linux-gnu.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (powerpc64le-unknown-linux-gnu)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
@@ -442,7 +479,8 @@ jobs:
         run: |-
           cd target/powerpc64le-unknown-linux-musl/release
           zip -r dprint-powerpc64le-unknown-linux-musl.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-powerpc64le-unknown-linux-musl.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-powerpc64le-unknown-linux-musl.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (powerpc64le-unknown-linux-musl)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
@@ -455,7 +493,8 @@ jobs:
         run: |-
           cd target/aarch64-linux-android/release
           zip -r dprint-aarch64-linux-android.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-aarch64-linux-android.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-aarch64-linux-android.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (aarch64-linux-android)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
@@ -468,7 +507,8 @@ jobs:
         run: |-
           cd target/x86_64-linux-android/release
           zip -r dprint-x86_64-linux-android.zip dprint
-          echo "ZIP_CHECKSUM=$(shasum -a 256 dprint-x86_64-linux-android.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+          checksum=$(shasum -a 256 dprint-x86_64-linux-android.zip | awk '{print $1}')
+          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
       - name: Upload artifacts (x86_64-linux-android)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: 'matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
@@ -486,6 +526,12 @@ jobs:
         working-directory: website/src/assets
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: ./install.ps1
+  ci:
+    needs: [changes, build]
+    if: always
+    runs-on: ubuntu-slim
+    env: { code: "${{ case(contains(fromJSON('[\"cancelled\", \"failure\"]'), needs.*.result), '1', '0') }}" }
+    steps: [run: 'exit "${code}"']
   draft_release:
     name: draft_release
     needs: [build]
@@ -499,28 +545,27 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
       - name: Generate changelog
         id: changelog
         run: |-
           previous_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
-          if [ -n "$previous_tag" ]; then
-            echo "Collecting commits since $previous_tag"
-            range="$previous_tag..HEAD"
+          if [[ -n "${previous_tag}" ]]; then
+            echo "Collecting commits since ${previous_tag}"
+            range="${previous_tag}..HEAD"
           else
             echo "No previous tag found -- using full history"
             range=HEAD
           fi
           {
             echo "changelog<<CHANGELOG_EOF"
-            git log --reverse --pretty=format:%s "$range" \
+            git log --reverse --pretty=format:%s "${range}" \
               | grep -Ev '^(chore|refactor|ci)(\([^)]*\))?!?: ' \
               | grep -Ev '^[0-9]+\.[0-9]+\.[0-9]+$' \
               | sed 's/^/* /'
             echo ""
             echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
+          } >> "${GITHUB_OUTPUT}"
       - name: Download artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       - name: Output checksums
@@ -543,30 +588,30 @@ jobs:
           echo "dprint-x86_64-linux-android.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }}"
       - name: Create SHASUMS256.txt file
         run: |-
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_APPLE_DARWIN }} dprint-x86_64-apple-darwin.zip" > SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_APPLE_DARWIN }} dprint-aarch64-apple-darwin.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc-installer.exe" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC }} dprint-aarch64-pc-windows-msvc.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU }} dprint-x86_64-unknown-linux-gnu.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL }} dprint-x86_64-unknown-linux-musl.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU }} dprint-aarch64-unknown-linux-gnu.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL }} dprint-aarch64-unknown-linux-musl.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU }} dprint-riscv64gc-unknown-linux-gnu.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU }} dprint-loongarch64-unknown-linux-gnu.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL }} dprint-loongarch64-unknown-linux-musl.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU }} dprint-powerpc64le-unknown-linux-gnu.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL }} dprint-powerpc64le-unknown-linux-musl.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_LINUX_ANDROID }} dprint-aarch64-linux-android.zip" >> SHASUMS256.txt
-          echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }} dprint-x86_64-linux-android.zip" >> SHASUMS256.txt
+          {
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_APPLE_DARWIN }} dprint-x86_64-apple-darwin.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_APPLE_DARWIN }} dprint-aarch64-apple-darwin.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc.zip"
+            echo "${{ needs.build.outputs.INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc-installer.exe"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC }} dprint-aarch64-pc-windows-msvc.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU }} dprint-x86_64-unknown-linux-gnu.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL }} dprint-x86_64-unknown-linux-musl.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU }} dprint-aarch64-unknown-linux-gnu.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL }} dprint-aarch64-unknown-linux-musl.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU }} dprint-riscv64gc-unknown-linux-gnu.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU }} dprint-loongarch64-unknown-linux-gnu.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL }} dprint-loongarch64-unknown-linux-musl.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU }} dprint-powerpc64le-unknown-linux-gnu.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL }} dprint-powerpc64le-unknown-linux-musl.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_LINUX_ANDROID }} dprint-aarch64-linux-android.zip"
+            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }} dprint-x86_64-linux-android.zip"
+          } > SHASUMS256.txt
       - name: Generate artifact attestations
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
-        with:
-          subject-checksums: SHASUMS256.txt
+        with: { subject-checksums: SHASUMS256.txt }
       - name: Draft release
         uses: softprops/action-gh-release@v3
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
         with:
           files: |-
             x86_64-apple-darwin-artifacts/dprint-x86_64-apple-darwin.zip

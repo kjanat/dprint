@@ -2,12 +2,13 @@ name: Website
 on:
   workflow_dispatch:
     inputs: { deploy: { description: Deploy to GitHub Pages, type: boolean, default: false } }
-  push: &m { branches: [main, master] }
-  pull_request: *m
+  push: { branches: [main, master] }
+  pull_request:
 permissions: {}
 
 jobs:
   build:
+    name: website
     runs-on: &slim ubuntu-slim
     timeout-minutes: 5
     cancel-timeout-minutes: 1

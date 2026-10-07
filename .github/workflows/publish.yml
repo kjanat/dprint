@@ -56,15 +56,9 @@ jobs:
       - build-npm
     runs-on: "${{ matrix.runner }}"
     timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
+    defaults: { run: { shell: bash } }
     strategy:
-      matrix:
-        runner:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+      matrix: { runner: [ubuntu-latest, macos-latest, windows-latest] }
       fail-fast: false
     steps:
       - name: Checkout
@@ -103,7 +97,7 @@ jobs:
         run: |-
           npx verdaccio@6 \
             --config "${{ runner.temp }}/verdaccio/config.yaml" --listen 4873 &
-          for i in $(seq 1 30); do
+          for ((attempt = 0; attempt < 30; attempt++)); do
             if curl -s http://localhost:4873/-/ping > /dev/null 2>&1; then
               echo "Verdaccio is ready"
               break
@@ -118,25 +112,25 @@ jobs:
         id: publish-verdaccio
         run: |-
           DIST_DIR="deployment/npm/dist"
-          for pkg_dir in "$DIST_DIR"/@dprint/*/; do
-            echo "Publishing $(basename "$pkg_dir") to Verdaccio..."
-            (cd "$pkg_dir" && npm publish --registry http://localhost:4873/)
+          for pkg_dir in "${DIST_DIR}"/@dprint/*/; do
+            echo "Publishing $(basename "${pkg_dir}") to Verdaccio..."
+            (cd "${pkg_dir}" && npm publish --registry http://localhost:4873/)
           done
           echo "Publishing dprint to Verdaccio..."
-          (cd "$DIST_DIR/dprint" && npm publish --registry http://localhost:4873/)
-          VERSION=$(node -p "require('./$DIST_DIR/dprint/package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          (cd "${DIST_DIR}/dprint" && npm publish --registry http://localhost:4873/)
+          VERSION=$(node -p "require('./${DIST_DIR}/dprint/package.json').version")
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
       - name: Test npm install dprint
         run: |-
           TEST_DIR="${{ runner.temp }}/npm-test"
-          mkdir -p "$TEST_DIR"
-          cd "$TEST_DIR"
+          mkdir -p "${TEST_DIR}"
+          cd "${TEST_DIR}"
           npm init -y
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(npx dprint -v)"
-          echo "$ACTUAL"
-          [ "$ACTUAL" = "$EXPECTED_VERSION" ] || { echo "Version mismatch: expected '$EXPECTED_VERSION', got '$ACTUAL'"; exit 1; }
+          echo "${ACTUAL}"
+          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
       - name: Test dprint via bin.cjs fallback
         run: |-
           cd "${{ runner.temp }}/npm-test"
@@ -144,8 +138,8 @@ jobs:
       - name: Test dprint via simulated readonly file system
         run: |-
           TEST_DIR="${{ runner.temp }}/readonly-test"
-          mkdir -p "$TEST_DIR"
-          cd "$TEST_DIR"
+          mkdir -p "${TEST_DIR}"
+          cd "${TEST_DIR}"
           npm init -y
           npm install dprint@${{ steps.publish-verdaccio.outputs.version }}
           rm -f node_modules/dprint/dprint*
@@ -155,18 +149,18 @@ jobs:
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install -g dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(dprint -v)"
-          echo "$ACTUAL"
-          [ "$ACTUAL" = "$EXPECTED_VERSION" ] || { echo "Version mismatch: expected '$EXPECTED_VERSION', got '$ACTUAL'"; exit 1; }
+          echo "${ACTUAL}"
+          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
           # verify the global bin entry points directly at the native binary, not bin.cjs
-          if [ "$RUNNER_OS" = "Windows" ]; then
+          if [[ "${RUNNER_OS}" = "Windows" ]]; then
             DPRINT_CMD="$(npm prefix -g)/dprint.cmd"
-            grep -q "bin.cjs" "$DPRINT_CMD" && { echo "ERROR: dprint.cmd still points to bin.cjs"; exit 1; }
+            grep -q "bin.cjs" "${DPRINT_CMD}" && { echo "ERROR: dprint.cmd still points to bin.cjs"; exit 1; }
             echo "dprint.cmd correctly points to native binary"
           else
-            DPRINT_LINK="$(which dprint)"
-            LINK_TARGET="$(readlink "$DPRINT_LINK")"
-            echo "dprint symlink target: $LINK_TARGET"
-            echo "$LINK_TARGET" | grep -q "bin.cjs" && { echo "ERROR: dprint symlink still points to bin.cjs"; exit 1; }
+            DPRINT_LINK="$(command -v dprint)"
+            LINK_TARGET="$(readlink "${DPRINT_LINK}")"
+            echo "dprint symlink target: ${LINK_TARGET}"
+            echo "${LINK_TARGET}" | grep -q "bin.cjs" && { echo "ERROR: dprint symlink still points to bin.cjs"; exit 1; }
             echo "dprint symlink correctly points to native binary"
           fi
           npm uninstall -g dprint
@@ -175,8 +169,8 @@ jobs:
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install -g --ignore-scripts dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(dprint -v)"
-          echo "$ACTUAL"
-          [ "$ACTUAL" = "$EXPECTED_VERSION" ] || { echo "Version mismatch: expected '$EXPECTED_VERSION', got '$ACTUAL'"; exit 1; }
+          echo "${ACTUAL}"
+          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
           npm uninstall -g dprint
   publish-npm:
     name: npm publish
