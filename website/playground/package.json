@@ -2,7 +2,7 @@
   "name": "playground",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://dprint.dev/playground",
+  "homepage": "https://dprint.kjanat.dev/playground",
   "scripts": {
     "dev": "vite",
     "test": "deno test",
@@ -25,22 +25,21 @@
     "extends": "react-app"
   },
   "dependencies": {
-    "@dprint/formatter": "^0.4.1",
+    "@dprint/formatter": "^0.5.1",
     "json5": "^2.2.3",
     "lz-string": "^1.5.0",
-    "monaco-editor": "^0.55.1",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "react-monaco-editor": "^0.59.0",
-    "react-spinners": "^0.17.0"
+    "react-spinners": "^0.17.1"
   },
   "devDependencies": {
-    "@types/lz-string": "^1.5.0",
-    "@types/node": "^25.0.3",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.2",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.0"
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3"
   }
 }

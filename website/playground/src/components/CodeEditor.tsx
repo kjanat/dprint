@@ -3,6 +3,7 @@ import React from "react";
 import type ReactMonacoEditorForTypes from "react-monaco-editor";
 import { Spinner } from "./Spinner";
 import { getTheme } from "../../../src/scripts/theme.js";
+import "../monacoWorkers";
 
 export interface CodeEditorProps {
   onChange?: (text: string) => void;
