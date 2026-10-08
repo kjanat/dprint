@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::configuration::ConfigFileFormat;
 use crate::configuration::POSSIBLE_CONFIG_FILE_NAMES;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 
 use super::text::LineIndex;
 use dprint_host::HostSession;
@@ -776,7 +776,6 @@ fn markdown(value: String) -> lsp::Documentation {
 #[cfg(test)]
 mod test {
   use super::*;
-  use dprint_platform::environment::*;
 
   /// Splits a `%`-marked string into its text and the cursor's byte offset.
   fn at_cursor(text_with_marker: &str) -> (String, usize) {

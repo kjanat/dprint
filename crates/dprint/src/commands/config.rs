@@ -2147,7 +2147,7 @@ mod test {
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::environment::TestInfoFilePlugin;
-  use crate::environment::*;
+
   use crate::test_helpers::TestProcessPluginFile;
   use crate::test_helpers::TestProcessPluginFileBuilder;
   use crate::test_helpers::get_test_wasm_plugin_checksum;

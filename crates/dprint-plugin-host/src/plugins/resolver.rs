@@ -13,18 +13,18 @@ use super::InitializedPlugin;
 use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginResolutionCache;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::referenced_plugin_name;
-use crate::utils::AsyncCell;
+use crate::utils::AsyncMutex;
 
 pub struct PluginWrapper {
   plugin: Box<dyn Plugin>,
-  initialized_plugin: AsyncCell<Rc<dyn InitializedPlugin>>,
+  initialized_plugin: AsyncMutex<Option<Rc<dyn InitializedPlugin>>>,
 }
 
 impl PluginWrapper {
@@ -84,11 +84,18 @@ impl PluginWrapper {
   }
 
   pub async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
-    self.initialized_plugin.get_or_try_init(|| self.plugin.initialize()).await.cloned()
+    let mut initialized = self.initialized_plugin.lock().await;
+    if let Some(plugin) = initialized.as_ref() {
+      return Ok(plugin.clone());
+    }
+    let plugin = self.plugin.initialize().await?;
+    *initialized = Some(plugin.clone());
+    Ok(plugin)
   }
 
   pub async fn shutdown(&self) {
-    if let Some(plugin) = self.initialized_plugin.get() {
+    let mut initialized = self.initialized_plugin.lock().await;
+    if let Some(plugin) = initialized.take() {
       plugin.shutdown().await;
     }
   }
@@ -117,6 +124,32 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     let plugins = self.memory_cache.borrow_mut().drain().collect::<Vec<_>>();
     let futures = plugins.iter().filter_map(|p| p.1.get()).map(|p| p.shutdown());
     future::join_all(futures).await;
+  }
+
+  /// Retires cached plugins only when no scope or request holds their wrapper.
+  /// Pending resolutions also retain their cache cell and cannot be retired.
+  pub async fn shutdown_unused(&self) {
+    let candidates = self
+      .memory_cache
+      .borrow()
+      .iter()
+      .map(|(key, cell)| (key.clone(), cell.clone()))
+      .collect::<Vec<_>>();
+    for (key, cell) in candidates {
+      let Some(wrapper) = cell.get() else {
+        continue;
+      };
+      let mut initialized = wrapper.initialized_plugin.lock().await;
+      // Cache + this candidate are the only owners. Requests may retain the
+      // initialized instance independently of a scope or wrapper.
+      if Rc::strong_count(&cell) != 2 || Rc::strong_count(wrapper) != 1 || initialized.as_ref().is_some_and(|plugin| Rc::strong_count(plugin) != 1) {
+        continue;
+      }
+      self.memory_cache.borrow_mut().remove(&key);
+      if let Some(plugin) = initialized.take() {
+        plugin.shutdown().await;
+      }
+    }
   }
 
   pub fn next_config_id(&self) -> FormatConfigId {
@@ -194,5 +227,21 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
       })
       .await
       .cloned()
+  }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+  use super::*;
+  use crate::plugins::TestPlugin;
+
+  #[tokio::test]
+  async fn a_stopped_wrapper_initializes_a_fresh_instance() {
+    let wrapper = PluginWrapper::new(Box::new(TestPlugin::new("test", "test", vec!["txt"], vec![])));
+    let first = wrapper.initialize().await.unwrap();
+    wrapper.shutdown().await;
+    let second = wrapper.initialize().await.unwrap();
+    assert!(!Rc::ptr_eq(&first, &second));
+    wrapper.shutdown().await;
   }
 }

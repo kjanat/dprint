@@ -10,7 +10,7 @@ use dprint_plugin_types::PluginInfo;
 use super::WasmModuleCreator;
 use super::process;
 use super::wasm;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginSourceReference;
@@ -355,11 +355,7 @@ mod test {
   #[test]
   #[allow(clippy::disallowed_methods)] // a real environment needs real files
   fn loads_compiled_wasm_modules_in_a_real_environment() {
-    let environment = crate::environment::RealEnvironment::new(crate::environment::RealEnvironmentOptions {
-      log_level: crate::utils::LogLevel::Info,
-      is_stdout_machine_readable: false,
-    })
-    .unwrap();
+    let environment = crate::environment::RealEnvironment::new(crate::environment::HeadlessServices, "test").unwrap();
     let wasm_module_creator = WasmModuleCreator::default();
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("plugin.cwasm");

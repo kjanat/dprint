@@ -13,7 +13,7 @@ use crate::configuration::get_default_config_file_in_ancestor_directories;
 use crate::configuration::resolve_config_from_args;
 use crate::configuration::resolve_config_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::plugins;
 use crate::resolution::PluginsScope;
 use crate::resolution::resolve_plugins_scope;
@@ -79,7 +79,7 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
   }
 
   /// Reuses a scope with the same effective configuration. The callback cancels
-  /// frontend requests before plugins from the previous configuration stop.
+  /// frontend requests before replacing the previous configuration.
   pub async fn resolve_config(&self, config: ResolvedConfig, on_change: impl FnOnce()) -> Result<Rc<PluginsScope<TEnvironment>>> {
     let cell = {
       let mut scopes = self.plugins_scope_by_config.borrow_mut();
@@ -94,14 +94,17 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
       if existing_scope.config.as_deref() == Some(&config) {
         return Ok(existing_scope.clone());
       }
-      on_change();
-      // for simplicity, shut down all plugins when any config
-      // changes in order to do some cleanup
-      self.plugin_resolver.clear_and_shutdown_initialized().await;
     }
 
+    // Resolve before invalidating the last valid scope: plugin setup can fail.
     let new_scope = Rc::new(resolve_plugins_scope(Rc::new(config), &self.environment, &self.plugin_resolver).await?);
-    let _ = cell.insert(new_scope.clone());
+    if cell.is_some() {
+      on_change();
+    }
+    *cell = Some(new_scope.clone());
+    // Other scopes and outstanding requests retain their wrappers. They must
+    // keep running even when a different configuration changes.
+    self.plugin_resolver.shutdown_unused().await;
     Ok(new_scope)
   }
 }
@@ -196,6 +199,78 @@ mod tests {
       environment.write_file("/dprint.json", "{}").unwrap();
       let restored = session
         .resolve_from_options(&options, || panic!("last valid scope should remain cached"))
+        .await
+        .unwrap();
+      assert!(Rc::ptr_eq(&first, &restored));
+      session.shutdown().await;
+    });
+  }
+  async fn format_process(scope: &Rc<PluginsScope<TestEnvironment>>, ending: &str) {
+    let result = scope
+      .format(dprint_plugin_types::HostFormatRequest {
+        file_path: PathBuf::from("/file.txt_ps"),
+        file_bytes: b"text".to_vec(),
+        range: None,
+        override_config: Default::default(),
+        token: std::sync::Arc::new(dprint_plugin_types::NullCancellationToken),
+      })
+      .await
+      .unwrap();
+    assert_eq!(result, Some(format!("text_{ending}").into_bytes()));
+  }
+
+  #[test]
+  fn changing_one_config_preserves_another_scope_and_in_flight_owners() {
+    let environment = crate::environment::TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    let config = environment.read_file("/dprint.json").unwrap();
+    environment.write_file("/a.json", &config).unwrap();
+    environment.write_file("/b.json", &config).unwrap();
+    environment.clone().run_in_runtime(async move {
+      let session = session(&environment);
+      let options = |path: &str| SessionOptions {
+        config: Some(ConfigArg::PathOrUrl(path.into())),
+        ..Default::default()
+      };
+      let a_config = resolve_config_from_args(&options("/a.json"), &environment).await.unwrap();
+      let b_config = resolve_config_from_args(&options("/b.json"), &environment).await.unwrap();
+      let first_a = session.resolve_config(a_config, || {}).await.unwrap();
+      let b = session.resolve_config(b_config, || {}).await.unwrap();
+      let b_plugin = b.get_plugin("test-process-plugin").plugin.initialize().await.unwrap();
+      format_process(&first_a, "formatted_process").await;
+      format_process(&b, "formatted_process").await;
+      let mut text: serde_json::Value = serde_json::from_str(&config).unwrap();
+      text["testProcessPlugin"] = serde_json::json!({"ending": "changed"});
+      environment.write_file("/a.json", &text.to_string()).unwrap();
+      let changed = resolve_config_from_args(&options("/a.json"), &environment).await.unwrap();
+      let second_a = session.resolve_config(changed, || {}).await.unwrap();
+      format_process(&second_a, "changed").await;
+      format_process(&b, "formatted_process").await;
+      // A request that retained the old A scope can still finish as well.
+      format_process(&first_a, "formatted_process").await;
+      assert!(Rc::ptr_eq(&b_plugin, &b.get_plugin("test-process-plugin").plugin.initialize().await.unwrap()));
+      session.shutdown().await;
+    });
+  }
+
+  #[test]
+  fn failed_plugin_setup_preserves_the_valid_scope_without_cancelling() {
+    let environment = crate::environment::TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    let config = environment.read_file("/dprint.json").unwrap();
+    environment.clone().run_in_runtime(async move {
+      let session = session(&environment);
+      let options = SessionOptions::default();
+      let first = session.resolve_from_options(&options, || {}).await.unwrap();
+      environment.write_file("/dprint.json", r#"{"plugins":["/missing.wasm"]}"#).unwrap();
+      assert!(
+        session
+          .resolve_from_options(&options, || panic!("failed setup cannot cancel a valid scope"))
+          .await
+          .is_err()
+      );
+      format_process(&first, "formatted_process").await;
+      environment.write_file("/dprint.json", &config).unwrap();
+      let restored = session
+        .resolve_from_options(&options, || panic!("last valid scope remains cached"))
         .await
         .unwrap();
       assert!(Rc::ptr_eq(&first, &restored));

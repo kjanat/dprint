@@ -340,7 +340,7 @@ mod test {
   use crate::utils::GlobMatcherOptions;
   use crate::utils::GlobPattern;
   use crate::utils::GlobPatterns;
-  use dprint_platform::environment::*;
+
   use tree_fucker::WatcherKind;
   use tree_fucker::testing::FakeFileSystem;
 

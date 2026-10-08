@@ -226,24 +226,7 @@ pub trait EnvironmentVariables {
   fn env_var(&self, name: &str) -> Option<OsString>;
 }
 
-pub trait FileSystemEnvironment:
-  Clone
-  + Send
-  + Sync
-  + std::fmt::Debug
-  + 'static
-  + OutputEnvironment
-  + BaseFsCreateDir
-  + BaseFsMetadata
-  + BaseFsOpen
-  + BaseFsRead
-  + BaseFsRemoveFile
-  + BaseFsRename
-  + BaseFsSetPermissions
-  + ThreadSleep
-  + SystemRandom
-  + SystemTimeNow
-{
+pub trait FileSystemEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn read_file(&self, file_path: impl AsRef<Path>) -> io::Result<String>;
   fn maybe_read_file(&self, file_path: impl AsRef<Path>) -> io::Result<Option<String>> {
     match self.read_file(file_path) {
@@ -268,7 +251,10 @@ pub trait FileSystemEnvironment:
   /// logging any failure at debug level rather than returning it. Use this
   /// for cleanup that shouldn't abort the surrounding operation, while still
   /// surfacing the cause in `--log-level=debug` output.
-  fn try_remove_dir_all(&self, dir_path: impl AsRef<Path>) {
+  fn try_remove_dir_all(&self, dir_path: impl AsRef<Path>)
+  where
+    Self: OutputEnvironment,
+  {
     if let Err(err) = self.remove_dir_all(dir_path) {
       log_debug!(self, "{:#}", err);
     }
@@ -339,11 +325,8 @@ pub trait OutputEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   }
 }
 
-pub trait InteractionEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
-  fn get_selection(&self, prompt_message: &str, item_indent_width: u16, items: &[String]) -> Result<usize>;
-  /// Prompts for multiple items, returning the indexes of the selected ones.
-  /// Items that aren't selectable are shown but never returned.
-  fn get_multi_selection(&self, prompt_message: &str, item_indent_width: u16, items: Vec<MultiSelectItem>) -> Result<Vec<usize>>;
+/// Consent policy needed for remote or global configuration, without terminal streams.
+pub trait ConsentEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn confirm(&self, prompt_message: &str, default_value: bool) -> Result<bool> {
     self.confirm_with_strategy(&BasicShowConfirmStrategy {
       prompt: prompt_message,
@@ -352,6 +335,13 @@ pub trait InteractionEnvironment: Clone + Send + Sync + std::fmt::Debug + 'stati
   }
   fn confirm_with_strategy(&self, strategy: &dyn ShowConfirmStrategy) -> Result<bool>;
   fn is_terminal_interactive(&self) -> bool;
+}
+
+pub trait InteractionEnvironment: ConsentEnvironment {
+  fn get_selection(&self, prompt_message: &str, item_indent_width: u16, items: &[String]) -> Result<usize>;
+  /// Prompts for multiple items, returning the indexes of the selected ones.
+  /// Items that aren't selectable are shown but never returned.
+  fn get_multi_selection(&self, prompt_message: &str, item_indent_width: u16, items: Vec<MultiSelectItem>) -> Result<Vec<usize>>;
   fn stdout(&self) -> Box<dyn Write + Send>;
   fn stdin(&self) -> Box<dyn Read + Send>;
 }
@@ -363,23 +353,26 @@ pub trait CompilerEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn wasm_cache_key(&self) -> String;
 }
 
-#[async_trait]
-pub trait RuntimeEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static + EnvironmentVariables + BaseEnvVar {
-  fn is_real(&self) -> bool;
-  /// Kills any running process whose executable lives under the given directory
-  /// and returns how many were killed. Used when clearing the cache so a process
-  /// plugin that's still running can't stop its executable from being deleted
-  /// (e.g. on Windows a running executable can't be removed). This is best-effort
-  /// and never fails.
-  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize;
-  fn current_exe(&self) -> io::Result<PathBuf>;
+pub trait DirectoriesEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn get_cache_dir(&self) -> CanonicalizedPathBuf;
   fn get_config_dir(&self) -> Option<PathBuf>;
   fn get_home_dir(&self) -> Option<CanonicalizedPathBuf>;
+}
+
+pub trait SystemEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
+  fn is_real(&self) -> bool;
   /// Gets the CPU architecture.
   fn cpu_arch(&self) -> String;
   /// Gets the operating system.
   fn os(&self) -> String;
+}
+
+pub trait ClockEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
+  fn get_time_secs(&self) -> u64;
+}
+
+#[async_trait]
+pub trait ConcurrencyEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static + EnvironmentVariables {
   fn available_parallelism(&self) -> Option<NonZeroUsize>;
   fn max_threads(&self) -> usize {
     resolve_max_threads(
@@ -387,23 +380,76 @@ pub trait RuntimeEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static + 
       self.available_parallelism(),
     )
   }
-  /// Gets the CLI version
-  fn cli_version(&self) -> String;
-  fn get_time_secs(&self) -> u64;
-  fn run_command_get_status(&self, args: Vec<OsString>) -> io::Result<Option<i32>>;
-  fn is_ci(&self) -> bool;
   /// Returns the current CPU usage as a value from 0-100.
   async fn cpu_usage(&self) -> u8;
+}
+
+pub trait ProcessEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
+  /// Kills any running process whose executable lives under the given directory
+  /// and returns how many were killed. Used when clearing the cache so a process
+  /// plugin that's still running can't stop its executable from being deleted
+  /// (e.g. on Windows a running executable can't be removed). This is best-effort
+  /// and never fails.
+  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize;
+  fn current_exe(&self) -> io::Result<PathBuf>;
+  fn run_command_get_status(&self, args: Vec<OsString>) -> io::Result<Option<i32>>;
   #[cfg(windows)]
   fn ensure_system_path(&self, directory_path: &str) -> io::Result<()>;
   #[cfg(windows)]
   fn remove_system_path(&self, directory_path: &str) -> io::Result<()>;
 }
 
+pub trait ApplicationEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
+  /// Gets the CLI version
+  fn cli_version(&self) -> String;
+  fn is_ci(&self) -> bool;
+}
+
+pub trait RuntimeEnvironment:
+  EnvironmentVariables + DirectoriesEnvironment + SystemEnvironment + ClockEnvironment + ConcurrencyEnvironment + ProcessEnvironment + ApplicationEnvironment
+{
+}
+impl<
+  T: EnvironmentVariables + DirectoriesEnvironment + SystemEnvironment + ClockEnvironment + ConcurrencyEnvironment + ProcessEnvironment + ApplicationEnvironment,
+> RuntimeEnvironment for T
+{
+}
+
+pub trait FileSystemSys:
+  BaseFsCreateDir
+  + BaseFsMetadata
+  + BaseFsOpen
+  + BaseFsRead
+  + BaseFsRemoveFile
+  + BaseFsRename
+  + BaseFsSetPermissions
+  + BaseEnvVar
+  + ThreadSleep
+  + SystemRandom
+  + SystemTimeNow
+{
+}
+impl<
+  T: BaseFsCreateDir
+    + BaseFsMetadata
+    + BaseFsOpen
+    + BaseFsRead
+    + BaseFsRemoveFile
+    + BaseFsRename
+    + BaseFsSetPermissions
+    + BaseEnvVar
+    + ThreadSleep
+    + SystemRandom
+    + SystemTimeNow,
+> FileSystemSys for T
+{
+}
+
 /// Complete runtime used by plugin execution and formatting sessions.
 pub trait Environment:
   EnvironmentVariables
   + FileSystemEnvironment
+  + FileSystemSys
   + VcsEnvironment
   + OutputEnvironment
   + InteractionEnvironment
@@ -415,6 +461,7 @@ pub trait Environment:
 impl<
   T: EnvironmentVariables
     + FileSystemEnvironment
+    + FileSystemSys
     + VcsEnvironment
     + OutputEnvironment
     + InteractionEnvironment
@@ -457,12 +504,25 @@ mod test {
   }
 }
 
-/// Files, clocks and downloads, without interaction or plugin compilation.
-pub trait PlatformEnvironment: FileSystemEnvironment + RuntimeEnvironment + UrlDownloader {}
-impl<T: FileSystemEnvironment + RuntimeEnvironment + UrlDownloader> PlatformEnvironment for T {}
-/// Selection requires filesystem and git metadata, without downloads or plugin execution.
-pub trait DiscoveryEnvironment: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment {}
-impl<T: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment> DiscoveryEnvironment for T {}
-/// Resolving configuration may request consent; it never executes or compiles a plugin.
-pub trait ConfigEnvironment: PlatformEnvironment + InteractionEnvironment {}
-impl<T: PlatformEnvironment + InteractionEnvironment> ConfigEnvironment for T {}
+/// Files, caching, platform identification, clocks and downloads.
+pub trait PlatformEnvironment:
+  FileSystemEnvironment + OutputEnvironment + EnvironmentVariables + DirectoriesEnvironment + SystemEnvironment + ClockEnvironment + UrlDownloader
+{
+}
+impl<T: FileSystemEnvironment + OutputEnvironment + EnvironmentVariables + DirectoriesEnvironment + SystemEnvironment + ClockEnvironment + UrlDownloader>
+  PlatformEnvironment for T
+{
+}
+/// File selection and VCS metadata, without clocks or process execution.
+pub trait DiscoveryEnvironment: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment {}
+impl<T: FileSystemEnvironment + EnvironmentVariables + VcsEnvironment + OutputEnvironment> DiscoveryEnvironment for T {}
+/// Configuration resolution may request consent, but never executes a process.
+pub trait ConfigEnvironment: PlatformEnvironment + ConsentEnvironment {}
+impl<T: PlatformEnvironment + ConsentEnvironment> ConfigEnvironment for T {}
+
+/// Plugin acquisition and execution; no terminal input or VCS selection.
+pub trait PluginEnvironment: PlatformEnvironment + FileSystemSys + CompilerEnvironment {}
+impl<T: PlatformEnvironment + FileSystemSys + CompilerEnvironment> PluginEnvironment for T {}
+/// Formatting and sessions, including selection and configuration policy.
+pub trait HostEnvironment: PluginEnvironment + ConfigEnvironment + DiscoveryEnvironment + ConcurrencyEnvironment + ApplicationEnvironment {}
+impl<T: PluginEnvironment + ConfigEnvironment + DiscoveryEnvironment + ConcurrencyEnvironment + ApplicationEnvironment> HostEnvironment for T {}

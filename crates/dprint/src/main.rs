@@ -9,7 +9,6 @@ use dprint::plugins;
 use dprint::run_cli;
 use dprint::utils;
 use dprint_process_plugin::setup_exit_process_panic_hook;
-use environment::RealEnvironment;
 use environment::RealEnvironmentOptions;
 use run_cli::AppError;
 use std::rc::Rc;
@@ -77,7 +76,7 @@ fn kill_owned_children_on_termination() {
 async fn run() -> Result<(), (AppError, LogLevel)> {
   let args = arg_parser::parse_args(std::env::args().collect(), RealStdInReader).map_err(|err| (err.into(), LogLevel::Info))?;
 
-  let environment = RealEnvironment::new(RealEnvironmentOptions {
+  let environment = dprint::environment::create_real_environment(RealEnvironmentOptions {
     log_level: args.log_level,
     is_stdout_machine_readable: args.is_stdout_machine_readable(),
   })

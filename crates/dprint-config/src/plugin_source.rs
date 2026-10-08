@@ -98,7 +98,6 @@ pub fn parse_plugin_source_reference(text: &str, base: &PathSource, environment:
 mod tests {
   use crate::environment::CanonicalizedPathBuf;
   use crate::environment::TestEnvironment;
-  use dprint_platform::environment::*;
 
   use super::*;
 

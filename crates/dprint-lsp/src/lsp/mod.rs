@@ -8,7 +8,7 @@ use anyhow::Context;
 use anyhow::Result;
 use dprint_async_runtime::JoinHandle;
 use dprint_plugin_types::FormatRange;
-use dprint_process_plugin::HostFormatRequest;
+use dprint_plugin_types::HostFormatRequest;
 use dprint_process_plugin::start_parent_process_checker_task;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
@@ -45,13 +45,13 @@ use tower_lsp::lsp_types::TextDocumentSyncOptions;
 use tower_lsp::lsp_types::TextEdit;
 use url::Url;
 
-#[cfg(test)]
-use crate::arg_parser::CliArgs;
 use crate::configuration::config_needs_file_message;
 use crate::configuration::is_stream_path;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::plugins::PluginResolver;
 use dprint_config::options::ConfigOptions;
+#[cfg(test)]
+use dprint_host_api::options::SessionOptions;
 
 use self::client::ClientWrapper;
 use self::config_completion::ConfigCompletions;
@@ -635,8 +635,8 @@ mod test {
       .build();
     environment.add_fifo_path("/dev/fd/63");
 
-    let mut args = CliArgs::empty();
-    args.config = Some(crate::arg_parser::ConfigArg::PathOrUrl("/dev/fd/63".to_string()));
+    let mut args = SessionOptions::default();
+    args.config = Some(dprint_host_api::options::ConfigArg::PathOrUrl("/dev/fd/63".to_string()));
     let err = resolve_config_override(&args, &environment).err().unwrap();
 
     assert_eq!(
@@ -654,11 +654,11 @@ mod test {
       .write_file("/dprint.json", r#"{ "includes": ["**/*.txt"] }"#)
       .build();
 
-    let mut args = CliArgs::empty();
-    args.config = Some(crate::arg_parser::ConfigArg::PathOrUrl("dprint.json".to_string()));
+    let mut args = SessionOptions::default();
+    args.config = Some(dprint_host_api::options::ConfigArg::PathOrUrl("dprint.json".to_string()));
 
     assert_eq!(resolve_config_override(&args, &environment).unwrap(), Some(PathBuf::from("/dprint.json")));
-    assert_eq!(resolve_config_override(&CliArgs::empty(), &environment).unwrap(), None);
+    assert_eq!(resolve_config_override(&SessionOptions::default(), &environment).unwrap(), None);
   }
 
   #[test]

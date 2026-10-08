@@ -26,7 +26,6 @@ use super::messages::RegisterConfigMessageBody;
 use super::messages::ResponseBody;
 use crate::HostFormatRequest;
 use dprint_async_runtime::DropGuardAction;
-use dprint_async_runtime::LocalBoxFuture;
 use dprint_communication::AtomicFlag;
 use dprint_communication::IdGenerator;
 use dprint_communication::MessageReader;
@@ -110,7 +109,7 @@ impl From<CommunicatorError> for FormatError {
   }
 }
 
-pub type HostFormatCallback = Rc<dyn Fn(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult>>;
+pub use dprint_plugin_types::HostFormatCallback;
 
 pub struct ProcessPluginCommunicatorFormatRequest {
   pub file_path: PathBuf,

@@ -19,9 +19,9 @@ use dprint_plugin_types::FormatConfigId;
 use dprint_plugin_types::FormatError;
 use dprint_plugin_types::FormatRange;
 use dprint_plugin_types::FormatResult;
+use dprint_plugin_types::HostFormatRequest;
 use dprint_plugin_types::NullCancellationToken;
 use dprint_plugin_types::PluginInfo;
-use dprint_process_plugin::HostFormatRequest;
 use dprint_wasm_plugin::JsonResponse;
 
 use crate::plugins::FormatConfig;

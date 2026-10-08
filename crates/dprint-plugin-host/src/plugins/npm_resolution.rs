@@ -12,7 +12,7 @@ use tar::Archive;
 use deno_npmrc::RegistryConfig;
 use deno_semver::Version;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::utils::DependencyAgeCutoff;
 use crate::utils::MinimumDependencyAge;
 use crate::utils::MinimumDependencyAgeArg;
@@ -2217,7 +2217,7 @@ mod tests {
   /// fast-path skip on existing `dest_dir` is part of the correctness story
   /// — so it lives here under `#[cfg(test)]` rather than as a module-private
   /// function that future production code could pick up by accident.
-  fn extract_tarball_skipping_existence_check<E: Environment>(tarball_bytes: &[u8], dest_dir: &Path, environment: &E) -> Result<()> {
+  fn extract_tarball_skipping_existence_check<E: crate::environment::PluginEnvironment>(tarball_bytes: &[u8], dest_dir: &Path, environment: &E) -> Result<()> {
     use crate::utils::fs::get_atomic_path;
     let temp_dir = get_atomic_path(environment, dest_dir);
     environment.mk_dir_all(&temp_dir)?;

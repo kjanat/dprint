@@ -68,10 +68,52 @@ impl std::fmt::Display for MessagedError {
 
 impl std::error::Error for MessagedError {}
 
-#[sys_traits::auto_impl]
-pub trait HttpCacheSys:
-  FsCreateDirAll + FsMetadata + FsOpen + FsRead + FsRemoveFile + FsRename + ThreadSleep + SystemRandom + SystemTimeNow + std::fmt::Debug + Clone
+/// Minimal storage operations required by the HTTP cache.
+pub trait HttpCacheSys: std::fmt::Debug + Clone {
+  fn read_cache_file(&self, path: &std::path::Path) -> std::io::Result<Option<CacheEntry>>;
+  fn write_cache_file(&self, path: &std::path::Path, content: &[u8], metadata: &SerializedCachedUrlMetadata) -> std::io::Result<()>;
+  fn cache_time_secs(&self) -> u64;
+  fn cache_file_exists(&self, path: &std::path::Path) -> bool;
+}
+
+impl<T: FsCreateDirAll + FsMetadata + FsOpen + FsRead + FsRemoveFile + FsRename + ThreadSleep + SystemRandom + SystemTimeNow + std::fmt::Debug + Clone>
+  HttpCacheSys for T
 {
+  fn read_cache_file(&self, path: &std::path::Path) -> std::io::Result<Option<CacheEntry>> {
+    cache_file::read(self, path)
+  }
+  fn write_cache_file(&self, path: &std::path::Path, content: &[u8], metadata: &SerializedCachedUrlMetadata) -> std::io::Result<()> {
+    cache_file::write(self, path, content, metadata)
+  }
+  fn cache_time_secs(&self) -> u64 {
+    self.sys_time_now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+  }
+  fn cache_file_exists(&self, path: &std::path::Path) -> bool {
+    self.fs_is_file(path).unwrap_or(false)
+  }
+}
+
+/// Adapts an embedder's filesystem without requiring randomness, sleeping, or
+/// the sys_traits interfaces used by the native atomic-write implementation.
+#[derive(Debug, Clone)]
+pub struct EnvironmentHttpCacheSys<T>(pub T);
+impl<T: crate::environment::FileSystemEnvironment + crate::environment::ClockEnvironment> HttpCacheSys for EnvironmentHttpCacheSys<T> {
+  fn read_cache_file(&self, path: &std::path::Path) -> std::io::Result<Option<CacheEntry>> {
+    match self.0.read_file_bytes(path) {
+      Ok(bytes) => Ok(cache_file::decode(bytes)),
+      Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+      Err(err) => Err(err),
+    }
+  }
+  fn write_cache_file(&self, path: &std::path::Path, content: &[u8], metadata: &SerializedCachedUrlMetadata) -> std::io::Result<()> {
+    self.0.atomic_write_file_bytes(path, &cache_file::encode(content, metadata))
+  }
+  fn cache_time_secs(&self) -> u64 {
+    self.0.get_time_secs()
+  }
+  fn cache_file_exists(&self, path: &std::path::Path) -> bool {
+    self.0.path_is_file(path)
+  }
 }
 
 #[derive(Debug)]
@@ -101,28 +143,31 @@ impl<Sys: HttpCacheSys> HttpCache<Sys> {
     let Ok(cache_filepath) = self.local_path_for_url(url) else {
       return false;
     };
-    self.sys.fs_is_file(&cache_filepath).unwrap_or(false)
+    self.sys.cache_file_exists(&cache_filepath)
   }
 
   pub fn set(&self, url: &Url, headers: HeadersMap, content: &[u8]) -> std::io::Result<()> {
     let cache_filepath = self.local_path_for_url(url)?;
-    cache_file::write(
-      &self.sys,
-      &cache_filepath,
-      content,
-      &SerializedCachedUrlMetadata {
-        time: Some(self.sys.sys_time_now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
-        url: url.to_string(),
-        headers,
-      },
-    )
-    .map_err(|err| MessagedError::new(format!("failed to set '{}' in the cache (maybe run `dprint clear-cache`)", url), err))?;
+    self
+      .sys
+      .write_cache_file(
+        &cache_filepath,
+        content,
+        &SerializedCachedUrlMetadata {
+          time: Some(self.sys.cache_time_secs()),
+          url: url.to_string(),
+          headers,
+        },
+      )
+      .map_err(|err| MessagedError::new(format!("failed to set '{}' in the cache (maybe run `dprint clear-cache`)", url), err))?;
 
     Ok(())
   }
 
   pub fn get(&self, key: &HttpCacheItemKey) -> std::io::Result<Option<CacheEntry>> {
-    cache_file::read(&self.sys, &key.file_path)
+    self
+      .sys
+      .read_cache_file(&key.file_path)
       .map_err(|err| MessagedError::new(format!("failed to get '{}' from the cache (maybe run `dprint clear-cache`)", key.url), err))
   }
 }

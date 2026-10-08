@@ -4,7 +4,7 @@ pub use incremental_file::FileMetadata;
 pub use incremental_file::IncrementalFile;
 
 use crate::configuration::ResolvedConfig;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::resolution::PluginsScope;
 use crate::utils::get_bytes_hash;
 

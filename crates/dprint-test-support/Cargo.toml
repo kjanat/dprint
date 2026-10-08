@@ -5,4 +5,27 @@ edition.workspace = true
 publish           = false
 
 [dependencies]
-dprint = { path = "../dprint", features = ["test-support"] }
+anyhow.workspace               = true
+boon.workspace                 = true
+dprint-async-runtime.workspace = true
+dprint-config                  = { workspace = true, optional = true }
+dprint-host-api.workspace      = true
+dprint-platform.workspace      = true
+dprint-plugin-host             = { workspace = true, optional = true }
+flate2.workspace               = true
+indexmap.workspace             = true
+once_cell.workspace            = true
+parking_lot.workspace          = true
+path-clean.workspace           = true
+serde.workspace                = true
+serde_json.workspace           = true
+sys_traits                     = { workspace = true, features = ["memory", "real"] }
+tar.workspace                  = true
+tokio.workspace                = true
+tree-fucker.workspace          = true
+url.workspace                  = true
+zip.workspace                  = true
+
+[features]
+default = []
+plugins = ["dep:dprint-config", "dep:dprint-plugin-host"]

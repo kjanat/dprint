@@ -8,7 +8,7 @@ use tower_lsp::lsp_types::DidCloseTextDocumentParams;
 use tower_lsp::lsp_types::TextDocumentItem;
 use url::Url;
 
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 
 use super::text::LineIndex;
 

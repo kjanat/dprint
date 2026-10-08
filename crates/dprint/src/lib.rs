@@ -29,5 +29,11 @@ pub mod configuration {
   pub use dprint_config::resolution::*;
   pub use dprint_host::get_plugin_config_map;
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub mod test_helpers;
+
+#[cfg(test)]
+mod backend_integration_tests;
+
+#[cfg(test)]
+pub use dprint_test_support::assert_contains;

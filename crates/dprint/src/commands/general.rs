@@ -294,7 +294,7 @@ mod test {
   use super::*;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
-  use crate::environment::*;
+
   use crate::test_helpers::get_expected_help_text;
   use crate::test_helpers::get_plural_formatted_text;
   use crate::test_helpers::get_singular_formatted_text;

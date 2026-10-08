@@ -11,8 +11,8 @@ use dprint_plugin_types::FileMatchingInfo;
 use dprint_plugin_types::FormatError;
 use dprint_plugin_types::FormatRange;
 use dprint_plugin_types::FormatResult;
-use dprint_process_plugin::HostFormatCallback;
-use dprint_process_plugin::HostFormatRequest;
+use dprint_plugin_types::HostFormatCallback;
+use dprint_plugin_types::HostFormatRequest;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -40,7 +40,7 @@ use super::instance::create_host_state;
 use super::interpreter::InterpretedModule;
 use super::load_instance;
 use super::load_instance::WasmModule;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
@@ -693,7 +693,7 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
 
 #[cfg(test)]
 mod test {
-  use dprint_platform::environment::*;
+
   use std::cell::Cell;
   use std::path::Path;
 

@@ -166,7 +166,7 @@ mod test {
   use crate::environment::FilePermissions;
   use crate::environment::TestEnvironment;
   use crate::environment::TestFilePermissions;
-  use crate::environment::*;
+
   use crate::test_helpers::run_test_cli;
   use dprint_platform::environment::*;
 

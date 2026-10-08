@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::utils::LaxSingleProcessFsFlag;
 use crate::utils::PathSource;
 use crate::utils::get_bytes_hash;

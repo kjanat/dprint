@@ -7,10 +7,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::arg_parser::ConfigArg;
-#[cfg(test)]
-use crate::arg_parser::SubCommand;
-#[cfg(test)]
-use crate::arg_parser::sub_command_needs_config_file;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::ConfigEnvironment as Environment;
 use crate::environment::PathKind;
@@ -238,7 +234,7 @@ fn resolve_config_arg_source(config: &ConfigArg, cwd: &CanonicalizedPathBuf, env
 /// Whether the path names something to read as a stream rather than an ordinary
 /// file. A directory isn't a regular file either, but it isn't a stream: it
 /// should keep failing on the read the way it always has.
-pub fn is_stream_path(environment: &impl Environment, path: &Path) -> bool {
+pub fn is_stream_path(environment: &impl crate::environment::FileSystemEnvironment, path: &Path) -> bool {
   environment.path_exists(path) && !environment.path_is_file(path) && !matches!(environment.path_kind(path), Some(PathKind::Dir))
 }
 
@@ -371,11 +367,11 @@ fn resolve_mac_system_config_dir(environment: &impl Environment) -> Option<PathB
   None
 }
 
-fn resolve_env_var_folder(environment: &impl Environment, name: &str) -> Option<OsString> {
+fn resolve_env_var_folder(environment: &impl crate::environment::EnvironmentVariables, name: &str) -> Option<OsString> {
   environment.env_var(name).filter(|f| !f.is_empty())
 }
 
-fn resolve_or_create_folder(environment: &impl Environment, path: impl AsRef<Path>) -> std::io::Result<CanonicalizedPathBuf> {
+fn resolve_or_create_folder(environment: &impl crate::environment::FileSystemEnvironment, path: impl AsRef<Path>) -> std::io::Result<CanonicalizedPathBuf> {
   match environment.canonicalize(path.as_ref()) {
     Ok(path) => Ok(path),
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -390,7 +386,10 @@ fn resolve_or_create_folder(environment: &impl Environment, path: impl AsRef<Pat
   }
 }
 
-pub fn get_default_config_file_in_ancestor_directories(environment: &impl Environment, start_dir: &Path) -> Result<Option<ResolvedConfigPathWithText>> {
+pub fn get_default_config_file_in_ancestor_directories(
+  environment: &impl crate::environment::FileSystemEnvironment,
+  start_dir: &Path,
+) -> Result<Option<ResolvedConfigPathWithText>> {
   for ancestor_dir in start_dir.ancestors() {
     if let Some((ancestor_config_path, content)) = get_config_file_in_dir(ancestor_dir, environment)? {
       return Ok(Some(ResolvedConfigPathWithText {
@@ -406,7 +405,7 @@ pub fn get_default_config_file_in_ancestor_directories(environment: &impl Enviro
   Ok(None)
 }
 
-fn get_config_file_in_dir(dir: impl AsRef<Path>, environment: &impl Environment) -> std::io::Result<Option<(PathBuf, String)>> {
+fn get_config_file_in_dir(dir: impl AsRef<Path>, environment: &impl crate::environment::FileSystemEnvironment) -> std::io::Result<Option<(PathBuf, String)>> {
   for file_name in POSSIBLE_CONFIG_FILE_NAMES {
     let config_path = dir.as_ref().join(file_name);
     if let Some(text) = environment.maybe_read_file(&config_path)? {
@@ -421,19 +420,6 @@ mod tests {
   use super::*;
   use crate::environment::TestEnvironment;
   use dprint_platform::environment::*;
-
-  #[test]
-  fn test_sub_command_needs_config_file() {
-    // these either write the configuration file back or run long enough to
-    // read it again, so one-shot text and pipes are no good to them
-    assert!(sub_command_needs_config_file(&SubCommand::Config(crate::arg_parser::ConfigSubCommand::Edit)));
-    assert!(sub_command_needs_config_file(&SubCommand::Lsp));
-    assert!(sub_command_needs_config_file(&SubCommand::EditorService(
-      crate::arg_parser::EditorServiceSubCommand { parent_pid: 1 }
-    )));
-    assert!(!sub_command_needs_config_file(&SubCommand::EditorInfo));
-    assert!(!sub_command_needs_config_file(&SubCommand::Version));
-  }
 
   #[test]
   fn test_resolve_system_config_dir_macos_with_xdg_config_home() {

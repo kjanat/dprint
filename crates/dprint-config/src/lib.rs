@@ -9,7 +9,7 @@
 //! [`PluginTable`]). What a plugin's own properties are is the plugin's
 //! schema's to say, and what a configuration means once its files are
 //! combined is dprint's (see `config_layer.rs` and `resolve_config.rs` in
-//! the dprint crate, which convert the model into that).
+//! this crate, which convert the model into that).
 //!
 //! `dprint schema` composes the plugins' schemas into the model's (see
 //! [`compose`]), each as a schema resource of its own under `$defs` that
@@ -22,7 +22,6 @@ mod values;
 pub mod compose;
 #[cfg(feature = "schema")]
 pub mod document;
-#[cfg(feature = "schema")]
 mod generate;
 #[cfg(feature = "schema")]
 mod pointer;
@@ -95,10 +94,7 @@ mod configuration {
 }
 pub use dprint_host_api::options;
 #[cfg(test)]
-pub use dprint_test_support::arg_parser;
-#[cfg(test)]
 pub use dprint_test_support::test_helpers;
-#[cfg(not(test))]
 mod arg_parser {
   pub use crate::options::*;
 }

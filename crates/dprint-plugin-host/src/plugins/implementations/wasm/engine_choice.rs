@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 
 /// How a plugin formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

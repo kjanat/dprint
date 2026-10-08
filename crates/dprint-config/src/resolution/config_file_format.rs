@@ -744,7 +744,7 @@ fn display_path(plugin_key: &str, path: &[ConfigChangePathItem]) -> String {
 #[cfg(test)]
 mod test {
   use crate::PluginTable;
-  use dprint_platform::environment::*;
+
   use dprint_plugin_types::ConfigChange;
   use indexmap::IndexMap;
   use pretty_assertions::assert_eq;

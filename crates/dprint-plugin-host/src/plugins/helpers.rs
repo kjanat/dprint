@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use super::FormatConfig;
 use super::InitializedPlugin;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::utils::PathSource;
 
 #[derive(Debug, Error)]

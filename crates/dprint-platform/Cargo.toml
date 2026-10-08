@@ -31,9 +31,18 @@ twox-hash     = { workspace = true }
 url           = { workspace = true }
 zip           = { workspace = true }
 
+dirs.workspace      = true
+dunce.workspace     = true
+once_cell.workspace = true
+rand.workspace      = true
+which.workspace     = true
+
 [dev-dependencies]
 dprint-test-support         = { workspace = true }
 path-clean.workspace        = true
 pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }
 tempfile.workspace          = true
+
+[target."cfg(windows)".dependencies]
+winreg.workspace = true

@@ -39,7 +39,7 @@ url          = { workspace = true }
 wasmi        = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
 
 [dev-dependencies]
-dprint-test-support         = { workspace = true }
+dprint-test-support         = { workspace = true, features = ["plugins"] }
 path-clean.workspace        = true
 pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }

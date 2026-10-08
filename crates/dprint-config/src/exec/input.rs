@@ -273,7 +273,7 @@ impl ExecCommandInput {
 /// [`ExecConfigInput`].
 pub fn exec_config_schema() -> &'static str {
   static SCHEMA: OnceLock<String> = OnceLock::new();
-  SCHEMA.get_or_init(crate::schema_json_for::<ExecConfigInput>)
+  SCHEMA.get_or_init(crate::generate::schema_json_for::<ExecConfigInput>)
 }
 
 #[cfg(test)]

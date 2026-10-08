@@ -6,13 +6,14 @@ repository.workspace = true
 license.workspace    = true
 
 [dependencies]
-dprint-async-runtime  = { workspace = true }
-dprint-config         = { workspace = true }
-dprint-host           = { workspace = true }
-dprint-platform       = { workspace = true }
-dprint-plugin-host    = { workspace = true }
-dprint-plugin-types   = { workspace = true }
-dprint-process-plugin = { workspace = true }
+dprint-async-runtime      = { workspace = true }
+dprint-config             = { workspace = true }
+dprint-host               = { workspace = true }
+dprint-host-api.workspace = true
+dprint-platform           = { workspace = true }
+dprint-plugin-host        = { workspace = true }
+dprint-plugin-types       = { workspace = true }
+dprint-process-plugin     = { workspace = true }
 
 anyhow           = { workspace = true }
 jsonc-parser     = { workspace = true, features = ["cst", "preserve_order"] }
@@ -27,7 +28,7 @@ tower-lsp        = { workspace = true }
 url              = { workspace = true }
 
 [dev-dependencies]
-dprint-test-support         = { workspace = true }
+dprint-test-support         = { workspace = true, features = ["plugins"] }
 path-clean.workspace        = true
 pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }

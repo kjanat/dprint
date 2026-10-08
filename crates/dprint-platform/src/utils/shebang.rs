@@ -6,12 +6,12 @@ use std::path::Path;
 use sys_traits::FsOpen;
 use sys_traits::OpenOptions;
 
-use crate::environment::PlatformEnvironment as Environment;
+use crate::environment::OutputEnvironment;
 
 /// Reads the first line of a file when it starts with a shebang (`#!`),
 /// otherwise returns `None`. Only reads up to the end of the first line, so
 /// large files that aren't scripts don't get read into memory.
-pub fn read_file_shebang_line(environment: &impl Environment, file_path: &Path) -> io::Result<Option<Vec<u8>>> {
+pub fn read_file_shebang_line(environment: &(impl FsOpen + OutputEnvironment), file_path: &Path) -> io::Result<Option<Vec<u8>>> {
   log_debug!(environment, "Reading shebang line: {}", file_path.display());
   let map_err = |err: io::Error| io::Error::new(err.kind(), format!("Error reading file {}: {:#}", file_path.display(), err));
   let file = environment.fs_open(file_path, &OpenOptions::new_read()).map_err(map_err)?;

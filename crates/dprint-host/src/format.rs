@@ -12,7 +12,7 @@ use std::time::Instant;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::incremental::FileMetadata;
 use crate::incremental::IncrementalFile;
 use crate::resolution::GetPluginResult;

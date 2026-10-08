@@ -36,7 +36,7 @@ use super::implementations::parse_process_plugin_file;
 use super::implementations::setup_plugin;
 use super::npm_resolution;
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::PluginSourceReference;
 use crate::utils::NpmSpecifier;
 use crate::utils::PathSource;

@@ -4,7 +4,7 @@ use anyhow::bail;
 use jsonc_parser::JsonObject;
 
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::FetchNpmLatestInfo;
 use crate::plugins::PluginSourceReference;
 use crate::plugins::fetch_npm_latest_info;
@@ -161,7 +161,7 @@ impl ResolvedNpmPlugin {
 mod test {
   use super::*;
   use crate::environment::TestEnvironment;
-  use dprint_platform::environment::*;
+
   use jsonc_parser::JsonValue;
   use jsonc_parser::parse_to_value;
   use pretty_assertions::assert_eq;

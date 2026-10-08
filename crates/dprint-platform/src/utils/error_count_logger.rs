@@ -1,4 +1,4 @@
-use crate::environment::PlatformEnvironment as Environment;
+use crate::environment::OutputEnvironment as Environment;
 use std::cell::RefCell;
 use std::rc::Rc;
 

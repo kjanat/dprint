@@ -6,7 +6,7 @@ use jsonc_parser::JsonValue;
 use jsonc_parser::parse_to_value;
 use url::Url;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::PluginNpmInfo;
 use crate::plugins::ResolveNpmLatestOptions;
 use crate::plugins::ResolvedNpmPlugin;
@@ -254,7 +254,7 @@ mod test {
   use crate::environment::TestInfoFileConfigItem;
   use crate::environment::TestInfoFileMatch;
   use crate::environment::TestInfoFilePlugin;
-  use dprint_platform::environment::*;
+
   use pretty_assertions::assert_eq;
 
   #[test]

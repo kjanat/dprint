@@ -1,14 +1,12 @@
-use dprint_platform::environment::*;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use dprint_plugin_types::FormatConfigId;
-use dprint_process_plugin::HostFormatRequest;
+use dprint_plugin_types::HostFormatRequest;
 use tokio_util::sync::CancellationToken;
 
-use crate::arg_parser::CliArgs;
 use crate::configuration::resolve_config_from_args;
 use crate::environment::TestEnvironmentBuilder;
 use crate::plugins::FormatConfig;
@@ -17,6 +15,7 @@ use crate::plugins::PluginResolver;
 use crate::resolution::PluginWithConfig;
 use crate::resolution::PluginWithConfigOptions;
 use crate::resolution::PluginsScope;
+use dprint_host_api::options::SessionOptions;
 
 #[test]
 fn should_support_host_format_cancellation() {
@@ -26,7 +25,7 @@ fn should_support_host_format_cancellation() {
     async move {
       let plugin_cache = PluginCache::new(environment.clone());
       let resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
-      let cli_args = CliArgs::empty();
+      let cli_args = SessionOptions::default();
       let config = Rc::new(resolve_config_from_args(&cli_args, &environment).await.unwrap());
       let plugins = resolver.resolve_plugins(config.plugins.sources.clone()).await.unwrap();
       assert_eq!(
@@ -92,7 +91,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
     async move {
       let plugin_cache = PluginCache::new(environment.clone());
       let resolver = Rc::new(PluginResolver::new(environment.clone(), plugin_cache));
-      let cli_args = CliArgs::empty();
+      let cli_args = SessionOptions::default();
       let config = Rc::new(resolve_config_from_args(&cli_args, &environment).await.unwrap());
       let plugins = resolver.resolve_plugins(config.plugins.sources.clone()).await.unwrap();
       assert_eq!(

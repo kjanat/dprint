@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::utils::get_bytes_hash;
 
 #[derive(Serialize, Deserialize)]

@@ -1,8 +1,10 @@
 pub use dprint_host_api::environment::*;
+pub use native::HeadlessServices;
+pub use native::NativeEnvironment;
+pub use native::NativeServices;
+mod native;
 #[cfg(test)]
-pub use dprint_test_support::environment::RealEnvironment;
-#[cfg(test)]
-pub use dprint_test_support::environment::RealEnvironmentOptions;
+pub type RealEnvironment = NativeEnvironment<HeadlessServices>;
 #[cfg(test)]
 pub use dprint_test_support::environment::TestEnvironment;
 #[cfg(test)]

@@ -9,7 +9,7 @@ use serde::Serialize;
 use dprint_plugin_types::PluginInfo;
 
 use super::implementations::WASM_CACHE_VERSION;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::utils::FastInsecureHasher;
 use crate::utils::PluginKind;
 use std::hash::Hasher;

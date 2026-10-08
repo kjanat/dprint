@@ -328,7 +328,7 @@ mod test {
 
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
-  use crate::environment::*;
+
   use crate::test_helpers::run_test_cli;
 
   use super::messages::EditorMessage;

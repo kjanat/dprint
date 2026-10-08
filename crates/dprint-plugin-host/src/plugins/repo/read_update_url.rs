@@ -5,7 +5,7 @@ use jsonc_parser::JsonValue;
 use jsonc_parser::parse_to_value;
 use url::Url;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::environment::UrlDownloader;
 use crate::plugins::PluginNpmInfo;
 use crate::plugins::PluginSourceReference;
@@ -113,7 +113,6 @@ pub async fn read_update_url(downloader: &impl UrlDownloader, url: &Url) -> Resu
 mod test {
   use super::*;
   use crate::environment::TestEnvironmentBuilder;
-  use dprint_platform::environment::*;
 
   #[test]
   fn should_get_valid() {

@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::configuration::ResolvedConfig;
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::utils::ExcludeMatchDetail;
 use crate::utils::GitIgnoreTree;
 use crate::utils::GitIgnoreTreeOptions;

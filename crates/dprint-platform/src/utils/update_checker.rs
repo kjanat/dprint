@@ -7,7 +7,7 @@ use url::Url;
 // The permanent repository ID keeps release discovery working after repository renames.
 pub const LATEST_RELEASE_URL: &str = "https://api.github.com/repositories/1092062077/releases/latest";
 
-pub async fn is_out_of_date(environment: &impl Environment) -> Option<String> {
+pub async fn is_out_of_date(environment: &(impl Environment + crate::environment::ApplicationEnvironment)) -> Option<String> {
   log_debug!(environment, "Checking if CLI out of date...");
   match latest_cli_version(environment).await {
     Ok(latest_version) => {
@@ -38,7 +38,6 @@ pub async fn latest_cli_version(environment: &impl Environment) -> Result<String
 #[cfg(test)]
 mod test {
   use crate::environment::TestEnvironmentBuilder;
-  use dprint_platform::environment::*;
 
   use super::*;
 

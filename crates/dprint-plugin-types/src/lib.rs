@@ -8,3 +8,8 @@ mod plugin_info;
 
 pub use plugin_handler::*;
 pub use plugin_info::*;
+
+#[cfg(feature = "async_runtime")]
+mod async_handler;
+#[cfg(feature = "async_runtime")]
+pub use async_handler::*;

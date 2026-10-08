@@ -7,14 +7,14 @@ use anyhow::Result;
 use dprint_async_runtime::async_trait;
 use dprint_configuration::ConfigKeyMap;
 use dprint_configuration::ConfigurationDiagnostic;
+use dprint_plugin_types::AsyncPluginHandler;
 use dprint_plugin_types::CheckConfigUpdatesMessage;
 use dprint_plugin_types::ConfigChange;
 use dprint_plugin_types::FileMatchingInfo;
 use dprint_plugin_types::FormatConfigId;
+use dprint_plugin_types::FormatRequest;
 use dprint_plugin_types::FormatResult;
 use dprint_plugin_types::PluginInfo;
-use dprint_process_plugin::AsyncPluginHandler;
-use dprint_process_plugin::FormatRequest;
 
 use crate::plugins::BuiltInFormatter;
 use crate::plugins::FormatConfig;

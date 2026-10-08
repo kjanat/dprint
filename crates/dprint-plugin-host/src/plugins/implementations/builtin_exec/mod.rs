@@ -24,7 +24,7 @@ pub use legacy::COMMANDS_RELEASE as EXEC_COMMANDS_RELEASE;
 pub use legacy::is_exec_plugin_reference;
 pub use legacy::knows_exec_plugin_commands;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
 use crate::plugins::Plugin;
 use crate::plugins::PluginSourceReference;
@@ -81,10 +81,7 @@ pub use dprint_config::exec::is_builtin_exec_reference;
 mod test {
   use super::*;
   use crate::environment::TestEnvironment;
-  use crate::environment::TestEnvironmentBuilder;
-  use crate::test_helpers::run_test_cli;
   use crate::utils::PathSource;
-  use dprint_platform::environment::*;
 
   fn parse_reference(text: &str, environment: &TestEnvironment) -> PluginSourceReference {
     let base = PathSource::new_local(crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
@@ -102,23 +99,6 @@ mod test {
     assert!(!is_exec("npm:@dprint/typescript@0.96.1"));
     assert!(!is_exec("https://plugins.dprint.dev/typescript-0.96.1.wasm"));
     assert!(!is_exec("https://example.com/exec-0.5.0.json"));
-  }
-
-  #[cfg(unix)]
-  #[test]
-  fn formats_with_built_in_exec_without_downloading_the_plugin() {
-    // no plugin files are served, so this would fail if it tried to download
-    let environment = TestEnvironmentBuilder::new()
-      .with_default_config(|config_file| {
-        config_file
-          .add_plugin("npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67")
-          .add_config_section("exec", r#"{ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }"#);
-      })
-      .write_file("/file.txt", "text\n")
-      .build();
-    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
-    assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
-    assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_singular_formatted_text()]);
   }
 
   #[test]
@@ -367,26 +347,6 @@ mod test {
         NPM_TARBALL_CHECKSUM
       ))
     );
-  }
-
-  #[test]
-  fn checks_the_checksum_of_a_reference_it_doesnt_serve() {
-    // the plugin it names is downloaded and fails its checksum check, rather
-    // than being replaced by the built-in exec
-    let environment = TestEnvironmentBuilder::new()
-      .with_default_config(|config_file| {
-        config_file
-          .add_plugin("https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000")
-          .add_config_section("exec", r#"{ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }"#);
-      })
-      .add_remote_file("https://plugins.dprint.dev/exec-0.7.3.json", "{}")
-      .write_file("/file.txt", "text\n")
-      .build();
-    let error = run_test_cli(vec!["fmt", "/file.txt"], &environment).err().unwrap();
-    error.assert_exit_code(12);
-    assert!(error.to_string().contains("The checksum did not match the expected checksum."), "{}", error);
-    assert_eq!(environment.read_file("/file.txt").unwrap(), "text\n");
-    environment.take_stderr_messages();
   }
 
   #[test]

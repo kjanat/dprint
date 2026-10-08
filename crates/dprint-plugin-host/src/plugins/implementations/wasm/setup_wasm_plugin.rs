@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use dprint_plugin_types::PluginInfo;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 
 use super::super::NoRetrySetupError;
 use super::super::SetupPluginResult;

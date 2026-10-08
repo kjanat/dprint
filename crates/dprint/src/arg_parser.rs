@@ -60,7 +60,7 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-  #[cfg(any(test, feature = "test-support"))]
+  #[cfg(test)]
   pub fn empty() -> Self {
     Self {
       sub_command: SubCommand::Help("".to_string()),
@@ -2099,4 +2099,21 @@ impl dprint_config::options::ConfigOptions for CliArgs {
 
 pub fn sub_command_needs_config_file(sub_command: &SubCommand) -> bool {
   matches!(sub_command, SubCommand::Config(_) | SubCommand::EditorService(_) | SubCommand::Lsp)
+}
+
+#[cfg(test)]
+mod command_config_tests {
+  use super::*;
+  #[test]
+  fn test_sub_command_needs_config_file() {
+    // these either write the configuration file back or run long enough to
+    // read it again, so one-shot text and pipes are no good to them
+    assert!(sub_command_needs_config_file(&SubCommand::Config(ConfigSubCommand::Edit)));
+    assert!(sub_command_needs_config_file(&SubCommand::Lsp));
+    assert!(sub_command_needs_config_file(&SubCommand::EditorService(EditorServiceSubCommand {
+      parent_pid: 1
+    })));
+    assert!(!sub_command_needs_config_file(&SubCommand::EditorInfo));
+    assert!(!sub_command_needs_config_file(&SubCommand::Version));
+  }
 }

@@ -13,5 +13,4 @@ mod plugins;
 pub use dprint_test_support::test_helpers;
 pub use plugins::*;
 #[cfg(test)]
-#[macro_use]
 extern crate dprint_test_support;

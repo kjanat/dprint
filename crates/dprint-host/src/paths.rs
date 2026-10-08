@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::PluginNameResolutionMaps;
 use crate::configuration::ResolvedConfig;
 use crate::environment::CanonicalizedPathBuf;
-use crate::environment::Environment;
+use crate::environment::HostEnvironment as Environment;
 use crate::patterns::get_all_file_patterns;
 use crate::patterns::process_cli_path_args;
 use crate::utils::GlobOptions;

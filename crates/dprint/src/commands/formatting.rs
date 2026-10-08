@@ -465,7 +465,7 @@ mod test {
 
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
-  use crate::environment::*;
+
   use crate::test_helpers;
   use crate::test_helpers::PROCESS_PLUGIN_ZIP_CHECKSUM;
   use crate::test_helpers::TestAppError;

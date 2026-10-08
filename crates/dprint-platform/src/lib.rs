@@ -7,7 +7,6 @@ pub mod utils;
 #[cfg(test)]
 pub use dprint_test_support::test_helpers;
 #[cfg(test)]
-#[macro_use]
 extern crate dprint_test_support;
 
 pub use dprint_host_api::log_all;

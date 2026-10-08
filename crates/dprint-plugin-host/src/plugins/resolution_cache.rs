@@ -7,7 +7,7 @@ use dprint_plugin_types::FileMatchingInfo;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::FormatConfig;
 use crate::utils::FastInsecureHasher;
 

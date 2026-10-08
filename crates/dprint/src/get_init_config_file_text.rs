@@ -671,7 +671,6 @@ mod test {
   use crate::environment::TestInfoFileNpm;
   use crate::environment::TestInfoFilePlugin;
   use crate::plugins::InfoFileConfigItem;
-  use dprint_platform::environment::*;
   use pretty_assertions::assert_eq;
 
   fn exec_info_plugin() -> TestInfoFilePlugin {

@@ -1,4 +1,4 @@
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPluginFormatRequest;
 use crate::utils::AsyncMutex;
@@ -182,7 +182,7 @@ async fn create_new_communicator<TEnvironment: Environment>(restart_info: &Proce
 
 #[cfg(test)]
 mod test {
-  use dprint_platform::environment::*;
+
   use std::rc::Rc;
   use std::sync::Arc;
   use std::time::Duration;

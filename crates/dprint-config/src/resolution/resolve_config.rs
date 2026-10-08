@@ -522,16 +522,14 @@ mod tests {
   use crate::environment::ConfigEnvironment as Environment;
   use std::path::PathBuf;
 
-  use crate::arg_parser::parse_args;
   use crate::configuration::ConfigMapValue;
   use crate::configuration::RawPluginConfig;
   use crate::configuration::RawPluginConfigOverride;
   use crate::configuration::json_config_text_to_toml;
-  use crate::environment::EnvironmentVariables;
+
   use crate::environment::FileSystemEnvironment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
-  use crate::utils::TestStdInReader;
   use anyhow::Result;
   use dprint_configuration::ConfigKeyMap;
   use dprint_configuration::ConfigKeyValue;
@@ -541,11 +539,10 @@ mod tests {
   use super::*;
 
   async fn get_result(url: &str, environment: &impl Environment) -> Result<ResolvedConfig, ResolveConfigError> {
-    let args = parse_args(
-      vec![String::from(""), String::from("check"), String::from("-c"), String::from(url)],
-      TestStdInReader::default(),
-    )
-    .unwrap();
+    let args = crate::options::SessionOptions {
+      config: Some(crate::options::ConfigArg::PathOrUrl(url.to_string())),
+      ..Default::default()
+    };
     resolve_config_from_args(&args, environment).await
   }
 

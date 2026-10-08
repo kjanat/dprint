@@ -1,5 +1,3 @@
-use std::time::UNIX_EPOCH;
-
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -112,8 +110,11 @@ async fn resolve_url_to_file_with_cache<TEnvironment: Environment>(url: &Url, en
     }))
   }
 
-  let cache = HttpCache::new(environment.clone(), environment.get_cache_dir().join("remote"));
-  let now_secs = environment.sys_time_now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+  let cache = HttpCache::new(
+    crate::cache::EnvironmentHttpCacheSys(environment.clone()),
+    environment.get_cache_dir().join("remote"),
+  );
+  let now_secs = environment.get_time_secs();
   let mut current_url = url.clone();
   // Redirects downloaded on the way to the content. They're only written to the
   // cache once the content is reached so that a failure part way through a

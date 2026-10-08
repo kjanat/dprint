@@ -38,3 +38,18 @@ fn facade_and_direct_plugin_types_preserve_configuration_and_errors() {
   let error: dprint_core::plugins::FormatError = critical.into();
   assert!(error.downcast_ref::<dprint_core::plugins::CriticalFormatError>().is_some());
 }
+
+#[cfg(feature = "process")]
+#[test]
+fn asynchronous_requests_preserve_identity_across_transports_and_facade() {
+  let request = dprint_plugin_types::HostFormatRequest {
+    file_path: "test.txt".into(),
+    file_bytes: b"text".to_vec(),
+    range: None,
+    override_config: Default::default(),
+    token: std::sync::Arc::new(dprint_plugin_types::NullCancellationToken),
+  };
+  let transport: dprint_core::plugins::process::HostFormatRequest = request;
+  let facade: dprint_core::plugins::HostFormatRequest = transport;
+  assert_eq!(facade.file_bytes, b"text");
+}

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::str;
 use std::time::Duration;
 
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::implementations::NoRetrySetupError;
 use crate::plugins::implementations::SetupPluginResult;
 use crate::plugins::npm_resolution::extract_tarball_replacing;
@@ -403,7 +403,6 @@ pub fn get_os_path<'a>(plugin_file: &'a ProcessPluginFile, environment: &impl En
 #[cfg(test)]
 mod test {
   use super::*;
-  use dprint_platform::environment::*;
 
   #[test]
   fn selects_freebsd_process_plugin() {

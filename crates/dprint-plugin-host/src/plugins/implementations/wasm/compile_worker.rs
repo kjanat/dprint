@@ -61,7 +61,7 @@ use super::super::NoRetrySetupError;
 use super::WASM_PLUGIN_THREAD_STACK_SIZE;
 use super::compile::WasmSetupStep;
 use super::compile::compile_with_steps;
-use crate::environment::Environment;
+use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::CompilationResult;
 
 /// When this is the first argument, the dprint binary runs as a compile worker.
@@ -95,7 +95,7 @@ const MAX_TOTAL_WALL: Duration = Duration::from_secs(10 * 60);
 
 /// Compiles a wasm plugin in a supervised worker process, retrying when the
 /// worker stalls or crashes.
-pub fn compile_supervised<TEnvironment: Environment>(
+pub fn compile_supervised<TEnvironment: Environment + crate::environment::ConcurrencyEnvironment + crate::environment::ProcessEnvironment>(
   environment: &TEnvironment,
   plugin_display: &str,
   wasm_bytes: &[u8],
@@ -1069,7 +1069,6 @@ fn read_end_of(reader: &mut impl Read, max_len: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
-  use dprint_platform::environment::*;
   use std::collections::VecDeque;
   use std::sync::Mutex;
 

@@ -32,6 +32,12 @@ pub fn write<TSys: FsCreateDirAll + FsMetadata + FsOpen + FsRemoveFile + FsRenam
   content: &[u8],
   metadata: &SerializedCachedUrlMetadata,
 ) -> std::io::Result<()> {
+  let result = encode(content, metadata);
+  atomic_write_file_with_retries(sys, path, &result, CACHE_PERM)?;
+  Ok(())
+}
+
+pub fn encode(content: &[u8], metadata: &SerializedCachedUrlMetadata) -> Vec<u8> {
   fn estimate_metadata_capacity(metadata: &SerializedCachedUrlMetadata) -> usize {
     metadata.headers.iter().map(|(k, v)| k.len() + v.len() + 6).sum::<usize>() + metadata.url.len() + metadata.time.as_ref().map(|_| 14).unwrap_or(0) + 128 // overestimate
   }
@@ -42,8 +48,14 @@ pub fn write<TSys: FsCreateDirAll + FsMetadata + FsOpen + FsRemoveFile + FsRenam
   result.extend(LAST_LINE_PREFIX);
   serde_json::to_writer(&mut result, &metadata).unwrap();
   debug_assert!(result.len() < capacity, "{} < {}", result.len(), capacity);
-  atomic_write_file_with_retries(sys, path, &result, CACHE_PERM)?;
-  Ok(())
+  result
+}
+
+pub fn decode(mut bytes: Vec<u8>) -> Option<CacheEntry> {
+  let (content, metadata) = read_content_and_metadata(&bytes)?;
+  let len = content.len();
+  bytes.truncate(len);
+  Some(CacheEntry { metadata, content: bytes })
 }
 
 pub fn read(sys: &impl FsRead, path: &Path) -> std::io::Result<Option<CacheEntry>> {
