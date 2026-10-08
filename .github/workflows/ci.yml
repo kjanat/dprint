@@ -144,7 +144,11 @@ jobs:
     name: "${{ matrix.target }}"
     runs-on: "${{ matrix.os }}"
     timeout-minutes: "${{ matrix.target == 'x86_64-unknown-freebsd' && 90 || 60 }}"
-    permissions: { contents: write }
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     defaults: { run: { shell: bash } }
     strategy:
       fail-fast: false
@@ -317,6 +321,11 @@ jobs:
           else
             zip "dprint-${TARGET}.zip" dprint
           fi
+      - name: Attest release binary
+        if: needs.changes.outputs.release == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: "target/${{ matrix.target }}/release/dprint-${{ matrix.target }}.zip"
       - name: Preserve release artifact
         if: needs.changes.outputs.release == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -350,11 +359,7 @@ jobs:
       needs.prepare_release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+    permissions: { contents: write }
     steps:
       - name: Download successful build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -372,11 +377,6 @@ jobs:
             exit 1
           fi
           sha256sum "${files[@]}" > SHASUMS256.txt
-      - name: Generate artifact attestations
-        # A manual repair checks out the release source, not the workflow commit.
-        if: github.event_name != 'workflow_dispatch'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
-        with: { subject-checksums: release-assets/SHASUMS256.txt }
       - name: Upload available binaries
         env:
           GH_TOKEN: "${{ github.token }}"
