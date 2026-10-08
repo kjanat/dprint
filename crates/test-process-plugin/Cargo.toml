@@ -1,12 +1,12 @@
 [package]
-name                 = "test-process-plugin"
-version              = "0.1.0"
-authors              = ["David Sherret <dsherret@gmail.com>"]
-edition.workspace    = true
-repository.workspace = true
+name       = "test-process-plugin"
+version    = "0.1.0"
+authors    = { workspace = true }
+edition    = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-dprint-core          = { path = "../core", features = ["process"] }
-serde.workspace      = true
-serde_json.workspace = true
-tokio.workspace      = true
+dprint-core = { workspace = true, default-features = true, features = ["process"] }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }

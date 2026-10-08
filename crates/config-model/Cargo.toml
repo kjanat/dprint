@@ -1,26 +1,30 @@
 [package]
-name                 = "dprint-config-model"
-version              = "0.1.0"
-edition.workspace    = true
-description          = "The model of dprint's configuration file: the types a configuration file is read into, and (with the `schema` feature) its JSON schema, generated from them."
-repository.workspace = true
-license              = "MIT"
-publish              = false
+name        = "dprint-config-model"
+version     = "0.1.0"
+authors     = ["Kaj Kowalski <info@kajkowalski.nl>"]
+edition     = { workspace = true }
+description = "The model of dprint's configuration file: the types a configuration file is read into, and (with the `schema` feature) its JSON schema, generated from them."
+repository  = { workspace = true }
+license     = { workspace = true }
+publish     = false
+
+[package.metadata]
+schema-id = "https://dprint.kjanat.dev/schemas/v0.json"
 
 [dependencies]
 anyhow              = { workspace = true, optional = true }
-dprint-core         = { path = "../core", version = "=0.70.0", default-features = false }
+dprint-core         = { workspace = true }
 indexmap            = { workspace = true }
-percent-encoding    = { version = "=2.3.1", optional = true }
-schemars            = { version = "=1.2.2", features = ["indexmap2", "preserve_order"], optional = true }
+percent-encoding    = { workspace = true, optional = true }
+schemars            = { workspace = true, features = ["indexmap2", "preserve_order"], optional = true }
 serde               = { workspace = true }
 serde_json          = { workspace = true }
-serde_path_to_error = "=0.1.20"
-url                 = { version = "=2.5.4", optional = true }
+serde_path_to_error = { workspace = true }
+url                 = { workspace = true, optional = true }
 
 [dev-dependencies]
-boon              = "0.6.1"
-pretty_assertions = "1.4.0"
+boon              = { workspace = true }
+pretty_assertions = { workspace = true }
 
 [features]
 default = []

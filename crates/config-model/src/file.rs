@@ -30,7 +30,7 @@ use crate::values::tracked;
 
 /// Where the website serves the schema of a configuration file without the
 /// plugins' schemas.
-pub const ROOT_SCHEMA_ID: &str = "https://dprint.dev/schemas/v0.json";
+pub const ROOT_SCHEMA_ID: &str = "https://dprint.kjanat.dev/schemas/v0.json";
 
 /// Schema for a dprint configuration file.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

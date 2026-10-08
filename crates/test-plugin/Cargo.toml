@@ -1,9 +1,9 @@
 [package]
-name                 = "test-plugin"
-version              = "0.2.0"
-authors              = ["David Sherret <dsherret@gmail.com>"]
-edition.workspace    = true
-repository.workspace = true
+name       = "test-plugin"
+version    = "0.2.0"
+authors    = { workspace = true }
+edition    = { workspace = true }
+repository = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "lib"]

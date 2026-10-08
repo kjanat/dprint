@@ -27,10 +27,27 @@ Deno.test("preserves custom plugin URLs, including plugins with matching names",
       "https://example.com/typescript-0.96.1.wasm",
       "https://plugins.dprint.dev/other/typescript-0.96.1.wasm",
       "https://plugins.dprint.dev/custom-1.0.0.wasm",
+      "https://plugins.dprint.dev/other/pwsh-0.2.0.wasm",
+      "https://plugins.dprint.dev/kjanat/svg-v0.4.1.wasm",
       "https://example.com/?url=https://plugins.dprint.dev/typescript-0.96.1.wasm",
     ]
   ) {
     strictEqual(getPluginDownloadUrl(url), url);
+  }
+});
+
+Deno.test("resolves the canonical PowerShell plugin and its schema", async () => {
+  strictEqual(
+    getPluginDownloadUrl("https://plugins.dprint.dev/kjanat/pwsh-0.2.0.wasm"),
+    "https://cdn.jsdelivr.net/npm/dprint-plugin-pwsh@0.2.0/plugin.wasm",
+  );
+  // Keep custom plugin links pinned to their full canonical URL.
+  strictEqual(getPluginShortNameFromPluginUrl("https://plugins.dprint.dev/kjanat/pwsh-0.2.0.wasm"), undefined);
+  for (const name of ["pwsh", "dprint-plugin-pwsh"]) {
+    strictEqual(
+      await getPluginSchemaUrl(`https://plugins.dprint.dev/kjanat/${name}/0.2.0/schema.json`),
+      "https://cdn.jsdelivr.net/gh/kjanat/powershell-formatter@0.2.0/crates/dprint-plugin-pwsh/deployment/schema.json",
+    );
   }
 });
 

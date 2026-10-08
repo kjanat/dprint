@@ -1,18 +1,6 @@
-const plugins = [
-  { name: "typescript", npm: "@dprint/typescript", prefix: "typescript-" },
-  { name: "json", npm: "@dprint/json", prefix: "json-" },
-  { name: "markdown", npm: "@dprint/markdown", prefix: "markdown-" },
-  { name: "toml", npm: "@dprint/toml", prefix: "toml-" },
-  { name: "dockerfile", npm: "@dprint/dockerfile", prefix: "dockerfile-" },
-  { name: "biome", npm: "@dprint/biome", prefix: "biome-" },
-  { name: "oxc", npm: "@dprint/oxc", prefix: "oxc-" },
-  { name: "mago", npm: "@dprint/mago", prefix: "mago-" },
-  { name: "ruff", npm: "@dprint/ruff", prefix: "ruff-" },
-  { name: "malva", npm: "dprint-plugin-malva", prefix: "g-plane/malva-v" },
-  { name: "markup_fmt", npm: "dprint-plugin-markup", prefix: "g-plane/markup_fmt-v" },
-  { name: "pretty_yaml", npm: "dprint-plugin-yaml", prefix: "g-plane/pretty_yaml-v" },
-  { name: "pretty_graphql", npm: "dprint-plugin-graphql", prefix: "g-plane/pretty_graphql-v" },
-];
+import { playgroundPlugins as plugins } from "../../../src/scripts/plugin-repository.js";
+
+export { getPluginDownloadUrl } from "../../../src/scripts/plugin-repository.js";
 
 export async function getPluginUrls(signal: AbortSignal): Promise<string[]> {
   return await Promise.all(
@@ -37,18 +25,6 @@ export async function getPluginUrls(signal: AbortSignal): Promise<string[]> {
 }
 
 const RE_PLUGIN_URL = /^https:\/\/plugins\.dprint\.dev\/(?:[a-z_-]+\/)?([a-z_-]+)-v?([0-9]+\.[0-9]+\.[0-9]+)\.wasm$/;
-
-export function getPluginDownloadUrl(url: string): string {
-  const match = RE_PLUGIN_URL.exec(url);
-  if (!match) return url;
-  const plugin = plugins.find(
-    (plugin) => url === `https://plugins.dprint.dev/${plugin.prefix}${match[2]}.wasm`,
-  );
-  // Custom plugins retain their own download URL.
-  return plugin
-    ? `https://cdn.jsdelivr.net/npm/${plugin.npm}@${match[2]}/plugin.wasm`
-    : url;
-}
 
 export function getPluginShortNameFromPluginUrl(url: string) {
   const result = RE_PLUGIN_URL.exec(url);
