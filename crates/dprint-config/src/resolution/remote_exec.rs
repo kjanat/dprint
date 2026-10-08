@@ -921,7 +921,7 @@ impl ProgramLookup {
       }
       // commands run on the real system, so this looks at the real file system
       #[allow(clippy::disallowed_methods)]
-      let found = crate::plugins::find_with_path_ext(program, &self.cwd, self.path.as_deref(), self.path_ext.as_deref(), &|path| path.is_file())?;
+      let found = dprint_platform::utils::find_with_path_ext(program, &self.cwd, self.path.as_deref(), self.path_ext.as_deref(), &|path| path.is_file())?;
       is_batch(&found).then(|| found.display().to_string())
     }
     #[cfg(not(windows))]

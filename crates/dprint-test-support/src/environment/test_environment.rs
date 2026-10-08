@@ -1,6 +1,7 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+#[cfg(feature = "plugins")]
 use once_cell::sync::Lazy;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
@@ -60,6 +61,7 @@ use crate::plugins::CompilationResult;
 use crate::utils::LogLevel;
 use crate::utils::MultiSelectItem;
 use crate::utils::ShowConfirmStrategy;
+#[cfg(feature = "plugins")]
 use crate::utils::get_bytes_hash;
 use dprint_platform::environment::*;
 
