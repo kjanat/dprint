@@ -1,14 +1,45 @@
 name: CI
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Release {0} · {1}', inputs.release_tag, inputs.target) || '' }}"
 on:
   push:
-    branches: [master]
+    branches: [master, the-big-split]
     tags: ["*"]
     paths-ignore:
       - .github/*
+      - .github/workflows/ci.yml
       - deployment/**
       - website/**
   # every pull request, so a stacked one (based on another's branch) is tested too
   pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build
+        required: true
+        type: string
+      target:
+        description: Rust target to build, or all
+        default: x86_64-pc-windows-msvc
+        required: true
+        type: choice
+        options:
+          - all
+          - x86_64-unknown-freebsd
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - riscv64gc-unknown-linux-gnu
+          - loongarch64-unknown-linux-gnu
+          - loongarch64-unknown-linux-musl
+          - powerpc64le-unknown-linux-gnu
+          - powerpc64le-unknown-linux-musl
+          - aarch64-linux-android
+          - x86_64-linux-android
 permissions: { contents: read }
 concurrency:
   group: "${{ github.workflow }}-${{ github.head_ref || github.run_id }}"
@@ -17,8 +48,13 @@ jobs:
   changes:
     runs-on: ubuntu-slim
     timeout-minutes: 5
-    permissions: { pull-requests: read }
-    outputs: { code: "${{ steps.filter.outputs.code }}" }
+    permissions: { contents: read, pull-requests: read }
+    outputs:
+      code: "${{ steps.filter.outputs.code }}"
+      matrix: "${{ steps.select.outputs.matrix }}"
+      source_sha: "${{ steps.select.outputs.source_sha }}"
+      release: "${{ steps.select.outputs.release }}"
+      release_tag: "${{ steps.select.outputs.release_tag }}"
     steps:
       - id: filter
         shell: bash
@@ -32,10 +68,40 @@ jobs:
             grep -qvE '^(\.github/[^/]+|deployment/.+|website/.+)$' <<< "${files}" || code=false
           fi
           echo "code=${code}" >> "${GITHUB_OUTPUT}"
+      - name: Checkout workflow configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select build targets and source
+        id: select
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          INPUT_TARGET: "${{ inputs.target }}"
+          INPUT_TAG: "${{ inputs.release_tag }}"
+        run: |-
+          target="${INPUT_TARGET:-all}"
+          matrix=$(jq -ce --arg target "${target}" 'map(select($target == "all" or .target == $target)) | if length == 0 then error("Unknown build target") else . end' .github/build-matrix.json)
+          release=false
+          release_tag=''
+          source_sha="${GITHUB_SHA}"
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            release_tag="${INPUT_TAG}"
+            git check-ref-format "refs/tags/${release_tag}"
+            ref=$(jq -rn --arg ref "refs/tags/${release_tag}" '$ref | @uri')
+            source_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${ref}" --jq .sha)
+            release=true
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            release=true
+          fi
+          {
+            echo "matrix=${matrix}"
+            echo "source_sha=${source_sha}"
+            echo "release=${release}"
+            echo "release_tag=${release_tag}"
+          } >> "${GITHUB_OUTPUT}"
   format:
     name: Check formatting
     needs: changes
-    if: needs.changes.outputs.code == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.release != 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
@@ -54,7 +120,7 @@ jobs:
   library_boundaries:
     name: Library boundaries
     needs: changes
-    if: needs.changes.outputs.code == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.release != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -90,500 +156,165 @@ jobs:
           for feature in direct facade; do
             cargo build --manifest-path crates/dprint-core/tests/fixtures/wasm-plugin/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features "${feature}"
           done
-  build:
+  prepare_release:
+    name: Prepare release
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.release == 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: write }
+    steps:
+      - name: Create release if missing
+        env:
+          RELEASE_TAG: "${{ needs.changes.outputs.release_tag }}"
+          GH_TOKEN: "${{ github.token }}"
+          GH_REPO: "${{ github.repository }}"
+        run: |-
+          if gh release view "${RELEASE_TAG}" --json id > /dev/null 2>&1; then
+            echo "Using existing release ${RELEASE_TAG}"
+          else
+            gh release create "${RELEASE_TAG}" --verify-tag --draft --title "${RELEASE_TAG}" --generate-notes
+          fi
+  build:
+    needs: [changes, prepare_release]
+    if: >-
+      !cancelled() && needs.changes.outputs.code == 'true' &&
+      (needs.prepare_release.result == 'success' || needs.prepare_release.result == 'skipped')
     name: "${{ matrix.target }}"
     runs-on: "${{ matrix.os }}"
     timeout-minutes: "${{ matrix.target == 'x86_64-unknown-freebsd' && 90 || 60 }}"
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     defaults: { run: { shell: bash } }
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            run_tests: "true"
-            target: x86_64-unknown-freebsd
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: x86_64-unknown-freebsd
-          - os: macos-15-intel
-            run_tests: "true"
-            target: x86_64-apple-darwin
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: x86_64-apple-darwin
-          - os: macOS-latest
-            run_tests: "true"
-            target: aarch64-apple-darwin
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: aarch64-apple-darwin
-          - os: windows-latest
-            run_tests: "true"
-            target: x86_64-pc-windows-msvc
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: x86_64-pc-windows-msvc
-          - os: windows-11-arm
-            run_tests: "true"
-            target: aarch64-pc-windows-msvc
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: aarch64-pc-windows-msvc
-          - os: ubuntu-22.04
-            run_tests: "true"
-            target: x86_64-unknown-linux-gnu
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: "2.17"
-            cargo: cargo-zigbuild
-            cargo_target: x86_64-unknown-linux-gnu.2.17
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: x86_64-unknown-linux-musl
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: x86_64-unknown-linux-musl
-          - os: ubuntu-24.04-arm
-            run_tests: "true"
-            target: aarch64-unknown-linux-gnu
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: "2.17"
-            cargo: cargo-zigbuild
-            cargo_target: aarch64-unknown-linux-gnu.2.17
-          - os: ubuntu-24.04-arm
-            run_tests: "false"
-            target: aarch64-unknown-linux-musl
-            cross: "false"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: aarch64-unknown-linux-musl
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: riscv64gc-unknown-linux-gnu
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: riscv64gc-unknown-linux-gnu
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: loongarch64-unknown-linux-gnu
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: loongarch64-unknown-linux-gnu
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: loongarch64-unknown-linux-musl
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: loongarch64-unknown-linux-musl
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: powerpc64le-unknown-linux-gnu
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: powerpc64le-unknown-linux-gnu
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: powerpc64le-unknown-linux-musl
-            cross: "false"
-            musl_image: "ghcr.io/rust-cross/rust-musl-cross:powerpc64le-musl"
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: powerpc64le-unknown-linux-musl
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: aarch64-linux-android
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: aarch64-linux-android
-          - os: ubuntu-22.04
-            run_tests: "false"
-            target: x86_64-linux-android
-            cross: "true"
-            musl_image: ""
-            zigbuild_glibc: ""
-            cargo: cargo
-            cargo_target: x86_64-linux-android
+        include: "${{ fromJSON(needs.changes.outputs.matrix) }}"
     env:
+      RELEASE_BUILD: "${{ needs.changes.outputs.release }}"
+      RELEASE_TAG: "${{ needs.changes.outputs.release_tag }}"
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: full
       LZMA_API_STATIC: 1
-    outputs:
-      ZIP_CHECKSUM_X86_64_UNKNOWN_FREEBSD: "${{ steps.pre_release_x86_64_unknown_freebsd.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_X86_64_APPLE_DARWIN: "${{ steps.pre_release_x86_64_apple_darwin.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_AARCH64_APPLE_DARWIN: "${{ steps.pre_release_aarch64_apple_darwin.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC: "${{ steps.pre_release_x86_64_pc_windows_msvc.outputs.ZIP_CHECKSUM }}"
-      INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC: "${{ steps.pre_release_x86_64_pc_windows_msvc.outputs.INSTALLER_CHECKSUM }}"
-      ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC: "${{ steps.pre_release_aarch64_pc_windows_msvc.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU: "${{ steps.pre_release_x86_64_unknown_linux_gnu.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL: "${{ steps.pre_release_x86_64_unknown_linux_musl.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU: "${{ steps.pre_release_aarch64_unknown_linux_gnu.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL: "${{ steps.pre_release_aarch64_unknown_linux_musl.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU: "${{ steps.pre_release_riscv64gc_unknown_linux_gnu.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU: "${{ steps.pre_release_loongarch64_unknown_linux_gnu.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL: "${{ steps.pre_release_loongarch64_unknown_linux_musl.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU: "${{ steps.pre_release_powerpc64le_unknown_linux_gnu.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL: "${{ steps.pre_release_powerpc64le_unknown_linux_musl.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_AARCH64_LINUX_ANDROID: "${{ steps.pre_release_aarch64_linux_android.outputs.ZIP_CHECKSUM }}"
-      ZIP_CHECKSUM_X86_64_LINUX_ANDROID: "${{ steps.pre_release_x86_64_linux_android.outputs.ZIP_CHECKSUM }}"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: '(((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')'
+        with: { ref: "${{ needs.changes.outputs.source_sha }}" }
+        if: '(((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')'
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')'
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'''
         with:
           deno-version: canary
       - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && ((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != ''''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && ((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != ''''))'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && ((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != ''''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && ((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != ''''))'
         with:
           key: "${{ matrix.target }}"
       - name: Setup (Linux x86_64-musl)
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.target == ''x86_64-unknown-linux-musl'''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.target == ''x86_64-unknown-linux-musl'''
         run: |-
           sudo apt update
           sudo apt install musl musl-dev musl-tools
           rustup target add x86_64-unknown-linux-musl
       - name: Setup (Linux aarch64)
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.target == ''aarch64-unknown-linux-gnu'''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.target == ''aarch64-unknown-linux-gnu'''
         run: |-
           sudo apt update
           sudo apt install gcc-aarch64-linux-gnu
           rustup target add aarch64-unknown-linux-gnu
       - name: Setup (Linux aarch64-musl)
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.target == ''aarch64-unknown-linux-musl'''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.target == ''aarch64-unknown-linux-musl'''
         run: |-
           sudo apt update
           sudo apt install musl musl-dev musl-tools
           rustup target add aarch64-unknown-linux-musl
       - name: Setup cross
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.cross == ''true'''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.cross == ''true'''
         run: "cargo install cross --git https://github.com/cross-rs/cross --rev 36c0d7810ddde073f603c82d896c2a6c886ff7a4"
       - name: Setup zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.zigbuild_glibc != '''''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.zigbuild_glibc != '''''
         with:
           version: 0.15.1
       - name: Setup cargo-zigbuild
-        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')) || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'') && matrix.zigbuild_glibc != '''')) && matrix.zigbuild_glibc != '''''
+        if: '((((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'') || (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.zigbuild_glibc != '''' || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-apple-darwin'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-pc-windows-msvc'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''riscv64gc-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''loongarch64-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-gnu'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''powerpc64le-unknown-linux-musl'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''aarch64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''') || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && ((matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''') || matrix.cross == ''true'' || matrix.musl_image != '''')) || (matrix.target == ''x86_64-linux-android'' && needs.changes.outputs.release == ''true'' && matrix.zigbuild_glibc != '''')) && matrix.zigbuild_glibc != '''''
         run: cargo install cargo-zigbuild --locked --version 0.23.0
       - name: Clippy
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.target == ''x86_64-unknown-linux-gnu'' && !startsWith(github.ref, ''refs/tags/'')'
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.target == ''x86_64-unknown-linux-gnu'' && needs.changes.outputs.release != ''true'''
         run: cargo clippy
       - name: Build (Debug)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''')'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''')'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: "cargo build -p dprint --locked --target ${{ matrix.target }}"
       - name: Build zigbuild (Debug)
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.zigbuild_glibc != '''''
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.zigbuild_glibc != '''''
         run: "cargo zigbuild -p dprint --locked --target ${{ matrix.target }}.${{ matrix.zigbuild_glibc }}"
       - name: Check glibc requirement (Debug)
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.zigbuild_glibc != '''''
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.zigbuild_glibc != '''''
         run: |-
           max_glibc=$(objdump -T target/${{ matrix.target }}/debug/dprint | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
           echo "Binary requires glibc ${max_glibc} (max allowed: ${{ matrix.zigbuild_glibc }})"
           greatest_glibc=$(printf '%s\n%s\n' "${max_glibc}" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)
           test "${greatest_glibc}" = "${{ matrix.zigbuild_glibc }}"
       - name: Build cross (Debug)
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.cross == ''true'''
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.cross == ''true'''
         run: "cross build -p dprint --locked --target ${{ matrix.target }}"
       - name: Build musl image (Debug)
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.musl_image != '''''
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.musl_image != '''''
         run: |-
           docker run --rm -v "${GITHUB_WORKSPACE}":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }}"
           build_uid=$(id -u)
           build_gid=$(id -g)
           sudo chown -R "${build_uid}:${build_gid}" "${GITHUB_WORKSPACE}/target"
       - name: Build test plugins (Debug)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.run_tests == ''true'' && !startsWith(github.ref, ''refs/tags/''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.run_tests == ''true'' && needs.changes.outputs.release != ''true'')'
         run: "${{ matrix.cargo }} build -p test-process-plugin --locked --target ${{ matrix.cargo_target }}"
       - name: Test (Debug)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.run_tests == ''true'' && !startsWith(github.ref, ''refs/tags/''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.run_tests == ''true'' && needs.changes.outputs.release != ''true'')'
         run: "${{ matrix.cargo }} test --locked --target ${{ matrix.cargo_target }} --all-features"
       - name: Build (Release)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (startsWith(github.ref, ''refs/tags/'') && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''')'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (needs.changes.outputs.release == ''true'' && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.cross != ''true'' && matrix.musl_image == '''' && matrix.zigbuild_glibc == '''')'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: "cargo build -p dprint --locked --target ${{ matrix.target }} --release"
       - name: Build cross (Release)
-        if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.cross == ''true'''
+        if: 'needs.changes.outputs.release == ''true'' && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.cross == ''true'''
         run: "cross build -p dprint --locked --target ${{ matrix.target }} --release"
       - name: Build musl image (Release)
-        if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.musl_image != '''''
+        if: 'needs.changes.outputs.release == ''true'' && (matrix.run_tests == ''true'' || matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.musl_image != '''''
         run: |-
           docker run --rm -v "${GITHUB_WORKSPACE}":/home/rust/src -w /home/rust/src ${{ matrix.musl_image }} bash -c "rustup target add ${{ matrix.target }} && cargo build -p dprint --locked --target ${{ matrix.target }} --release"
           build_uid=$(id -u)
           build_gid=$(id -g)
           sudo chown -R "${build_uid}:${build_gid}" "${GITHUB_WORKSPACE}/target"
       - name: Build test plugins (Release)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'')'
         run: "${{ matrix.cargo }} build -p test-process-plugin --locked --target ${{ matrix.cargo_target }} --release"
       - name: Test (Release)
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (matrix.run_tests == ''true'' && startsWith(github.ref, ''refs/tags/''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (matrix.run_tests == ''true'' && needs.changes.outputs.release == ''true'')'
         run: "${{ matrix.cargo }} test --locked --target ${{ matrix.cargo_target }} --all-features --release"
       - name: Build zigbuild (Release)
-        if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.zigbuild_glibc != '''''
+        if: 'needs.changes.outputs.release == ''true'' && (matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.zigbuild_glibc != '''''
         run: "cargo zigbuild -p dprint --locked --target ${{ matrix.target }}.${{ matrix.zigbuild_glibc }} --release"
       - name: Check glibc requirement (Release)
-        if: 'startsWith(github.ref, ''refs/tags/'') && (matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.zigbuild_glibc != '''''
+        if: 'needs.changes.outputs.release == ''true'' && (matrix.target == ''x86_64-apple-darwin'' || matrix.target == ''aarch64-apple-darwin'' || matrix.target == ''x86_64-pc-windows-msvc'' || matrix.target == ''aarch64-pc-windows-msvc'' || matrix.target == ''x86_64-unknown-linux-gnu'' || matrix.target == ''x86_64-unknown-linux-musl'' || matrix.target == ''aarch64-unknown-linux-gnu'' || matrix.target == ''aarch64-unknown-linux-musl'' || matrix.target == ''riscv64gc-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-gnu'' || matrix.target == ''loongarch64-unknown-linux-musl'' || matrix.target == ''powerpc64le-unknown-linux-gnu'' || matrix.target == ''powerpc64le-unknown-linux-musl'' || matrix.target == ''aarch64-linux-android'' || matrix.target == ''x86_64-linux-android'') && matrix.zigbuild_glibc != '''''
         run: |-
           max_glibc=$(objdump -T target/${{ matrix.target }}/release/dprint | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
           echo "Binary requires glibc ${max_glibc} (max allowed: ${{ matrix.zigbuild_glibc }})"
           greatest_glibc=$(printf '%s\n%s\n' "${max_glibc}" "${{ matrix.zigbuild_glibc }}" | sort -V | tail -1)
           test "${greatest_glibc}" = "${{ matrix.zigbuild_glibc }}"
-      - name: Pre-release (x86_64-apple-darwin)
-        id: pre_release_x86_64_apple_darwin
-        if: 'matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/x86_64-apple-darwin/release
-          zip -r dprint-x86_64-apple-darwin.zip dprint
-          checksum=$(shasum -a 256 dprint-x86_64-apple-darwin.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (x86_64-apple-darwin)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''x86_64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: x86_64-apple-darwin-artifacts
-          path: target/x86_64-apple-darwin/release/dprint-x86_64-apple-darwin.zip
-      - name: Pre-release (aarch64-apple-darwin)
-        id: pre_release_aarch64_apple_darwin
-        if: 'matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/aarch64-apple-darwin/release
-          zip -r dprint-aarch64-apple-darwin.zip dprint
-          checksum=$(shasum -a 256 dprint-aarch64-apple-darwin.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (aarch64-apple-darwin)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''aarch64-apple-darwin'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: aarch64-apple-darwin-artifacts
-          path: target/aarch64-apple-darwin/release/dprint-aarch64-apple-darwin.zip
-      - name: Create installer (Windows x86_64)
-        uses: joncloud/makensis-action@971ef20f43e4f9f3af2c7f276cb7348d033da1cd # v5.0
-        if: 'matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          script-file: "${{ github.workspace }}/deployment/installer/dprint-installer.nsi"
-      - name: Pre-release (x86_64-pc-windows-msvc)
-        id: pre_release_x86_64_pc_windows_msvc
-        if: 'matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          (cd target/x86_64-pc-windows-msvc/release && 7z a -mx9 dprint-x86_64-pc-windows-msvc.zip dprint.exe)
-          checksum=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-          mv deployment/installer/dprint-x86_64-pc-windows-msvc-installer.exe target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe
-          checksum=$(sha256sum target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe | awk '{print $1}')
-          echo "INSTALLER_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (x86_64-pc-windows-msvc)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''x86_64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: x86_64-pc-windows-msvc-artifacts
-          path: |-
-            target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc.zip
-            target/x86_64-pc-windows-msvc/release/dprint-x86_64-pc-windows-msvc-installer.exe
-      - name: Pre-release (aarch64-pc-windows-msvc)
-        id: pre_release_aarch64_pc_windows_msvc
-        if: 'matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          (cd target/aarch64-pc-windows-msvc/release && 7z a -mx9 dprint-aarch64-pc-windows-msvc.zip dprint.exe)
-          checksum=$(sha256sum target/aarch64-pc-windows-msvc/release/dprint-aarch64-pc-windows-msvc.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (aarch64-pc-windows-msvc)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''aarch64-pc-windows-msvc'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: aarch64-pc-windows-msvc-artifacts
-          path: target/aarch64-pc-windows-msvc/release/dprint-aarch64-pc-windows-msvc.zip
-      - name: Pre-release (x86_64-unknown-linux-gnu)
-        id: pre_release_x86_64_unknown_linux_gnu
-        if: 'matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/x86_64-unknown-linux-gnu/release
-          zip -r dprint-x86_64-unknown-linux-gnu.zip dprint
-          checksum=$(shasum -a 256 dprint-x86_64-unknown-linux-gnu.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (x86_64-unknown-linux-gnu)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''x86_64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: x86_64-unknown-linux-gnu-artifacts
-          path: target/x86_64-unknown-linux-gnu/release/dprint-x86_64-unknown-linux-gnu.zip
-      - name: Pre-release (x86_64-unknown-linux-musl)
-        id: pre_release_x86_64_unknown_linux_musl
-        if: 'matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/x86_64-unknown-linux-musl/release
-          zip -r dprint-x86_64-unknown-linux-musl.zip dprint
-          checksum=$(shasum -a 256 dprint-x86_64-unknown-linux-musl.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (x86_64-unknown-linux-musl)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''x86_64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: x86_64-unknown-linux-musl-artifacts
-          path: target/x86_64-unknown-linux-musl/release/dprint-x86_64-unknown-linux-musl.zip
-      - name: Pre-release (aarch64-unknown-linux-gnu)
-        id: pre_release_aarch64_unknown_linux_gnu
-        if: 'matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/aarch64-unknown-linux-gnu/release
-          zip -r dprint-aarch64-unknown-linux-gnu.zip dprint
-          checksum=$(shasum -a 256 dprint-aarch64-unknown-linux-gnu.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (aarch64-unknown-linux-gnu)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''aarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: aarch64-unknown-linux-gnu-artifacts
-          path: target/aarch64-unknown-linux-gnu/release/dprint-aarch64-unknown-linux-gnu.zip
-      - name: Pre-release (aarch64-unknown-linux-musl)
-        id: pre_release_aarch64_unknown_linux_musl
-        if: 'matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/aarch64-unknown-linux-musl/release
-          zip -r dprint-aarch64-unknown-linux-musl.zip dprint
-          checksum=$(shasum -a 256 dprint-aarch64-unknown-linux-musl.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (aarch64-unknown-linux-musl)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''aarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: aarch64-unknown-linux-musl-artifacts
-          path: target/aarch64-unknown-linux-musl/release/dprint-aarch64-unknown-linux-musl.zip
-      - name: Pre-release (riscv64gc-unknown-linux-gnu)
-        id: pre_release_riscv64gc_unknown_linux_gnu
-        if: 'matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/riscv64gc-unknown-linux-gnu/release
-          zip -r dprint-riscv64gc-unknown-linux-gnu.zip dprint
-          checksum=$(shasum -a 256 dprint-riscv64gc-unknown-linux-gnu.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (riscv64gc-unknown-linux-gnu)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''riscv64gc-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: riscv64gc-unknown-linux-gnu-artifacts
-          path: target/riscv64gc-unknown-linux-gnu/release/dprint-riscv64gc-unknown-linux-gnu.zip
-      - name: Pre-release (loongarch64-unknown-linux-gnu)
-        id: pre_release_loongarch64_unknown_linux_gnu
-        if: 'matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/loongarch64-unknown-linux-gnu/release
-          zip -r dprint-loongarch64-unknown-linux-gnu.zip dprint
-          checksum=$(shasum -a 256 dprint-loongarch64-unknown-linux-gnu.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (loongarch64-unknown-linux-gnu)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''loongarch64-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: loongarch64-unknown-linux-gnu-artifacts
-          path: target/loongarch64-unknown-linux-gnu/release/dprint-loongarch64-unknown-linux-gnu.zip
-      - name: Pre-release (loongarch64-unknown-linux-musl)
-        id: pre_release_loongarch64_unknown_linux_musl
-        if: 'matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/loongarch64-unknown-linux-musl/release
-          zip -r dprint-loongarch64-unknown-linux-musl.zip dprint
-          checksum=$(shasum -a 256 dprint-loongarch64-unknown-linux-musl.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (loongarch64-unknown-linux-musl)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''loongarch64-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: loongarch64-unknown-linux-musl-artifacts
-          path: target/loongarch64-unknown-linux-musl/release/dprint-loongarch64-unknown-linux-musl.zip
-      - name: Pre-release (powerpc64le-unknown-linux-gnu)
-        id: pre_release_powerpc64le_unknown_linux_gnu
-        if: 'matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/powerpc64le-unknown-linux-gnu/release
-          zip -r dprint-powerpc64le-unknown-linux-gnu.zip dprint
-          checksum=$(shasum -a 256 dprint-powerpc64le-unknown-linux-gnu.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (powerpc64le-unknown-linux-gnu)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''powerpc64le-unknown-linux-gnu'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: powerpc64le-unknown-linux-gnu-artifacts
-          path: target/powerpc64le-unknown-linux-gnu/release/dprint-powerpc64le-unknown-linux-gnu.zip
-      - name: Pre-release (powerpc64le-unknown-linux-musl)
-        id: pre_release_powerpc64le_unknown_linux_musl
-        if: 'matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/powerpc64le-unknown-linux-musl/release
-          zip -r dprint-powerpc64le-unknown-linux-musl.zip dprint
-          checksum=$(shasum -a 256 dprint-powerpc64le-unknown-linux-musl.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (powerpc64le-unknown-linux-musl)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''powerpc64le-unknown-linux-musl'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: powerpc64le-unknown-linux-musl-artifacts
-          path: target/powerpc64le-unknown-linux-musl/release/dprint-powerpc64le-unknown-linux-musl.zip
-      - name: Pre-release (aarch64-linux-android)
-        id: pre_release_aarch64_linux_android
-        if: 'matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/aarch64-linux-android/release
-          zip -r dprint-aarch64-linux-android.zip dprint
-          checksum=$(shasum -a 256 dprint-aarch64-linux-android.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (aarch64-linux-android)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''aarch64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: aarch64-linux-android-artifacts
-          path: target/aarch64-linux-android/release/dprint-aarch64-linux-android.zip
-      - name: Pre-release (x86_64-linux-android)
-        id: pre_release_x86_64_linux_android
-        if: 'matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
-        run: |-
-          cd target/x86_64-linux-android/release
-          zip -r dprint-x86_64-linux-android.zip dprint
-          checksum=$(shasum -a 256 dprint-x86_64-linux-android.zip | awk '{print $1}')
-          echo "ZIP_CHECKSUM=${checksum}" >> "${GITHUB_OUTPUT}"
-      - name: Upload artifacts (x86_64-linux-android)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: 'matrix.target == ''x86_64-linux-android'' && startsWith(github.ref, ''refs/tags/'')'
-        with:
-          name: x86_64-linux-android-artifacts
-          path: target/x86_64-linux-android/release/dprint-x86_64-linux-android.zip
       - name: Test shell installer
-        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.run_tests == ''true'' && !startsWith(github.ref, ''refs/tags/''))'
+        if: 'matrix.target != ''x86_64-unknown-freebsd'' && (((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.run_tests == ''true'' && needs.changes.outputs.release != ''true'')'
         working-directory: website/src/assets
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: ./install.sh
       - name: Test powershell installer (Windows)
-        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || startsWith(github.ref, ''refs/tags/'')) && matrix.run_tests == ''true'' && !startsWith(github.ref, ''refs/tags/'') && matrix.target == ''x86_64-pc-windows-msvc'''
+        if: '((matrix.target != ''aarch64-unknown-linux-gnu'' && matrix.target != ''aarch64-unknown-linux-musl'') || github.ref == ''refs/heads/master'' || needs.changes.outputs.release == ''true'') && matrix.run_tests == ''true'' && needs.changes.outputs.release != ''true'' && matrix.target == ''x86_64-pc-windows-msvc'''
         shell: pwsh
         working-directory: website/src/assets
         env: { GITHUB_TOKEN: "${{ github.token }}" }
@@ -592,6 +323,7 @@ jobs:
         if: matrix.target == 'x86_64-unknown-freebsd'
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
+          envs: RELEASE_BUILD
           release: "14.4"
           arch: x86_64
           mem: 8192
@@ -606,10 +338,10 @@ jobs:
             export PATH="${HOME}/.cargo/bin:${PATH}"
             export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 RUST_BACKTRACE=full LZMA_API_STATIC=1
             target=x86_64-unknown-freebsd
-            : "${GITHUB_REF:?}"
+            : "${RELEASE_BUILD:?}"
             # Honor rust-toolchain.toml, including its pinned compiler version.
             rustup show active-toolchain
-            if [ "${GITHUB_REF#refs/tags/}" != "${GITHUB_REF}" ]; then
+            if [ "${RELEASE_BUILD}" = true ]; then
               cargo build -p dprint -p test-process-plugin --locked --target "${target}" --release
               cargo test --locked --target "${target}" --all-features --release
               sh .github/scripts/freebsd-smoke.sh "target/${target}/release/dprint"
@@ -618,166 +350,90 @@ jobs:
               cargo test --locked --target "${target}" --all-features
               sh .github/scripts/freebsd-smoke.sh "target/${target}/debug/dprint"
             fi
-      - name: Package FreeBSD release
-        id: pre_release_x86_64_unknown_freebsd
-        if: matrix.target == 'x86_64-unknown-freebsd' && startsWith(github.ref, 'refs/tags/')
-        working-directory: target/x86_64-unknown-freebsd/release
+      - name: Package release binary
+        if: needs.changes.outputs.release == 'true'
+        env: { TARGET: "${{ matrix.target }}" }
         run: |-
-          zip dprint-x86_64-unknown-freebsd.zip dprint
-          checksum=$(sha256sum dprint-x86_64-unknown-freebsd.zip)
-          echo "ZIP_CHECKSUM=${checksum%% *}" >> "${GITHUB_OUTPUT}"
-      - name: Upload FreeBSD artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.target == 'x86_64-unknown-freebsd' && startsWith(github.ref, 'refs/tags/')
+          cd "target/${TARGET}/release"
+          if [[ "${RUNNER_OS}" == Windows ]]; then
+            7z a -mx9 "dprint-${TARGET}.zip" dprint.exe
+          else
+            zip "dprint-${TARGET}.zip" dprint
+          fi
+      - name: Attest release binary
+        if: needs.changes.outputs.release == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
-          name: x86_64-unknown-freebsd-artifacts
-          path: target/x86_64-unknown-freebsd/release/dprint-x86_64-unknown-freebsd.zip
+          subject-path: "target/${{ matrix.target }}/release/dprint-${{ matrix.target }}.zip"
+      - name: Preserve release artifact
+        if: needs.changes.outputs.release == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: "${{ matrix.target }}-artifacts"
+          path: "target/${{ matrix.target }}/release/dprint-${{ matrix.target }}.zip"
           if-no-files-found: error
+          overwrite: true
+      - name: Upload binary to release
+        if: needs.changes.outputs.release == 'true'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          GH_REPO: "${{ github.repository }}"
+          TARGET: "${{ matrix.target }}"
+        run: gh release upload "${RELEASE_TAG}" "target/${TARGET}/release/dprint-${TARGET}.zip" --clobber
   ci:
-    needs: [changes, format, library_boundaries, build]
+    needs: [changes, format, library_boundaries, prepare_release, build, release_checksums]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5
     env: { code: "${{ case(contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure'), '1', '0') }}" }
     steps: [run: 'exit "${code}"']
-  draft_release:
-    name: draft_release
-    needs: build
-    if: 'startsWith(github.ref, ''refs/tags/'')'
+  release_checksums:
+    name: Finalize available release assets
+    concurrency:
+      group: "release-assets-${{ needs.changes.outputs.release_tag }}"
+      cancel-in-progress: false
+    needs: [changes, prepare_release, build]
+    if: >-
+      always() && !cancelled() && needs.changes.outputs.release == 'true' &&
+      needs.prepare_release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+    permissions: { contents: write }
     steps:
-      - name: Clone repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { fetch-depth: 0 }
-      - name: Generate changelog
-        id: changelog
-        run: |-
-          previous_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
-          if [[ -n "${previous_tag}" ]]; then
-            echo "Collecting commits since ${previous_tag}"
-            range="${previous_tag}..HEAD"
-          else
-            echo "No previous tag found -- using full history"
-            range=HEAD
-          fi
-          commits="$(git log --reverse --pretty=format:%s "${range}")"
-          {
-            echo "changelog<<CHANGELOG_EOF"
-            sed -E '/^$/d; /^(chore|refactor|ci)(\([^)]*\))?!?: /d; /^[0-9]+\.[0-9]+\.[0-9]+$/d; s/^/* /' <<< "${commits}"
-            echo ""
-            echo "CHANGELOG_EOF"
-          } >> "${GITHUB_OUTPUT}"
-      - name: Download artifacts
+      - name: Download successful build artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-      - name: Output checksums
-        run: |-
-          echo "dprint-x86_64-unknown-freebsd.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_FREEBSD }}"
-          echo "dprint-x86_64-apple-darwin.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_APPLE_DARWIN }}"
-          echo "dprint-aarch64-apple-darwin.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_APPLE_DARWIN }}"
-          echo "dprint-x86_64-pc-windows-msvc.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC }}"
-          echo "dprint-x86_64-pc-windows-msvc-installer.exe: ${{ needs.build.outputs.INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC }}"
-          echo "dprint-aarch64-pc-windows-msvc.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC }}"
-          echo "dprint-x86_64-unknown-linux-gnu.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU }}"
-          echo "dprint-x86_64-unknown-linux-musl.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL }}"
-          echo "dprint-aarch64-unknown-linux-gnu.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU }}"
-          echo "dprint-aarch64-unknown-linux-musl.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL }}"
-          echo "dprint-riscv64gc-unknown-linux-gnu.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU }}"
-          echo "dprint-loongarch64-unknown-linux-gnu.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU }}"
-          echo "dprint-loongarch64-unknown-linux-musl.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL }}"
-          echo "dprint-powerpc64le-unknown-linux-gnu.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU }}"
-          echo "dprint-powerpc64le-unknown-linux-musl.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL }}"
-          echo "dprint-aarch64-linux-android.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_LINUX_ANDROID }}"
-          echo "dprint-x86_64-linux-android.zip: ${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }}"
-      - name: Create SHASUMS256.txt file
-        run: |-
-          {
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_FREEBSD }} dprint-x86_64-unknown-freebsd.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_APPLE_DARWIN }} dprint-x86_64-apple-darwin.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_APPLE_DARWIN }} dprint-aarch64-apple-darwin.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc.zip"
-            echo "${{ needs.build.outputs.INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC }} dprint-x86_64-pc-windows-msvc-installer.exe"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC }} dprint-aarch64-pc-windows-msvc.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU }} dprint-x86_64-unknown-linux-gnu.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL }} dprint-x86_64-unknown-linux-musl.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU }} dprint-aarch64-unknown-linux-gnu.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL }} dprint-aarch64-unknown-linux-musl.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU }} dprint-riscv64gc-unknown-linux-gnu.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU }} dprint-loongarch64-unknown-linux-gnu.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL }} dprint-loongarch64-unknown-linux-musl.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU }} dprint-powerpc64le-unknown-linux-gnu.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL }} dprint-powerpc64le-unknown-linux-musl.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_LINUX_ANDROID }} dprint-aarch64-linux-android.zip"
-            echo "${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }} dprint-x86_64-linux-android.zip"
-          } > SHASUMS256.txt
-      - name: Generate artifact attestations
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
-        with: { subject-checksums: SHASUMS256.txt }
-      - name: Draft release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
         with:
-          files: |-
-            x86_64-unknown-freebsd-artifacts/dprint-x86_64-unknown-freebsd.zip
-            x86_64-apple-darwin-artifacts/dprint-x86_64-apple-darwin.zip
-            aarch64-apple-darwin-artifacts/dprint-aarch64-apple-darwin.zip
-            x86_64-pc-windows-msvc-artifacts/dprint-x86_64-pc-windows-msvc.zip
-            x86_64-pc-windows-msvc-artifacts/dprint-x86_64-pc-windows-msvc-installer.exe
-            aarch64-pc-windows-msvc-artifacts/dprint-aarch64-pc-windows-msvc.zip
-            x86_64-unknown-linux-gnu-artifacts/dprint-x86_64-unknown-linux-gnu.zip
-            x86_64-unknown-linux-musl-artifacts/dprint-x86_64-unknown-linux-musl.zip
-            aarch64-unknown-linux-gnu-artifacts/dprint-aarch64-unknown-linux-gnu.zip
-            aarch64-unknown-linux-musl-artifacts/dprint-aarch64-unknown-linux-musl.zip
-            riscv64gc-unknown-linux-gnu-artifacts/dprint-riscv64gc-unknown-linux-gnu.zip
-            loongarch64-unknown-linux-gnu-artifacts/dprint-loongarch64-unknown-linux-gnu.zip
-            loongarch64-unknown-linux-musl-artifacts/dprint-loongarch64-unknown-linux-musl.zip
-            powerpc64le-unknown-linux-gnu-artifacts/dprint-powerpc64le-unknown-linux-gnu.zip
-            powerpc64le-unknown-linux-musl-artifacts/dprint-powerpc64le-unknown-linux-musl.zip
-            aarch64-linux-android-artifacts/dprint-aarch64-linux-android.zip
-            x86_64-linux-android-artifacts/dprint-x86_64-linux-android.zip
-            SHASUMS256.txt
-          body: |
-            ## Changes
-
-            ${{ steps.changelog.outputs.changelog }}
-
-            ## Install
-
-            Run `dprint upgrade` or see https://dprint.dev/install/
-
-            ## Verification
-
-            These artifacts have [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds).
-            Verify a download with the [GitHub CLI](https://cli.github.com/):
-
-            ```shell
-            gh attestation verify dprint-x86_64-unknown-linux-gnu.zip --repo ${{ github.repository }}
-            ```
-
-            ## Checksums
-
-            |Artifact|SHA-256 Checksum|
-            |:--|:--|
-            |dprint-x86_64-unknown-freebsd.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_FREEBSD }}|
-            |dprint-x86_64-apple-darwin.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_APPLE_DARWIN }}|
-            |dprint-aarch64-apple-darwin.zip|${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_APPLE_DARWIN }}|
-            |dprint-x86_64-pc-windows-msvc.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_PC_WINDOWS_MSVC }}|
-            |dprint-x86_64-pc-windows-msvc-installer.exe|${{ needs.build.outputs.INSTALLER_CHECKSUM_X86_64_PC_WINDOWS_MSVC }}|
-            |dprint-aarch64-pc-windows-msvc.zip|${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_PC_WINDOWS_MSVC }}|
-            |dprint-x86_64-unknown-linux-gnu.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_GNU }}|
-            |dprint-x86_64-unknown-linux-musl.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_UNKNOWN_LINUX_MUSL }}|
-            |dprint-aarch64-unknown-linux-gnu.zip|${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_GNU }}|
-            |dprint-aarch64-unknown-linux-musl.zip|${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_UNKNOWN_LINUX_MUSL }}|
-            |dprint-riscv64gc-unknown-linux-gnu.zip|${{ needs.build.outputs.ZIP_CHECKSUM_RISCV64GC_UNKNOWN_LINUX_GNU }}|
-            |dprint-loongarch64-unknown-linux-gnu.zip|${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_GNU }}|
-            |dprint-loongarch64-unknown-linux-musl.zip|${{ needs.build.outputs.ZIP_CHECKSUM_LOONGARCH64_UNKNOWN_LINUX_MUSL }}|
-            |dprint-powerpc64le-unknown-linux-gnu.zip|${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_GNU }}|
-            |dprint-powerpc64le-unknown-linux-musl.zip|${{ needs.build.outputs.ZIP_CHECKSUM_POWERPC64LE_UNKNOWN_LINUX_MUSL }}|
-            |dprint-aarch64-linux-android.zip|${{ needs.build.outputs.ZIP_CHECKSUM_AARCH64_LINUX_ANDROID }}|
-            |dprint-x86_64-linux-android.zip|${{ needs.build.outputs.ZIP_CHECKSUM_X86_64_LINUX_ANDROID }}|
-          draft: true
+          pattern: "*-artifacts"
+          merge-multiple: true
+          path: release-assets
+      - name: Calculate checksums of available binaries
+        working-directory: release-assets
+        run: |-
+          shopt -s nullglob
+          files=(dprint-*.zip)
+          if (( ${#files[@]} == 0 )); then
+            echo 'No release binaries were uploaded.' >&2
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHASUMS256.txt
+      - name: Upload available binaries
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          GH_REPO: "${{ github.repository }}"
+          RELEASE_TAG: "${{ needs.changes.outputs.release_tag }}"
+        run: gh release upload "${RELEASE_TAG}" release-assets/dprint-*.zip --clobber
+      - name: Update checksums for the complete release
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          GH_REPO: "${{ github.repository }}"
+          RELEASE_TAG: "${{ needs.changes.outputs.release_tag }}"
+        run: |-
+          gh release view "${RELEASE_TAG}" --json assets > release-assets.json
+          jq -er '
+            [.assets[] | select(.name | startswith("dprint-") and endswith(".zip"))] | sort_by(.name) |
+            if length == 0 then error("No release binaries") else .[] end |
+            if (.digest // "" | test("^sha256:[a-f0-9]{64}$")) then
+              "\(.digest[7:])  \(.name)"
+            else error("Missing SHA-256 digest for " + .name) end
+          ' release-assets.json > SHASUMS256.txt
+          gh release upload "${RELEASE_TAG}" SHASUMS256.txt --clobber
