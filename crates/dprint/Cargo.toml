@@ -125,6 +125,10 @@ wasmtime = { version = "=43.0.2", default-features = false, features = [
   "std",
 ] }
 
+[target."cfg(target_os = \"freebsd\")".dependencies]
+# Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
+libc = "=0.2.189"
+
 [target."cfg(unix)".dependencies]
 signal-hook = "=0.4.5"
 

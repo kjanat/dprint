@@ -23,6 +23,11 @@ else
 	case $(uname -sm) in
 		"Darwin x86_64") target="x86_64-apple-darwin" ;;
 		"Darwin arm64") target="aarch64-apple-darwin" ;;
+		"FreeBSD amd64") target="x86_64-unknown-freebsd" ;;
+		FreeBSD\ *)
+			echo "Error: dprint provides FreeBSD binaries for amd64 only." 1>&2
+			exit 1
+			;;
 		# Termux reports "Linux aarch64"/"Linux x86_64" but uses Android's bionic libc, so check uname -o.
 		"Linux aarch64")
 			operating_system=$(uname -o 2>/dev/null || true)

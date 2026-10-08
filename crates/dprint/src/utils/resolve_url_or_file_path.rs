@@ -14,7 +14,7 @@ use crate::utils::RemotePathSource;
 
 /// How long a downloaded remote file is used before its URL is checked for
 /// changes. Remote configuration is often pinned to a branch (ex.
-/// `https://cdn.jsdelivr.net/gh/user/repo@main/dprint.json`) whose content
+/// `https://cdn.jsdelivr.net/gh/user/repo@master/dprint.json`) whose content
 /// changes over time, so a cached copy can't be used forever.
 pub const REMOTE_FILE_MAX_AGE_SECS: u64 = 60 * 60;
 

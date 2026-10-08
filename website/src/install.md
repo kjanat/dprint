@@ -8,9 +8,11 @@ layout: layouts/documentation.njk
 
 Install using one of the methods below.
 
-- Shell (Mac, Linux, WSL):
+- Shell (Mac, Linux, WSL, FreeBSD amd64):
 
   Requires `curl`, `unzip`, and `jq`.
+
+  On FreeBSD 14.4 or newer, install these with `pkg install curl unzip jq`.
 
   ```sh
   curl -fsSL https://dprint.kjanat.dev/install.sh | sh
@@ -94,6 +96,10 @@ Install using one of the methods below.
   ```
 
 For binaries and source, see the [GitHub releases](https://github.com/kjanat/dprint/releases).
+
+FreeBSD builds target amd64 on FreeBSD 14.4 or newer. Wasm plugins and built-in
+`exec` formatting are supported. Process plugins must publish a
+`freebsd-x86_64` entry in their manifest; Linux binaries are not used as a fallback.
 
 ## Editor Extensions
 

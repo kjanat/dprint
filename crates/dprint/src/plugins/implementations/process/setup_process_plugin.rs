@@ -262,6 +262,8 @@ pub struct ProcessPluginFile {
   pub android_x86_64: Option<ProcessPluginPath>,
   #[serde(rename = "android-aarch64")]
   pub android_aarch64: Option<ProcessPluginPath>,
+  #[serde(rename = "freebsd-x86_64")]
+  pub freebsd_x86_64: Option<ProcessPluginPath>,
   #[serde(rename = "darwin-x86_64")]
   pub darwin_x86_64: Option<ProcessPluginPath>,
   #[serde(rename = "darwin-aarch64")]
@@ -372,6 +374,10 @@ pub fn get_os_path<'a>(plugin_file: &'a ProcessPluginFile, environment: &impl En
       "aarch64" => plugin_file.android_aarch64.as_ref().or(plugin_file.android_x86_64.as_ref()),
       _ => None,
     },
+    "freebsd" => match arch.as_str() {
+      "x86_64" => plugin_file.freebsd_x86_64.as_ref(),
+      _ => None,
+    },
     "macos" => match arch.as_str() {
       "x86_64" => plugin_file.darwin_x86_64.as_ref(),
       "aarch64" => plugin_file.darwin_aarch64.as_ref().or(plugin_file.darwin_x86_64.as_ref()),
@@ -397,6 +403,49 @@ pub fn get_os_path<'a>(plugin_file: &'a ProcessPluginFile, environment: &impl En
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[test]
+  fn selects_freebsd_process_plugin() {
+    let environment = crate::environment::TestEnvironment::new();
+    environment.set_os("freebsd");
+    environment.set_cpu_arch("x86_64");
+    let plugin_file = parse_process_plugin_file(
+      br#"{
+      "schemaVersion": 2,
+      "name": "test",
+      "version": "1.0.0",
+      "linux-x86_64": { "reference": "linux.zip", "checksum": "linux" },
+      "freebsd-x86_64": { "reference": "freebsd.zip", "checksum": "freebsd" }
+    }"#,
+    )
+    .unwrap();
+    let path = get_os_path(&plugin_file, &environment).unwrap();
+    assert_eq!(path.reference, "freebsd.zip");
+    assert_eq!(path.checksum, "freebsd");
+
+    environment.set_cpu_arch("aarch64");
+    assert!(get_os_path(&plugin_file, &environment).is_err());
+  }
+
+  #[test]
+  fn freebsd_does_not_fall_back_to_linux_process_plugin() {
+    let environment = crate::environment::TestEnvironment::new();
+    environment.set_os("freebsd");
+    environment.set_cpu_arch("x86_64");
+    let plugin_file = parse_process_plugin_file(
+      br#"{
+      "schemaVersion": 2,
+      "name": "test",
+      "version": "1.0.0",
+      "linux-x86_64": { "reference": "linux.zip", "checksum": "linux" }
+    }"#,
+    )
+    .unwrap();
+    assert_eq!(
+      get_os_path(&plugin_file, &environment).unwrap_err().to_string(),
+      "Unsupported CPU architecture: x86_64 (freebsd)"
+    );
+  }
 
   #[test]
   fn ensure_only_process_kind_allowed() {

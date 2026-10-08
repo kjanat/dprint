@@ -13,25 +13,16 @@ module.exports = {
     const dprintFileName = os.platform() === "win32" ? "dprint.exe" : "dprint";
     const targetExecutablePath = path.join(__dirname, dprintFileName);
 
-    if (fs.existsSync(targetExecutablePath)) {
-      return targetExecutablePath;
-    }
+    if (fs.existsSync(targetExecutablePath)) return targetExecutablePath;
 
     const target = getTarget();
-    const sourceExecutablePath = resolveSourceExecutablePath(
-      target,
-      dprintFileName,
-    );
+    const sourceExecutablePath = resolveSourceExecutablePath(target, dprintFileName);
 
     if (sourceExecutablePath == null) {
-      // the @dprint/<target> optional dependency isn't installed (for example
-      // the user ran `npm install --omit=optional`), so download the binary
-      // directly from the registry like esbuild does
+      // the @dprint/<target> optional dependency isn't installed (for example the user ran `npm install --omit=optional`),
+      // so download the binary directly from the registry like esbuild does
       downloadExecutable(target, dprintFileName, targetExecutablePath);
-      if (os.platform() !== "win32") {
-        // chmod +x
-        chmodX(targetExecutablePath);
-      }
+      if (os.platform() !== "win32") chmodX(targetExecutablePath);
       return targetExecutablePath;
     }
 
@@ -45,21 +36,13 @@ module.exports = {
       // dprint vscode extension to easily pick this up, copy the executable
       // into the dprint package folder
       hardLinkOrCopy(sourceExecutablePath, targetExecutablePath);
-      if (os.platform() !== "win32") {
-        // chmod +x
-        chmodX(targetExecutablePath);
-      }
+      if (os.platform() !== "win32") chmodX(targetExecutablePath);
       return targetExecutablePath;
     } catch (err) {
-      // this may fail on readonly file systems... in this case, fall
-      // back to using the resolved package path
+      // this may fail on readonly file systems... in this case, fall back to using the resolved package path
       if (process.env.DPRINT_DEBUG === "1") {
         console.warn(
-          "Failed to copy executable from "
-            + sourceExecutablePath
-            + " to "
-            + targetExecutablePath
-            + ". Using resolved package path instead.",
+          `Failed to copy executable from ${sourceExecutablePath} to ${targetExecutablePath}. Using resolved package path instead.`,
           err,
         );
       }
@@ -146,14 +129,10 @@ function verifyExecutableHash(target, buffer) {
     .digest("hex");
   if (actual !== expected) {
     throw new Error(
-      "Integrity check failed for the downloaded @dprint/"
-        + target
-        + " binary.\n"
-        + "  Expected sha256: "
-        + expected
-        + "\n"
-        + "  Actual sha256:   "
-        + actual,
+      `\
+Integrity check failed for the downloaded @dprint/${target} binary.
+  Expected sha256: ${expected}
+  Actual sha256:   ${actual}`,
     );
   }
 }
@@ -211,14 +190,27 @@ function downloadBufferWithCurl(url) {
  * @returns {Buffer}
  */
 function downloadBufferWithNode(url) {
-  const script = "const https=require('https');"
-    + "function f(u){https.get(u,r=>{"
-    + "const s=r.statusCode;"
-    + "if((s===301||s===302||s===303||s===307||s===308)&&r.headers.location){f(new URL(r.headers.location,u).toString());return;}"
-    + "if(s!==200){console.error('[dprint] Unexpected status code '+s+' downloading '+u);process.exit(1);}"
-    + "r.pipe(process.stdout);"
-    + "}).on('error',e=>{console.error(String(e&&e.message||e));process.exit(1);});}"
-    + "f(process.argv[1]);";
+  const script = `\
+const https = require("node:https");
+function f(u) {
+  https.get(u, r => {
+    const s = r.statusCode;
+    if ((s === 301 || s === 302 || s === 303 || s === 307 || s === 308) && r.headers.location) {
+      f(new URL(r.headers.location, u).toString());
+      return;
+    }
+    if (s !== 200) {
+      console.error(\`[dprint] Unexpected status code \${s} downloading \${u}\`);
+      process.exit(1);
+    }
+    r.pipe(process.stdout);
+  }).on("error", e => {
+    console.error(String(e?.message || e));
+    process.exit(1);
+  });
+}
+f(process.argv[1]);
+`;
   return require("node:child_process").execFileSync(
     process.execPath,
     ["-e", script, url],

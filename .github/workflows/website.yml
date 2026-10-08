@@ -2,7 +2,7 @@ name: Website
 on:
   workflow_dispatch:
     inputs: { deploy: { description: Deploy to GitHub Pages, type: boolean, default: false } }
-  push: { branches: [main, master] }
+  push: { branches: [master] }
   pull_request:
 permissions: {}
 
@@ -33,7 +33,7 @@ jobs:
     runs-on: *slim
     timeout-minutes: 2
     cancel-timeout-minutes: 1
-    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.repository_owner == 'kjanat'
+    if: (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/master') && github.repository_owner == 'kjanat'
     permissions: { contents: *r, pages: &w write, id-token: *w }
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     concurrency: { group: "pages-deploy", cancel-in-progress: false }

@@ -302,6 +302,10 @@ impl TestProcessPluginFileBuilder {
       "reference": "https://github.com/dprint/test-process-plugin/releases/0.1.0/test-process-plugin.zip",
       "checksum": "{3}"
   }},
+  "freebsd-x86_64": {{
+      "reference": "https://github.com/dprint/test-process-plugin/releases/0.1.0/test-process-plugin.zip",
+      "checksum": "{3}"
+  }},
   "darwin-x86_64": {{
       "reference": "https://github.com/dprint/test-process-plugin/releases/0.1.0/test-process-plugin.zip",
       "checksum": "{3}"

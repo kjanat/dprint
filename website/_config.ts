@@ -39,7 +39,7 @@ site
       options: {
         bundle: true,
         format: "iife",
-        target: "2024",
+        target: "es2024",
         minify: true,
         entryPoints: ["scripts.js"],
       },

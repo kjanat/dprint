@@ -1,27 +1,26 @@
 import type { Environment } from "monaco-editor";
 
-const getWorkerUrl = (url: string, base = import.meta.url) => new URL(url, base);
-const getWorker = (scriptUrl: string) => new Worker(getWorkerUrl(scriptUrl), { type: "module" });
-
 // Let Vite bundle worker entry points instead of using Monaco's relative URLs.
+// Keep each new Worker(new URL(..., import.meta.url)) inline with a literal path:
+// Vite cannot discover the entry points through helper functions or variables.
 globalThis.MonacoEnvironment = {
   getWorker(_workerId, label) {
     switch (label) {
       case "typescript":
       case "javascript":
-        return getWorker("monaco-editor/language/typescript/ts.worker.js");
+        return new Worker(new URL("monaco-editor/language/typescript/ts.worker.js", import.meta.url), { type: "module" });
       case "json":
-        return getWorker("monaco-editor/language/json/json.worker.js");
+        return new Worker(new URL("monaco-editor/language/json/json.worker.js", import.meta.url), { type: "module" });
       case "css":
       case "scss":
       case "less":
-        return getWorker("monaco-editor/language/css/css.worker.js");
+        return new Worker(new URL("monaco-editor/language/css/css.worker.js", import.meta.url), { type: "module" });
       case "html":
       case "handlebars":
       case "razor":
-        return getWorker("monaco-editor/language/html/html.worker.js");
+        return new Worker(new URL("monaco-editor/language/html/html.worker.js", import.meta.url), { type: "module" });
       default:
-        return getWorker("monaco-editor/editor/editor.worker.js");
+        return new Worker(new URL("monaco-editor/editor/editor.worker.js", import.meta.url), { type: "module" });
     }
   },
 } satisfies Environment;

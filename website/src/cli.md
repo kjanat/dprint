@@ -407,7 +407,7 @@ A `configs` entry is emitted for every configuration file dprint discovers (incl
 This is useful in CI to avoid formatting the entire repository when only a few files changed. For example, format only the files in the changeset when the cache would survive, and otherwise fall back to formatting everything:
 
 ```sh
-git checkout main
+git checkout master
 previous_state=$(dprint incremental-state)
 git checkout "$BRANCH"
 new_state=$(dprint incremental-state)
@@ -417,7 +417,7 @@ if [ "$previous_state" != "$new_state" ]; then
   dprint fmt
 else
   # the cache is still valid, so only format the changed files
-  dprint fmt $(git diff --name-only main...)
+  dprint fmt $(git diff --name-only master...)
 fi
 ```
 

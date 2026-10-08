@@ -1,12 +1,15 @@
 #!/usr/bin/env -S deno run -A
+// @ts-expect-error
 import { parseArgs } from "https://deno.land/std@0.208.0/cli/parse_args.ts";
+// @ts-expect-error
 import $ from "jsr:@david/dax@0.45.0";
+// @ts-expect-error
 // @ts-types="npm:@types/decompress@4.2.7"
 import decompress from "npm:decompress@4.2.1";
 
 interface Package {
   zipFileName: string;
-  os: "win32" | "darwin" | "linux" | "android";
+  os: "win32" | "darwin" | "linux" | "android" | "freebsd";
   cpu: "x64" | "arm64" | "riscv64" | "loong64" | "ppc64";
   libc?: "glibc" | "musl";
 }
@@ -15,6 +18,11 @@ const args = parseArgs(Deno.args, {
   boolean: ["publish", "publish-only"],
 });
 const packages: Package[] = [
+  {
+    zipFileName: "dprint-x86_64-unknown-freebsd.zip",
+    os: "freebsd",
+    cpu: "x64",
+  },
   {
     zipFileName: "dprint-x86_64-pc-windows-msvc.zip",
     os: "win32",
@@ -106,7 +114,7 @@ const packages: Package[] = [
 
 const markdownText = `# dprint
 
-npm CLI distribution for [dprint](https://dprint.dev)—a pluggable and configurable code formatting platform.
+npm CLI distribution for [dprint](https://dprint.kjanat.dev)—a pluggable and configurable code formatting platform.
 `;
 
 const currentDir = $.path(import.meta.url).parentOrThrow();
@@ -140,7 +148,7 @@ if (!args["publish-only"]) {
         url: `git+${repositoryUrl}.git`,
       },
       keywords: ["code", "formatter"],
-      author: "David Sherret",
+      author: "Kaj Kowalski",
       license: "MIT",
       bugs: {
         url: `${repositoryUrl}/issues`,
@@ -151,9 +159,9 @@ if (!args["publish-only"]) {
       scripts: {
         postinstall: "node ./install.cjs",
       },
-      optionalDependencies: packages
-        .map((pkg) => `@dprint/${getPackageNameNoScope(pkg)}`)
-        .reduce((obj, pkgName) => ({ ...obj, [pkgName]: version }), {}),
+      optionalDependencies: Object.fromEntries(
+        packages.map((pkg) => [`@kjanat-dprint/${getPackageNameNoScope(pkg)}`, version]),
+      ),
     };
     currentDir.join("bin.cjs").copyFileToDirSync(dprintDir);
     currentDir.join("install_api.cjs").copyFileToDirSync(dprintDir);
@@ -168,7 +176,7 @@ if (!args["publish-only"]) {
     const executableHashes: Record<string, string> = {};
     for (const pkg of packages) {
       const pkgName = getPackageNameNoScope(pkg);
-      $.logStep(`Setting up @dprint/${pkgName}...`);
+      $.logStep(`Setting up @kjanat-dprint/${pkgName}...`);
       const pkgDir = scopeDir.join(pkgName);
       const zipPath = pkgDir.join("output.zip");
 
@@ -191,10 +199,10 @@ if (!args["publish-only"]) {
       pkgDir
         .join("README.md")
         .writeTextSync(
-          `# @dprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
+          `# @kjanat-dprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
         );
       pkgDir.join("package.json").writeJsonPrettySync({
-        name: `@dprint/${pkgName}`,
+        name: `@kjanat-dprint/${pkgName}`,
         version: version,
         description: `${pkgName} distribution of the dprint code formatter`,
         repository: {
@@ -203,7 +211,7 @@ if (!args["publish-only"]) {
         },
         // force yarn to unpack
         preferUnplugged: true,
-        author: "David Sherret",
+        author: "Kaj Kowalski",
         license: "MIT",
         bugs: {
           url: `${repositoryUrl}/issues`,
@@ -223,17 +231,17 @@ if (!args["publish-only"]) {
   // verify that the package is created correctly
   {
     $.logStep("Verifying packages...");
-    const testPlatform = Deno.build.os == "windows"
+    const testPlatform = Deno.build.os === "windows"
       ? Deno.build.arch === "x86_64"
-        ? "@dprint/win32-x64"
-        : "@dprint/win32-arm64"
+        ? "@kjanat-dprint/win32-x64"
+        : "@kjanat-dprint/win32-arm64"
       : Deno.build.os === "darwin"
       ? Deno.build.arch === "x86_64"
-        ? "@dprint/darwin-x64"
-        : "@dprint/darwin-arm64"
+        ? "@kjanat-dprint/darwin-x64"
+        : "@kjanat-dprint/darwin-arm64"
       : Deno.build.arch === "x86_64"
-      ? "@dprint/linux-x64-glibc"
-      : "@dprint/linux-arm64-glibc";
+      ? "@kjanat-dprint/linux-x64-glibc"
+      : "@kjanat-dprint/linux-arm64-glibc";
     $.logLight("Test platform:", testPlatform);
     outputDir.join("package.json").writeJsonPrettySync({
       workspaces: [
@@ -241,7 +249,7 @@ if (!args["publish-only"]) {
         // There seems to be a bug with npm workspaces where this doesn't
         // work, so for now make some assumptions and only include the package
         // that works on the CI for the current operating system
-        // ...packages.map(p => `@dprint/${getPackageNameNoScope(p)}`),
+        // ...packages.map(p => `@kjanat-dprint/${getPackageNameNoScope(p)}`),
         testPlatform,
       ],
     });
@@ -273,8 +281,8 @@ if (!args["publish-only"]) {
 if (args.publish || args["publish-only"]) {
   for (const pkg of packages) {
     const pkgName = getPackageNameNoScope(pkg);
-    $.logStep(`Publishing @dprint/${pkgName}...`);
-    if (await checkPackagePublished(`@dprint/${pkgName}`)) {
+    $.logStep(`Publishing @kjanat-dprint/${pkgName}...`);
+    if (await checkPackagePublished(`@kjanat-dprint/${pkgName}`)) {
       $.logLight("  Already published.");
       continue;
     }

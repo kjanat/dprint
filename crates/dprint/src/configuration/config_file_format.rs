@@ -767,7 +767,7 @@ mod test {
     assert_eq!(ConfigFileFormat::from_source(&local("/dprint.json"), "a = 1"), ConfigFileFormat::Json);
     let remote = |url: &str| PathSource::new_remote_from_str(url);
     assert_eq!(
-      ConfigFileFormat::from_source(&remote("https://example.com/dprint.toml?ref=main"), ""),
+      ConfigFileFormat::from_source(&remote("https://example.com/dprint.toml?ref=master"), ""),
       ConfigFileFormat::Toml
     );
     assert_eq!(
