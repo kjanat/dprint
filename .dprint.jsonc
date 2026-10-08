@@ -21,7 +21,7 @@
     "associations": ["!**/*.svg"]
   },
   "jsonSchemaSort": {
-    "associations": ["**/schema.json", "**/*.schema.json"],
+    "associations": ["**/schema.json", "**/*.schema.json", "**/schema/v*.json"],
     "preservePropertyOrder": true
   },
   "pwsh": {
