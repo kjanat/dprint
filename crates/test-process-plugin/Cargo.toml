@@ -6,7 +6,10 @@ edition    = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-dprint-core = { workspace = true, default-features = true, features = ["process"] }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-tokio       = { workspace = true }
+dprint-async-runtime  = { workspace = true }
+dprint-configuration  = { workspace = true }
+dprint-plugin-types   = { workspace = true }
+dprint-process-plugin = { workspace = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+tokio                 = { workspace = true }

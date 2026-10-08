@@ -1,0 +1,16 @@
+[package]
+name        = "dprint-async-runtime"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Current-thread async task helpers for dprint."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait = { workspace = true }
+futures     = { workspace = true }
+tokio       = { workspace = true }

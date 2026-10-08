@@ -1,31 +1,30 @@
 use anyhow::Result;
 use anyhow::anyhow;
-use dprint_core::communication::IdGenerator;
-use dprint_core::communication::MessageReader;
-use dprint_core::communication::MessageWriter;
-use dprint_core::communication::RcIdStore;
-use dprint_core::communication::SingleThreadMessageWriter;
-use dprint_core::plugins::HostFormatRequest;
+use dprint_communication::IdGenerator;
+use dprint_communication::MessageReader;
+use dprint_communication::MessageWriter;
+use dprint_communication::RcIdStore;
+use dprint_communication::SingleThreadMessageWriter;
+use dprint_process_plugin::HostFormatRequest;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use dprint_core::plugins::process::start_parent_process_checker_task;
+use dprint_process_plugin::start_parent_process_checker_task;
 
 mod messages;
 
 use crate::arg_parser::CliArgs;
 use crate::arg_parser::EditorServiceSubCommand;
 use crate::configuration::ResolvedConfig;
-use crate::configuration::resolve_config_from_args;
 use crate::environment::Environment;
 use crate::plugins::PluginResolver;
 use crate::resolution::PluginsScope;
 use crate::resolution::get_plugins_scope_from_args;
-use crate::resolution::resolve_plugins_scope;
 use crate::utils::Semaphore;
+use dprint_host::HostSession;
 
 use self::messages::EditorMessage;
 use self::messages::EditorMessageBody;
@@ -115,11 +114,10 @@ struct EditorContext {
 struct EditorService<'a, TEnvironment: Environment> {
   args: &'a CliArgs,
   environment: &'a TEnvironment,
-  plugin_resolver: &'a Rc<PluginResolver<TEnvironment>>,
+  session: HostSession<TEnvironment>,
   plugins_scope: Option<Rc<PluginsScope<TEnvironment>>>,
   context: Rc<EditorContext>,
   concurrency_limiter: Rc<Semaphore>,
-  config_semaphore: Rc<Semaphore>,
 }
 
 impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
@@ -132,7 +130,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
     Self {
       args,
       environment,
-      plugin_resolver,
+      session: HostSession::new(environment.clone(), plugin_resolver.clone(), None),
       plugins_scope: None,
       context: Rc::new(EditorContext {
         id_generator: Default::default(),
@@ -140,14 +138,13 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
         writer,
       }),
       concurrency_limiter,
-      config_semaphore: Rc::new(Semaphore::new(1)),
     }
   }
 
   pub async fn run(&mut self) -> Result<()> {
     let environment = self.environment.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<EditorMessage>();
-    dprint_core::async_runtime::spawn_blocking(move || {
+    dprint_async_runtime::spawn_blocking(move || {
       let stdin = environment.stdin();
       let mut reader = MessageReader::new(stdin);
       loop {
@@ -215,7 +212,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
           let context = self.context.clone();
           let concurrency_limiter = self.concurrency_limiter.clone();
           let scope = self.plugins_scope.clone().unwrap();
-          let _ignore = dprint_core::async_runtime::spawn(async move {
+          let _ignore = dprint_async_runtime::spawn(async move {
             let _permit = concurrency_limiter.acquire().await;
             if token.is_cancelled() {
               return;
@@ -229,7 +226,7 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
 
             let body = match result {
               Ok(text) => EditorMessageBody::FormatResponse(message.id, text),
-              Err(err) => EditorMessageBody::Error(message.id, dprint_core::plugins::error_to_string(&err).into_bytes()),
+              Err(err) => EditorMessageBody::Error(message.id, dprint_plugin_types::error_to_string(&err).into_bytes()),
             };
             send_response_body(&context, body);
           });
@@ -264,23 +261,17 @@ impl<'a, TEnvironment: Environment> EditorService<'a, TEnvironment> {
   }
 
   async fn ensure_latest_config(&mut self) -> Result<Rc<ResolvedConfig>> {
-    let _update_permit = self.config_semaphore.acquire().await;
-    let config = Rc::new(resolve_config_from_args(self.args, self.environment).await?);
-
-    let last_config = self.plugins_scope.as_ref().and_then(|scope| scope.config.as_ref());
-    let has_config_changed = last_config.is_none() || last_config.unwrap() != &config || self.plugins_scope.is_none();
-    if has_config_changed {
-      self.plugins_scope.take();
-      let tokens = self.context.cancellation_tokens.take_all();
-      for token in tokens.values() {
-        token.cancel();
-      }
-      self.plugin_resolver.clear_and_shutdown_initialized().await;
-
-      let scope = resolve_plugins_scope(config.clone(), self.environment, self.plugin_resolver).await?;
-      scope.ensure_no_global_config_diagnostics()?;
-      self.plugins_scope = Some(Rc::new(scope));
-    }
+    let context = self.context.clone();
+    let scope = self
+      .session
+      .resolve_from_options(self.args, || {
+        for token in context.cancellation_tokens.take_all().values() {
+          token.cancel();
+        }
+      })
+      .await?;
+    scope.ensure_no_global_config_diagnostics()?;
+    self.plugins_scope = Some(scope);
 
     Ok(self.plugins_scope.as_ref().unwrap().config.clone().unwrap())
   }
@@ -312,17 +303,18 @@ fn send_response_body(context: &EditorContext, body: EditorMessageBody) {
 mod test {
   use anyhow::Result;
   use anyhow::anyhow;
-  use dprint_core::async_runtime::DropGuardAction;
-  use dprint_core::async_runtime::future;
-  use dprint_core::communication::IdGenerator;
-  use dprint_core::communication::MessageReader;
-  use dprint_core::communication::MessageWriter;
-  use dprint_core::communication::RcIdStore;
-  use dprint_core::communication::SingleThreadMessageWriter;
-  use dprint_core::configuration::ConfigKeyMap;
-  use dprint_core::plugins::FormatError;
-  use dprint_core::plugins::FormatRange;
-  use dprint_core::plugins::FormatResult;
+  use dprint_async_runtime::DropGuardAction;
+  use dprint_async_runtime::future;
+  use dprint_communication::IdGenerator;
+  use dprint_communication::MessageReader;
+  use dprint_communication::MessageWriter;
+  use dprint_communication::RcIdStore;
+  use dprint_communication::SingleThreadMessageWriter;
+  use dprint_configuration::ConfigKeyMap;
+  use dprint_platform::environment::*;
+  use dprint_plugin_types::FormatError;
+  use dprint_plugin_types::FormatRange;
+  use dprint_plugin_types::FormatResult;
   use pretty_assertions::assert_eq;
   use std::io::Read;
   use std::io::Write;
@@ -334,9 +326,9 @@ mod test {
   use tokio::sync::oneshot;
   use tokio_util::sync::CancellationToken;
 
-  use crate::environment::Environment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
+  use crate::environment::*;
   use crate::test_helpers::run_test_cli;
 
   use super::messages::EditorMessage;
@@ -413,7 +405,7 @@ mod test {
       };
 
       let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-      dprint_core::async_runtime::spawn_blocking({
+      dprint_async_runtime::spawn_blocking({
         move || loop {
           let message = EditorMessage::read(&mut reader);
           let msg_was_err = message.is_err();
@@ -424,7 +416,7 @@ mod test {
       });
 
       let messages = communicator.messages.clone();
-      dprint_core::async_runtime::spawn(async move {
+      dprint_async_runtime::spawn(async move {
         while let Some(Ok(message)) = rx.recv().await {
           if handle_stdout_message(message, &messages).is_err() {
             break;
@@ -705,14 +697,14 @@ mod test {
           // try parallelizing many things
           let mut handles = Vec::new();
           for _ in 0..50 {
-            handles.push(dprint_core::async_runtime::spawn({
+            handles.push(dprint_async_runtime::spawn({
               let communicator = communicator.clone();
               let txt_file_path = txt_file_path.clone();
               async move {
                 assert_eq!(communicator.check_file(&txt_file_path).await.unwrap(), true);
               }
             }));
-            handles.push(dprint_core::async_runtime::spawn({
+            handles.push(dprint_async_runtime::spawn({
               let communicator = communicator.clone();
               let txt_file_path = txt_file_path.clone();
               async move {
@@ -728,7 +720,7 @@ mod test {
                 );
               }
             }));
-            handles.push(dprint_core::async_runtime::spawn({
+            handles.push(dprint_async_runtime::spawn({
               let communicator = communicator.clone();
               async move {
                 assert_eq!(
@@ -831,7 +823,7 @@ mod test {
           // test process and wasm plugin cancellation
           for file_name in ["/file.txt_ps", "/file.txt"] {
             let token = CancellationToken::new();
-            let handle = dprint_core::async_runtime::spawn({
+            let handle = dprint_async_runtime::spawn({
               let communicator = communicator.clone();
               let token = token.clone();
               async move {

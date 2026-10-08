@@ -1,0 +1,15 @@
+[package]
+name        = "dprint-communication"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Framed message IO and communication primitives for dprint."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+crossbeam-channel    = { workspace = true }
+dprint-async-runtime = { workspace = true }

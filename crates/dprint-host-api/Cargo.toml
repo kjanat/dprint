@@ -1,0 +1,15 @@
+[package]
+name                 = "dprint-host-api"
+version              = "0.1.0"
+edition.workspace    = true
+description          = "Runtime capabilities and requests for embedding the dprint formatting host."
+repository.workspace = true
+license.workspace    = true
+
+[dependencies]
+anyhow.workspace               = true
+dprint-async-runtime.workspace = true
+dprint-plugin-types.workspace  = true
+sys_traits.workspace           = true
+tree-fucker.workspace          = true
+url.workspace                  = true

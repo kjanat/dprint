@@ -288,12 +288,13 @@ fn get_relative_path(base: &CanonicalizedPathBuf, path: &CanonicalizedPathBuf) -
 
 #[cfg(test)]
 mod test {
+  use dprint_platform::environment::*;
   use pretty_assertions::assert_eq;
 
   use super::*;
-  use crate::environment::Environment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
+  use crate::environment::*;
   use crate::test_helpers::get_expected_help_text;
   use crate::test_helpers::get_plural_formatted_text;
   use crate::test_helpers::get_singular_formatted_text;

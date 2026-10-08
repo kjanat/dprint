@@ -11,59 +11,58 @@ categories  = ["development-tools"]
 default-run = "dprint"
 
 [dependencies]
+boon                  = { workspace = true, optional = true }
+dprint-async-runtime  = { workspace = true }
+dprint-communication  = { workspace = true }
+dprint-config         = { workspace = true, features = ["schema"] }
+dprint-configuration  = { workspace = true }
+dprint-discovery      = { workspace = true }
+dprint-host           = { workspace = true }
+dprint-lsp            = { workspace = true }
+dprint-owned-child    = { workspace = true }
+dprint-platform       = { workspace = true }
+dprint-plugin-host    = { workspace = true }
+dprint-plugin-types   = { workspace = true }
+dprint-process-plugin = { workspace = true }
+dprint-wasm-plugin    = { workspace = true }
+path-clean            = { workspace = true, optional = true }
+
+# scans directories for files to format (see `src/utils/glob/scan.rs`)
+tree-fucker = { workspace = true }
+
 anyhow              = { workspace = true }
-base64              = { workspace = true }
 clap                = { workspace = true }
 clap_complete       = { workspace = true }
 console_static_text = { workspace = true }
 crossterm           = { workspace = true }
-deno_npmrc          = { workspace = true }
 deno_semver         = { workspace = true }
 deno_terminal       = { workspace = true }
 dirs                = { workspace = true }
-dprint-config-model = { workspace = true, features = ["schema"] }
-dprint-core         = { workspace = true, default-features = true, features = ["process", "wasm"] }
 dunce               = { workspace = true }
 flate2              = { workspace = true }
-fs3                 = { workspace = true }
-globset             = { workspace = true }
-ignore              = { workspace = true }
 indexmap            = { workspace = true }
-ipnet               = { workspace = true }
 jsonc-parser        = { workspace = true, features = ["cst", "preserve_order"] }
-monch               = { workspace = true }
 once_cell           = { workspace = true }
 parking_lot         = { workspace = true }
-percent-encoding    = { workspace = true }
 rand                = { workspace = true }
 # pin this to prevent it changing with `cargo install` because patch version increases
 # of rkyv may cause panics when deserializing data serialized with older versions
-rkyv                = { workspace = true }
 rustls              = { workspace = true, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = { workspace = true }
 rustls-pemfile      = { workspace = true }
-schemars            = { workspace = true, features = ["preserve_order"] }
 serde               = { workspace = true }
 serde_json          = { workspace = true }
-sha2                = { workspace = true }
-similar             = { workspace = true, features = ["inline"] }
 sys_traits          = { workspace = true, features = ["real"] }
 sysinfo             = { workspace = true, features = ["system"] }
 tar                 = { workspace = true }
-text-size           = { workspace = true }
 thiserror           = { workspace = true }
 tokio               = { workspace = true, features = ["io-std"] }
 tokio-util          = { workspace = true }
 toml_edit           = { workspace = true }
-tower-lsp           = { workspace = true }
-# scans directories for files to format (see `src/utils/glob/scan.rs`)
-tree-fucker         = { workspace = true }
-twox-hash           = { workspace = true }
 ureq                = { workspace = true, features = ["gzip", "socks-proxy", "tls"] }
 url                 = { workspace = true }
 # runs a Wasm plugin's configuration functions (its info, resolving a configuration, the files it formats)
 # without compiling it to native code (see `plugins/implementations/wasm/interpreter.rs`)
-wasmi               = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
 webpki-roots        = { workspace = true }
 which               = { workspace = true }
 zip                 = { workspace = true }
@@ -76,25 +75,6 @@ pretty_assertions = { workspace = true }
 sys_traits        = { workspace = true, features = ["memory"] }
 tempfile          = { workspace = true }
 
-# powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
-# lacks the signal-based traps native code needs, so these compile to Pulley
-# bytecode (still via Cranelift) and interpret it. the `pulley` feature adds the
-# bytecode emitter; the interpreter is already part of `runtime`.
-[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
-[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies."wasmtime"]
-workspace = true
-features  = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "pulley", "runtime", "std"]
-
-# wasm plugin runtime (wasmtime). default features are disabled to keep the
-# binary small — we only need to compile and run modules synchronously;
-# component-model, async, winch, the wat parser, wasm GC, the on-disk cache and
-# the pooling allocator are all unused. `parallel-compilation` is kept: without
-# it Cranelift compiles a module's functions one at a time, which made the
-# uncached "Compiling <plugin>" step ~3.5x slower on a 4 core machine.
-# most targets: native Cranelift codegen.
-[target."cfg(not(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\")))".dependencies]
-wasmtime = { workspace = true, features = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "runtime", "std"] }
-
 [target."cfg(target_os = \"freebsd\")".dependencies]
 # Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
 libc = { workspace = true }
@@ -104,3 +84,6 @@ signal-hook = { workspace = true }
 
 [target."cfg(windows)".dependencies]
 winreg = { workspace = true }
+
+[features]
+test-support = ["dep:boon", "dep:path-clean", "dprint-plugin-host/test-support", "sys_traits/memory"]

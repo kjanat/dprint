@@ -11,10 +11,11 @@ pub fn handle_windows_uninstall(environment: &impl Environment, install_path: &s
 
 #[cfg(test)]
 mod test {
+  use dprint_platform::environment::*;
   use std::path::PathBuf;
 
-  use crate::environment::Environment;
   use crate::environment::TestEnvironment;
+  use crate::environment::*;
   use crate::test_helpers::run_test_cli;
 
   #[test]

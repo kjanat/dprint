@@ -163,11 +163,12 @@ fn try_kill_other_dprint_processes(environment: &impl Environment) {
 #[cfg(test)]
 mod test {
   use super::LATEST_RELEASE_URL;
-  use crate::environment::Environment;
   use crate::environment::FilePermissions;
   use crate::environment::TestEnvironment;
   use crate::environment::TestFilePermissions;
+  use crate::environment::*;
   use crate::test_helpers::run_test_cli;
+  use dprint_platform::environment::*;
 
   #[test]
   fn should_not_upgrade_same_version() {

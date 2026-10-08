@@ -3,12 +3,12 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::Environment;
 use super::TestEnvironment;
 use crate::test_helpers;
 use crate::test_helpers::TestProcessPluginFile;
 use crate::test_helpers::WASM_PLUGIN_0_1_0_BYTES;
 use crate::utils::get_sha256_checksum;
+use dprint_platform::environment::*;
 
 pub struct TestConfigFileBuilder {
   environment: TestEnvironment,

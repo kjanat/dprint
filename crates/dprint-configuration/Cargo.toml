@@ -1,0 +1,15 @@
+[package]
+name        = "dprint-configuration"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Shared configuration values and resolution helpers for dprint plugins."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+indexmap = { workspace = true }
+serde    = { workspace = true }

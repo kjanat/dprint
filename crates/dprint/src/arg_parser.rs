@@ -11,27 +11,8 @@ use crate::utils::LogLevel;
 use crate::utils::MinimumDependencyAgeArg;
 use crate::utils::StdInReader;
 
-#[derive(Debug, Clone, Copy)]
-pub enum ConfigDiscovery {
-  Default,
-  Global,
-  IgnoreDescendants,
-  Disabled,
-}
-
-impl std::str::FromStr for ConfigDiscovery {
-  type Err = String;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s.to_ascii_lowercase().as_str() {
-      "default" | "true" | "1" => Ok(ConfigDiscovery::Default),
-      "false" | "0" => Ok(ConfigDiscovery::Disabled),
-      "global" => Ok(ConfigDiscovery::Global),
-      "ignore-descendants" => Ok(ConfigDiscovery::IgnoreDescendants),
-      _ => Err(format!("expected 'default', 'ignore-descendants' or 'false', got '{s}'")),
-    }
-  }
-}
+pub use dprint_discovery::ConfigDiscovery;
+pub use dprint_discovery::FilePatternArgs;
 
 /// Parses `--config-discovery` while telling clap which values to suggest.
 ///
@@ -67,58 +48,8 @@ impl clap::builder::TypedValueParser for ConfigDiscoveryValueParser {
   }
 }
 
-impl ConfigDiscovery {
-  pub fn is_global(&self) -> bool {
-    matches!(self, ConfigDiscovery::Global)
-  }
-
-  pub fn traverse_ancestors(&self) -> bool {
-    match self {
-      ConfigDiscovery::Default => true,
-      ConfigDiscovery::IgnoreDescendants => true,
-      ConfigDiscovery::Global => false,
-      ConfigDiscovery::Disabled => false,
-    }
-  }
-
-  pub fn traverse_descendants(&self) -> bool {
-    match self {
-      ConfigDiscovery::Default => true,
-      ConfigDiscovery::IgnoreDescendants => false,
-      ConfigDiscovery::Global => false,
-      ConfigDiscovery::Disabled => false,
-    }
-  }
-}
-
-/// The value of `--config`, which is either something to read the
-/// configuration file from or the configuration file text itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigArg {
-  /// A file path or url to the configuration file.
-  PathOrUrl(String),
-  /// The configuration file text, provided inline or read from stdin.
-  Text(ConfigArgText),
-}
-
-impl ConfigArg {
-  /// The file path or url when the configuration wasn't provided as text.
-  pub fn maybe_path_or_url(&self) -> Option<&str> {
-    match self {
-      ConfigArg::PathOrUrl(value) => Some(value),
-      ConfigArg::Text(_) => None,
-    }
-  }
-}
-
-/// Configuration file text that didn't come from a file dprint opened itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigArgText {
-  pub text: String,
-  /// Where the text came from, for display in error messages
-  /// (ex. `<stdin>` or `/dev/fd/63`).
-  pub origin: String,
-}
+pub use dprint_config::options::ConfigArg;
+pub use dprint_config::options::ConfigArgText;
 
 pub struct CliArgs {
   pub sub_command: SubCommand,
@@ -129,7 +60,7 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-  #[cfg(test)]
+  #[cfg(any(test, feature = "test-support"))]
   pub fn empty() -> Self {
     Self {
       sub_command: SubCommand::Help("".to_string()),
@@ -364,36 +295,6 @@ pub enum HiddenSubCommand {
   WindowsInstall(String),
   #[cfg(target_os = "windows")]
   WindowsUninstall(String),
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct FilePatternArgs {
-  /// File patterns specified on the command line or via `--stdin-files`.
-  ///
-  /// `None` means none were specified, which is different from specifying
-  /// an empty list (ex. `--stdin-files` with no lines) as that means there
-  /// are no files to format.
-  pub include_patterns: Option<Vec<String>>,
-  pub include_pattern_overrides: Option<Vec<String>>,
-  pub exclude_patterns: Vec<String>,
-  pub exclude_pattern_overrides: Option<Vec<String>>,
-  pub allow_node_modules: bool,
-  pub no_gitignore: bool,
-  pub only_staged: bool,
-  pub only_dirty: bool,
-}
-
-impl FilePatternArgs {
-  /// Whether the arguments limit the run to some of the files the
-  /// configuration would otherwise cover.
-  pub fn is_partial_run(&self) -> bool {
-    self.include_patterns.is_some()
-      || self.include_pattern_overrides.is_some()
-      || !self.exclude_patterns.is_empty()
-      || self.exclude_pattern_overrides.is_some()
-      || self.only_staged
-      || self.only_dirty
-  }
 }
 
 #[derive(Debug, Error)]
@@ -2160,4 +2061,42 @@ mod test {
     args.insert(0, "".to_string());
     args
   }
+}
+
+impl dprint_config::options::ConfigOptions for CliArgs {
+  fn config(&self) -> Option<&ConfigArg> {
+    self.config.as_ref()
+  }
+  fn plugins(&self) -> &[String] {
+    &self.plugins
+  }
+  fn discovery_override(&self) -> Option<ConfigDiscovery> {
+    self.config_discovery
+  }
+  fn stdin_file_path(&self) -> Option<&str> {
+    match &self.sub_command {
+      SubCommand::StdInFmt(cmd) => Some(&cmd.file_name_or_path),
+      _ => None,
+    }
+  }
+  fn requires_config_file(&self) -> bool {
+    sub_command_needs_config_file(&self.sub_command)
+  }
+  fn confirm_global_format(&self) -> bool {
+    matches!(&self.sub_command, SubCommand::Fmt(fmt) if !fmt.allow_no_files && fmt.patterns.include_patterns.is_none() && fmt.patterns.include_pattern_overrides.is_none())
+      && !matches!(self.config_discovery, Some(ConfigDiscovery::Global))
+  }
+  fn allow_no_files(&self) -> bool {
+    self.sub_command.allow_no_files()
+  }
+  fn allow_skipping_paths(&self) -> bool {
+    self.sub_command.allow_skipping_paths()
+  }
+  fn file_patterns(&self) -> Option<&FilePatternArgs> {
+    self.sub_command.file_patterns()
+  }
+}
+
+pub fn sub_command_needs_config_file(sub_command: &SubCommand) -> bool {
+  matches!(sub_command, SubCommand::Config(_) | SubCommand::EditorService(_) | SubCommand::Lsp)
 }

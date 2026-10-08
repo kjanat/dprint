@@ -5,8 +5,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use deno_semver::Version;
 use deno_terminal::colors;
-use dprint_core::async_runtime::future;
-use dprint_core::plugins;
+use dprint_async_runtime::future;
+use dprint_plugin_types as plugins;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -1557,7 +1557,7 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
     .map(|(plugin_reference, plugin_result)| {
       let environment = environment.clone();
       let context = context.clone();
-      dprint_core::async_runtime::spawn(async move { resolve_plugin_update_info(&environment, plugin_reference, plugin_result, context).await })
+      dprint_async_runtime::spawn(async move { resolve_plugin_update_info(&environment, plugin_reference, plugin_result, context).await })
     })
     .collect::<Vec<_>>();
 
@@ -2088,7 +2088,7 @@ async fn get_config_file_plugins<TEnvironment: Environment>(
     .into_iter()
     .map(|plugin_reference| {
       let plugin_resolver = plugin_resolver.clone();
-      dprint_core::async_runtime::spawn(async move {
+      dprint_async_runtime::spawn(async move {
         let resolve_result = plugin_resolver.resolve_plugin(plugin_reference.clone()).await;
         (plugin_reference, resolve_result)
       })
@@ -2132,6 +2132,7 @@ fn select_editor_args(env: &impl Environment) -> Vec<String> {
 
 #[cfg(test)]
 mod test {
+  use dprint_platform::environment::*;
   use std::path::Path;
 
   use anyhow::Result;
@@ -2143,10 +2144,10 @@ mod test {
   use crate::assert_contains;
   use crate::configuration::*;
   use crate::environment::CanonicalizedPathBuf;
-  use crate::environment::Environment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::environment::TestInfoFilePlugin;
+  use crate::environment::*;
   use crate::test_helpers::TestProcessPluginFile;
   use crate::test_helpers::TestProcessPluginFileBuilder;
   use crate::test_helpers::get_test_wasm_plugin_checksum;

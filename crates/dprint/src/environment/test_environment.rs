@@ -48,12 +48,11 @@ use sys_traits::ThreadSleep;
 use sys_traits::impls::InMemorySys;
 use url::Url;
 
-use dprint_core::async_runtime::async_trait;
+use dprint_async_runtime::async_trait;
 
 use super::CanonicalizedPathBuf;
 use super::DirEntry;
 use super::DownloadedFile;
-use super::Environment;
 use super::FilePermissions;
 use super::PathKind;
 use super::UrlDownloader;
@@ -62,6 +61,7 @@ use crate::utils::LogLevel;
 use crate::utils::MultiSelectItem;
 use crate::utils::ShowConfirmStrategy;
 use crate::utils::get_bytes_hash;
+use dprint_platform::environment::*;
 
 #[derive(Default)]
 struct BufferData {
@@ -653,26 +653,15 @@ impl UrlDownloader for TestEnvironment {
   }
 }
 
-#[async_trait]
-impl Environment for TestEnvironment {
-  fn is_real(&self) -> bool {
-    false
-  }
-
+impl dprint_platform::environment::EnvironmentVariables for TestEnvironment {
   fn env_var(&self, name: &str) -> Option<OsString> {
     self.sys.env_var_os(name)
   }
+}
 
-  fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
-    Ok(self.staged_files.lock().clone())
-  }
-
-  fn get_dirty_files(&self) -> Result<Vec<PathBuf>> {
-    Ok(self.dirty_files.lock().clone())
-  }
-
-  fn global_gitignore_path(&self) -> Option<PathBuf> {
-    self.global_gitignore_path.lock().clone()
+impl dprint_platform::environment::FileSystemEnvironment for TestEnvironment {
+  fn atomic_write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
+    dprint_platform::utils::fs::atomic_write_file_with_retries(self, file_path.as_ref(), bytes, 0o644)
   }
 
   fn read_file(&self, file_path: impl AsRef<Path>) -> io::Result<String> {
@@ -722,26 +711,6 @@ impl Environment for TestEnvironment {
       ));
     }
     self.sys.fs_remove_dir_all(dir_path)
-  }
-
-  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize {
-    let dir_path = self.clean_path(dir_path);
-    let mut killed = 0;
-    self.running_processes.lock().retain_mut(|(exe, restarts)| {
-      if !exe.starts_with(&dir_path) {
-        return true;
-      }
-      killed += 1;
-      // simulate an editor restarting the plugin: it stays "running" while it
-      // still has restarts left, otherwise the kill sticks
-      if *restarts > 0 {
-        *restarts -= 1;
-        true
-      } else {
-        false
-      }
-    });
-    killed
   }
 
   fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>> {
@@ -857,11 +826,23 @@ impl Environment for TestEnvironment {
     let cwd = self.sys.env_current_dir().unwrap();
     self.canonicalize(cwd).unwrap()
   }
+}
 
-  fn current_exe(&self) -> io::Result<PathBuf> {
-    Ok(self.current_exe_path.lock().clone())
+impl dprint_platform::environment::VcsEnvironment for TestEnvironment {
+  fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
+    Ok(self.staged_files.lock().clone())
   }
 
+  fn get_dirty_files(&self) -> Result<Vec<PathBuf>> {
+    Ok(self.dirty_files.lock().clone())
+  }
+
+  fn global_gitignore_path(&self) -> Option<PathBuf> {
+    self.global_gitignore_path.lock().clone()
+  }
+}
+
+impl dprint_platform::environment::OutputEnvironment for TestEnvironment {
   fn __log__(&self, text: &str) {
     if *self.is_stdout_machine_readable.lock() {
       return;
@@ -888,38 +869,12 @@ impl Environment for TestEnvironment {
     action(Box::new(|_| {}))
   }
 
-  fn get_cache_dir(&self) -> CanonicalizedPathBuf {
-    self.canonicalize("/cache").unwrap()
+  fn log_level(&self) -> LogLevel {
+    *self.log_level.lock()
   }
+}
 
-  fn get_config_dir(&self) -> Option<PathBuf> {
-    Some(PathBuf::from("/config"))
-  }
-
-  fn get_home_dir(&self) -> Option<CanonicalizedPathBuf> {
-    self.canonicalize("/home").ok()
-  }
-
-  fn cpu_arch(&self) -> String {
-    self.cpu_arch.lock().clone()
-  }
-
-  fn os(&self) -> String {
-    self.os.lock().clone()
-  }
-
-  fn available_parallelism(&self) -> Option<NonZeroUsize> {
-    NonZeroUsize::new(*self.max_threads_count.lock())
-  }
-
-  fn cli_version(&self) -> String {
-    "0.0.0".to_string()
-  }
-
-  fn get_time_secs(&self) -> u64 {
-    123456
-  }
-
+impl dprint_platform::environment::InteractionEnvironment for TestEnvironment {
   fn get_selection(&self, prompt_message: &str, _: u16, _: &[String]) -> Result<usize> {
     self.__log_stderr__(prompt_message);
     Ok(*self.selection_result.lock())
@@ -956,6 +911,92 @@ impl Environment for TestEnvironment {
     result
   }
 
+  fn is_terminal_interactive(&self) -> bool {
+    *self.is_terminal_interactive.lock()
+  }
+
+  fn stdout(&self) -> Box<dyn Write + Send> {
+    Box::new(self.std_out_pipe.lock().0.take().unwrap())
+  }
+
+  fn stdin(&self) -> Box<dyn Read + Send> {
+    Box::new(self.std_in_pipe.lock().1.clone())
+  }
+}
+
+impl dprint_platform::environment::CompilerEnvironment for TestEnvironment {
+  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+    self.wasm_compile_deadlines.lock().push(control.deadline());
+    Ok(compile_wasm_once(bytes))
+  }
+
+  fn wasm_cache_key(&self) -> String {
+    self.cpu_arch()
+  }
+}
+
+#[async_trait]
+impl dprint_platform::environment::RuntimeEnvironment for TestEnvironment {
+  fn is_real(&self) -> bool {
+    false
+  }
+
+  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize {
+    let dir_path = self.clean_path(dir_path);
+    let mut killed = 0;
+    self.running_processes.lock().retain_mut(|(exe, restarts)| {
+      if !exe.starts_with(&dir_path) {
+        return true;
+      }
+      killed += 1;
+      // simulate an editor restarting the plugin: it stays "running" while it
+      // still has restarts left, otherwise the kill sticks
+      if *restarts > 0 {
+        *restarts -= 1;
+        true
+      } else {
+        false
+      }
+    });
+    killed
+  }
+
+  fn current_exe(&self) -> io::Result<PathBuf> {
+    Ok(self.current_exe_path.lock().clone())
+  }
+
+  fn get_cache_dir(&self) -> CanonicalizedPathBuf {
+    self.canonicalize("/cache").unwrap()
+  }
+
+  fn get_config_dir(&self) -> Option<PathBuf> {
+    Some(PathBuf::from("/config"))
+  }
+
+  fn get_home_dir(&self) -> Option<CanonicalizedPathBuf> {
+    self.canonicalize("/home").ok()
+  }
+
+  fn cpu_arch(&self) -> String {
+    self.cpu_arch.lock().clone()
+  }
+
+  fn os(&self) -> String {
+    self.os.lock().clone()
+  }
+
+  fn available_parallelism(&self) -> Option<NonZeroUsize> {
+    NonZeroUsize::new(*self.max_threads_count.lock())
+  }
+
+  fn cli_version(&self) -> String {
+    "0.0.0".to_string()
+  }
+
+  fn get_time_secs(&self) -> u64 {
+    123456
+  }
+
   fn run_command_get_status(&self, args: Vec<OsString>) -> io::Result<Option<i32>> {
     let mut results = self.run_command_results.lock();
     if results.is_empty() {
@@ -978,33 +1019,8 @@ impl Environment for TestEnvironment {
     false
   }
 
-  fn is_terminal_interactive(&self) -> bool {
-    *self.is_terminal_interactive.lock()
-  }
-
-  fn log_level(&self) -> LogLevel {
-    *self.log_level.lock()
-  }
-
-  fn compile_wasm(&self, _plugin_display: &str, bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
-    self.wasm_compile_deadlines.lock().push(control.deadline());
-    Ok(compile_wasm_once(bytes))
-  }
-
-  fn wasm_cache_key(&self) -> String {
-    self.cpu_arch()
-  }
-
   async fn cpu_usage(&self) -> u8 {
     20
-  }
-
-  fn stdout(&self) -> Box<dyn Write + Send> {
-    Box::new(self.std_out_pipe.lock().0.take().unwrap())
-  }
-
-  fn stdin(&self) -> Box<dyn Read + Send> {
-    Box::new(self.std_in_pipe.lock().1.clone())
   }
 
   #[cfg(windows)]

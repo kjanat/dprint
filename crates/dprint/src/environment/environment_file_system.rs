@@ -33,8 +33,8 @@ use tree_fucker::WatcherKind;
 use tree_fucker::WatcherSink;
 
 use super::DirEntry;
-use super::Environment;
 use super::PathKind;
+use dprint_platform::environment::*;
 
 /// Scannable file system backed by an environment's `dir_info`.
 ///

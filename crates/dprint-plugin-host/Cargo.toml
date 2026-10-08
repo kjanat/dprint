@@ -1,0 +1,68 @@
+[package]
+name                 = "dprint-plugin-host"
+version              = "0.1.0"
+edition.workspace    = true
+repository.workspace = true
+license.workspace    = true
+
+[dependencies]
+dprint-async-runtime  = { workspace = true }
+dprint-communication  = { workspace = true }
+dprint-config         = { workspace = true }
+dprint-configuration  = { workspace = true }
+dprint-owned-child    = { workspace = true }
+dprint-platform       = { workspace = true }
+dprint-plugin-types   = { workspace = true }
+dprint-process-plugin = { workspace = true }
+dprint-wasm-plugin    = { workspace = true }
+
+anyhow       = { workspace = true }
+base64       = { workspace = true }
+deno_npmrc   = { workspace = true }
+deno_semver  = { workspace = true }
+flate2       = { workspace = true }
+globset      = { workspace = true }
+indexmap     = { workspace = true }
+jsonc-parser = { workspace = true, features = ["cst", "preserve_order"] }
+once_cell    = { workspace = true }
+parking_lot  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+sha2         = { workspace = true }
+sys_traits   = { workspace = true, features = ["real"] }
+sysinfo      = { workspace = true, features = ["system"] }
+tar          = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true, features = ["io-std"] }
+tokio-util   = { workspace = true }
+url          = { workspace = true }
+wasmi        = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
+
+[dev-dependencies]
+dprint-test-support         = { workspace = true }
+path-clean.workspace        = true
+pretty_assertions.workspace = true
+sys_traits                  = { workspace = true, features = ["memory"] }
+tempfile.workspace          = true
+
+# powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
+# lacks the signal-based traps native code needs, so these compile to Pulley
+# bytecode (still via Cranelift) and interpret it. the `pulley` feature adds the
+# bytecode emitter; the interpreter is already part of `runtime`.
+[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
+[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies."wasmtime"]
+workspace = true
+features  = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "pulley", "runtime", "std"]
+
+# wasm plugin runtime (wasmtime). default features are disabled to keep the
+# binary small — we only need to compile and run modules synchronously;
+# component-model, async, winch, the wat parser, wasm GC, the on-disk cache and
+# the pooling allocator are all unused. `parallel-compilation` is kept: without
+# it Cranelift compiles a module's functions one at a time, which made the
+# uncached "Compiling <plugin>" step ~3.5x slower on a 4 core machine.
+# most targets: native Cranelift codegen.
+[target."cfg(not(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\")))".dependencies]
+wasmtime = { workspace = true, features = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "runtime", "std"] }
+
+[features]
+test-support = []

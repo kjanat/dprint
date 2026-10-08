@@ -2,6 +2,8 @@
 
 Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. They can be written in any language that supports compiling to a WebAssembly file (_.wasm_)—emscripten solutions do not work.
 
+See [the crate layout](crate-layout.md) to use the Wasm API directly through `dprint-wasm-plugin`. The examples below use the compatible `dprint-core` facade.
+
 ## Rust - Using `dprint-core`
 
 Implementing a Wasm plugin is easier if you're using Rust as there are several helpers in `dprint-core`.
@@ -190,4 +192,4 @@ High level functions:
 - `host_get_error_text() -> u32` - Tell the host to store the error text in its local byte array and return back the byte length of that error message.
 - `host_has_cancelled() -> u32` - Check if the host has cancelled the formatting request (`1`) or not (`0`).
 
-I recommend looking in the [`dprint-core` wasm module](https://github.com/kjanat/dprint/blob/HEAD/crates/core/src/plugins/wasm/mod.rs) for how to use these.
+I recommend looking in the [`dprint-wasm-plugin` crate](https://github.com/kjanat/dprint/blob/HEAD/crates/dprint-wasm-plugin/src/lib.rs) for how to use these.

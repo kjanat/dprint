@@ -93,12 +93,12 @@ async function shortHash(content: string | Uint8Array): Promise<string> {
 }
 
 async function copyConfigSchema() {
-  // the config schema is generated from the configuration types in the dprint-config-model crate,
+  // the config schema is generated from the configuration types in the dprint-config crate,
   // which keeps the published copy up to date (see its `the_published_schema_is_the_generated_one` test).
   // Pull it in here so it's served at https://dprint.kjanat.dev/schemas/v0.json.
   // This copy is gitignored.
   const source = new URL(
-    "../crates/config-model/schema/v0.json",
+    "../crates/dprint-config/schema/v0.json",
     import.meta.url,
   );
   const destDir = new URL("./src/assets/schemas/", import.meta.url);

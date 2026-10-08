@@ -7,7 +7,7 @@ target
 .claude
 .vscode
 .vs
-/crates/development/target
+/crates/dprint-development/target
 /crates/test-plugin/target
 /website/playground/wasm/target
 /website/playground/dist

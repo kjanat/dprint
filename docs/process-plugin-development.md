@@ -4,6 +4,8 @@ Process plugins are created (as opposed to the recommended Wasm plugins), when t
 
 dprint version: 0.40+
 
+See [the crate layout](crate-layout.md) to use the process API directly through `dprint-process-plugin`. The examples below use the compatible `dprint-core` facade.
+
 ## Rust - Using `dprint-core`
 
 Implementing a Process plugin is easy if you're using Rust as there are several helpers in `dprint-core`.

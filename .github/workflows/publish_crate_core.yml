@@ -1,6 +1,12 @@
 name: cargo publish core crate
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Space-separated packages to publish, in dependency order
+        type: string
+        required: true
+        default: dprint-configuration dprint-formatting dprint-async-runtime dprint-communication dprint-owned-child dprint-plugin-types dprint-process-plugin dprint-wasm-plugin dprint-core
 permissions:
   id-token: write
   contents: read
@@ -20,6 +26,10 @@ jobs:
       - name: Cargo publish
         env:
           CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}"
+          PACKAGES: "${{ inputs.packages }}"
         run: |-
-          cd crates/core
-          cargo publish
+          # Publish libraries before the facade that depends on them.
+          read -r -a packages <<< "${PACKAGES}"
+          for package in "${packages[@]}"; do
+            cargo publish --locked -p "${package}"
+          done

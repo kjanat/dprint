@@ -1,23 +1,18 @@
-mod canonicalized_path_buf;
-#[allow(clippy::module_inception)]
-#[macro_use]
-mod environment;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod environment_file_system;
 mod real_environment;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod test_environment;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod test_environment_builder;
 
-pub use canonicalized_path_buf::*;
-pub use environment::*;
+pub use dprint_platform::environment::*;
 pub use real_environment::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use environment_file_system::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use test_environment::*;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use test_environment_builder::*;

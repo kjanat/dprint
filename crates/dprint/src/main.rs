@@ -2,33 +2,19 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::unused_async)]
 
-#[macro_use]
-mod environment;
-
 use anyhow::Result;
-use dprint_core::plugins::process::setup_exit_process_panic_hook;
+use dprint::arg_parser;
+use dprint::environment;
+use dprint::plugins;
+use dprint::run_cli;
+use dprint::utils;
+use dprint_process_plugin::setup_exit_process_panic_hook;
 use environment::RealEnvironment;
 use environment::RealEnvironmentOptions;
 use run_cli::AppError;
 use std::rc::Rc;
 use utils::LogLevel;
 use utils::RealStdInReader;
-
-mod arg_parser;
-mod cache;
-mod commands;
-mod configuration;
-mod format;
-mod incremental;
-mod paths;
-mod patterns;
-mod plugins;
-mod resolution;
-mod run_cli;
-mod utils;
-
-#[cfg(test)]
-mod test_helpers;
 
 fn main() {
   setup_exit_process_panic_hook();
@@ -59,7 +45,7 @@ fn main() {
           }
         }
         // exiting skips destructors, so kill the owned children here
-        dprint_core::owned_child::kill_all_owned_children();
+        dprint_owned_child::kill_all_owned_children();
         std::process::exit(err.exit_code);
       }
     }
@@ -81,7 +67,7 @@ fn kill_owned_children_on_termination() {
   };
   std::thread::spawn(move || {
     if let Some(signal) = signals.forever().next() {
-      dprint_core::owned_child::kill_all_owned_children();
+      dprint_owned_child::kill_all_owned_children();
       let _ = signal_hook::low_level::emulate_default_handler(signal);
       std::process::exit(128 + signal);
     }

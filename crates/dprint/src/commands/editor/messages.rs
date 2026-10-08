@@ -1,13 +1,13 @@
-use dprint_core::communication::Message;
-use dprint_core::communication::MessageReader;
-use dprint_core::communication::MessageWriter;
+use dprint_communication::Message;
+use dprint_communication::MessageReader;
+use dprint_communication::MessageWriter;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Result;
 use std::io::Write;
 use std::path::PathBuf;
 
-use dprint_core::plugins::FormatRange;
+use dprint_plugin_types::FormatRange;
 
 #[derive(Debug)]
 pub struct EditorMessage {

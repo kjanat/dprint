@@ -1,8 +1,8 @@
 use anyhow::Result;
 use deno_terminal::colors;
-use dprint_core::communication::AtomicFlag;
-use dprint_core::plugins::HostFormatRequest;
-use dprint_core::plugins::NullCancellationToken;
+use dprint_communication::AtomicFlag;
+use dprint_plugin_types::NullCancellationToken;
+use dprint_process_plugin::HostFormatRequest;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -460,11 +460,12 @@ pub async fn format<TEnvironment: Environment>(
 #[cfg(test)]
 mod test {
   use deno_terminal::colors;
+  use dprint_platform::environment::*;
   use pretty_assertions::assert_eq;
 
-  use crate::environment::Environment;
   use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
+  use crate::environment::*;
   use crate::test_helpers;
   use crate::test_helpers::PROCESS_PLUGIN_ZIP_CHECKSUM;
   use crate::test_helpers::TestAppError;

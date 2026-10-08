@@ -51,6 +51,36 @@ jobs:
         with: { key: format }
       - name: Check formatting with the current source
         run: cargo run -p dprint --locked -- check
+  library_boundaries:
+    name: Library boundaries
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with: { key: libraries }
+      - name: Check independent libraries
+        run: |-
+          for package in dprint-configuration dprint-formatting dprint-async-runtime dprint-communication dprint-owned-child dprint-plugin-types dprint-process-plugin dprint-wasm-plugin; do
+            cargo check --locked -p "${package}"
+          done
+      - name: Check facade feature combinations
+        run: |-
+          for features in '' formatting tracing wasm process communication async_runtime process,wasm,tracing; do
+            cargo test --locked -p dprint-core --no-default-features --features "${features}"
+          done
+      - name: Install Wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build renamed Wasm API and facade fixtures
+        env: { RUSTFLAGS: "-C link-arg=--allow-undefined" }
+        run: |-
+          for feature in direct facade; do
+            cargo build --manifest-path crates/dprint-core/tests/fixtures/wasm-plugin/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features "${feature}"
+          done
   build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -596,7 +626,7 @@ jobs:
           path: target/x86_64-unknown-freebsd/release/dprint-x86_64-unknown-freebsd.zip
           if-no-files-found: error
   ci:
-    needs: [changes, format, build, build_freebsd]
+    needs: [changes, format, library_boundaries, build, build_freebsd]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5

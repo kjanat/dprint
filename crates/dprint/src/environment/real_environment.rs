@@ -32,12 +32,11 @@ use sys_traits::impls::RealSys;
 use sysinfo::System;
 use url::Url;
 
-use dprint_core::async_runtime::async_trait;
+use dprint_async_runtime::async_trait;
 
 use super::CanonicalizedPathBuf;
 use super::DirEntry;
 use super::DownloadedFile;
-use super::Environment;
 use super::FilePermissions;
 use super::PathKind;
 use super::UrlDownloader;
@@ -48,7 +47,7 @@ use crate::utils::Logger;
 use crate::utils::LoggerOptions;
 use crate::utils::MultiSelectItem;
 use crate::utils::NoProxy;
-use crate::utils::ProgressBars;
+use crate::utils::ProgressReporter;
 use crate::utils::RealUrlDownloader;
 use crate::utils::ShowConfirmStrategy;
 use crate::utils::UnsafelyIgnoreCertificates;
@@ -57,6 +56,7 @@ use crate::utils::log_action_with_progress;
 use crate::utils::show_confirm;
 use crate::utils::show_multi_select;
 use crate::utils::show_select;
+use dprint_platform::environment::*;
 
 // cache the cwd because it's much faster than looking it up each time
 static CACHED_CWD: OnceCell<CanonicalizedPathBuf> = OnceCell::new();
@@ -72,7 +72,7 @@ pub struct RealEnvironmentOptions {
 
 #[derive(Clone)]
 pub struct RealEnvironment {
-  progress_bars: Option<Arc<ProgressBars>>,
+  progress_bars: Option<Arc<dyn ProgressReporter>>,
   url_downloader: Arc<RealUrlDownloader>,
   logger: Arc<Logger>,
   system: Arc<Mutex<System>>,
@@ -85,7 +85,7 @@ impl RealEnvironment {
       is_stdout_machine_readable: options.is_stdout_machine_readable,
       log_level: options.log_level,
     }));
-    let progress_bars = ProgressBars::new(&logger).map(Arc::new);
+    let progress_bars = crate::terminal::ProgressBars::new(&logger).map(|bars| Arc::new(bars) as Arc<dyn ProgressReporter>);
     let no_proxy = NoProxy::from_env();
     let url_downloader = Arc::new(RealUrlDownloader::new(
       progress_bars.clone(),
@@ -151,8 +151,8 @@ impl RealEnvironment {
     }
   }
 
-  #[cfg(test)]
-  pub fn run_test_with_real_env(run_with_env: impl Fn(RealEnvironment) -> dprint_core::async_runtime::LocalBoxFuture<'static, ()>) {
+  #[cfg(any(test, feature = "test-support"))]
+  pub fn run_test_with_real_env(run_with_env: impl Fn(RealEnvironment) -> dprint_async_runtime::LocalBoxFuture<'static, ()>) {
     let rt = tokio::runtime::Builder::new_current_thread()
       .enable_time()
       .thread_stack_size(crate::plugins::WASM_PLUGIN_THREAD_STACK_SIZE)
@@ -261,18 +261,19 @@ impl UrlDownloader for RealEnvironment {
     // the download gives up at the deadline itself, so it doesn't keep going
     // once what it's for has given up
     let deadline = crate::utils::current_deadline();
-    dprint_core::async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref(), deadline, max_len)).await?
+    dprint_async_runtime::spawn_blocking(move || downloader.download_with_auth(&url, auth.as_deref(), deadline, max_len)).await?
   }
 }
 
-#[async_trait]
-impl Environment for RealEnvironment {
-  fn is_real(&self) -> bool {
-    true
-  }
-
+impl dprint_platform::environment::EnvironmentVariables for RealEnvironment {
   fn env_var(&self, name: &str) -> Option<OsString> {
     std::env::var_os(name)
+  }
+}
+
+impl dprint_platform::environment::FileSystemEnvironment for RealEnvironment {
+  fn atomic_write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
+    dprint_platform::utils::fs::atomic_write_file_with_retries(self, file_path.as_ref(), bytes, 0o644)
   }
 
   fn read_file(&self, file_path: impl AsRef<Path>) -> io::Result<String> {
@@ -295,51 +296,6 @@ impl Environment for RealEnvironment {
         format!("Error reading file {}: {:#}", file_path.as_ref().display(), err),
       )),
     }
-  }
-
-  fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
-    let output = Command::new("git")
-      .arg("diff")
-      .arg("--name-only")
-      .arg("--relative")
-      .arg("--staged")
-      .arg("--diff-filter=ACMR")
-      .output()?;
-
-    Ok(String::from_utf8_lossy(&output.stdout).lines().map(PathBuf::from).collect())
-  }
-
-  fn get_dirty_files(&self) -> Result<Vec<PathBuf>> {
-    // collect every file with uncommitted changes in the working directory:
-    // unstaged tracked changes, staged tracked changes, and untracked files
-    // that aren't gitignored. each is gathered the same way `get_staged_files`
-    // gathers staged files so the behaviour (e.g. renamed files yielding their
-    // new path, deletions being skipped) stays consistent.
-    fn git_lines(args: &[&str]) -> Result<Vec<PathBuf>> {
-      let output = Command::new("git").args(args).output()?;
-      Ok(String::from_utf8_lossy(&output.stdout).lines().map(PathBuf::from).collect())
-    }
-
-    let mut files = Vec::new();
-    let mut seen = HashSet::new();
-    let groups = [
-      // unstaged tracked changes
-      git_lines(&["diff", "--name-only", "--relative", "--diff-filter=ACMR"])?,
-      // staged tracked changes
-      git_lines(&["diff", "--name-only", "--relative", "--staged", "--diff-filter=ACMR"])?,
-      // untracked files that aren't gitignored
-      git_lines(&["ls-files", "--others", "--exclude-standard"])?,
-    ];
-    for file in groups.into_iter().flatten() {
-      if seen.insert(file.clone()) {
-        files.push(file);
-      }
-    }
-    Ok(files)
-  }
-
-  fn global_gitignore_path(&self) -> Option<PathBuf> {
-    CACHED_GLOBAL_GITIGNORE_PATH.get_or_init(|| self.resolve_global_gitignore_path()).clone()
   }
 
   fn write_file_bytes(&self, file_path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
@@ -394,42 +350,6 @@ impl Environment for RealEnvironment {
         format!("Error deleting directory '{}': {:#}", dir_path.as_ref().display(), err),
       )),
     }
-  }
-
-  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize {
-    let dir_path = dir_path.as_ref();
-    let mut system = self.system.lock();
-    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    let mut killed_pids = Vec::new();
-    for process in system.processes().values() {
-      let Some(exe) = process.exe() else {
-        continue;
-      };
-      if exe.starts_with(dir_path) {
-        log_debug!(self, "Killing process {} using executable: {}", process.pid(), exe.display());
-        if process.kill() {
-          killed_pids.push(process.pid());
-        }
-      }
-    }
-
-    // wait for the killed processes to actually exit so their executables are no
-    // longer locked before the caller tries to delete them again. poll with a
-    // timeout rather than `Process::wait`, which blocks indefinitely (e.g. on a
-    // process we couldn't kill, or a zombie its real parent hasn't reaped yet).
-    if !killed_pids.is_empty() {
-      let mut remaining_polls = 100; // ~2s at 20ms per poll
-      while remaining_polls > 0 {
-        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&killed_pids), true);
-        if killed_pids.iter().all(|pid| system.process(*pid).is_none()) {
-          break;
-        }
-        remaining_polls -= 1;
-        std::thread::sleep(std::time::Duration::from_millis(20));
-      }
-    }
-
-    killed_pids.len()
   }
 
   fn dir_info(&self, dir_path: impl AsRef<Path>) -> io::Result<Vec<DirEntry>> {
@@ -542,11 +462,56 @@ impl Environment for RealEnvironment {
       })
       .clone()
   }
+}
 
-  fn current_exe(&self) -> io::Result<PathBuf> {
-    std::env::current_exe().map_err(|err| io::Error::new(err.kind(), format!("Error getting current executable: {:#}", err)))
+impl dprint_platform::environment::VcsEnvironment for RealEnvironment {
+  fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+      .arg("diff")
+      .arg("--name-only")
+      .arg("--relative")
+      .arg("--staged")
+      .arg("--diff-filter=ACMR")
+      .output()?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).lines().map(PathBuf::from).collect())
   }
 
+  fn get_dirty_files(&self) -> Result<Vec<PathBuf>> {
+    // collect every file with uncommitted changes in the working directory:
+    // unstaged tracked changes, staged tracked changes, and untracked files
+    // that aren't gitignored. each is gathered the same way `get_staged_files`
+    // gathers staged files so the behaviour (e.g. renamed files yielding their
+    // new path, deletions being skipped) stays consistent.
+    fn git_lines(args: &[&str]) -> Result<Vec<PathBuf>> {
+      let output = Command::new("git").args(args).output()?;
+      Ok(String::from_utf8_lossy(&output.stdout).lines().map(PathBuf::from).collect())
+    }
+
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    let groups = [
+      // unstaged tracked changes
+      git_lines(&["diff", "--name-only", "--relative", "--diff-filter=ACMR"])?,
+      // staged tracked changes
+      git_lines(&["diff", "--name-only", "--relative", "--staged", "--diff-filter=ACMR"])?,
+      // untracked files that aren't gitignored
+      git_lines(&["ls-files", "--others", "--exclude-standard"])?,
+    ];
+    for file in groups.into_iter().flatten() {
+      if seen.insert(file.clone()) {
+        files.push(file);
+      }
+    }
+    Ok(files)
+  }
+
+  fn global_gitignore_path(&self) -> Option<PathBuf> {
+    CACHED_GLOBAL_GITIGNORE_PATH.get_or_init(|| self.resolve_global_gitignore_path()).clone()
+  }
+}
+
+impl dprint_platform::environment::OutputEnvironment for RealEnvironment {
   fn __log__(&self, text: &str) {
     self.logger.log(text, "dprint");
   }
@@ -566,6 +531,110 @@ impl Environment for RealEnvironment {
     total_size: usize,
   ) -> TResult {
     log_action_with_progress(self.progress_bars.as_deref(), message, action, total_size)
+  }
+
+  #[inline]
+  fn log_level(&self) -> LogLevel {
+    self.logger.log_level()
+  }
+
+  fn progress_bars(&self) -> Option<&Arc<dyn ProgressReporter>> {
+    self.progress_bars.as_ref()
+  }
+}
+
+impl dprint_platform::environment::InteractionEnvironment for RealEnvironment {
+  fn get_selection(&self, prompt_message: &str, item_indent_width: u16, items: &[String]) -> Result<usize> {
+    show_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
+  }
+
+  fn get_multi_selection(&self, prompt_message: &str, item_indent_width: u16, items: Vec<MultiSelectItem>) -> Result<Vec<usize>> {
+    show_multi_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
+  }
+
+  fn confirm_with_strategy(&self, strategy: &dyn ShowConfirmStrategy) -> Result<bool> {
+    show_confirm(&self.logger, "dprint", strategy)
+  }
+
+  fn is_terminal_interactive(&self) -> bool {
+    is_terminal_interactive()
+  }
+
+  fn stdout(&self) -> Box<dyn io::Write + Send> {
+    Box::new(io::stdout())
+  }
+
+  fn stdin(&self) -> Box<dyn io::Read + Send> {
+    Box::new(io::stdin())
+  }
+}
+
+impl dprint_platform::environment::CompilerEnvironment for RealEnvironment {
+  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
+    crate::plugins::compile_wasm_supervised(self, plugin_display, wasm_bytes, control)
+  }
+
+  fn wasm_cache_key(&self) -> String {
+    let cpu = self.cpu_arch();
+    let mut hash = FastInsecureHasher::default();
+    // wasmtime tunes native code to the host CPU features and refuses to
+    // deserialize an artifact compiled for incompatible ones (the caller then
+    // recompiles), so include what it checks in the key. that way artifacts for
+    // different CPUs get distinct cache entries and coexist in a cache directory
+    // shared across machines, such as one restored from a CI cache, rather than
+    // each machine overwriting the other's. the rustc version is hashed too
+    // because deserialization can break across a rust upgrade.
+    // https://github.com/dprint/dprint/issues/735
+    env!("RUSTC_VERSION_TEXT").hash(&mut hash);
+    crate::plugins::wasm_precompile_compatibility_hash().hash(&mut hash);
+    format!("{}-{}", cpu, hash.finish())
+  }
+}
+
+#[async_trait]
+impl dprint_platform::environment::RuntimeEnvironment for RealEnvironment {
+  fn is_real(&self) -> bool {
+    true
+  }
+
+  fn kill_processes_using_dir(&self, dir_path: impl AsRef<Path>) -> usize {
+    let dir_path = dir_path.as_ref();
+    let mut system = self.system.lock();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut killed_pids = Vec::new();
+    for process in system.processes().values() {
+      let Some(exe) = process.exe() else {
+        continue;
+      };
+      if exe.starts_with(dir_path) {
+        log_debug!(self, "Killing process {} using executable: {}", process.pid(), exe.display());
+        if process.kill() {
+          killed_pids.push(process.pid());
+        }
+      }
+    }
+
+    // wait for the killed processes to actually exit so their executables are no
+    // longer locked before the caller tries to delete them again. poll with a
+    // timeout rather than `Process::wait`, which blocks indefinitely (e.g. on a
+    // process we couldn't kill, or a zombie its real parent hasn't reaped yet).
+    if !killed_pids.is_empty() {
+      let mut remaining_polls = 100; // ~2s at 20ms per poll
+      while remaining_polls > 0 {
+        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&killed_pids), true);
+        if killed_pids.iter().all(|pid| system.process(*pid).is_none()) {
+          break;
+        }
+        remaining_polls -= 1;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+      }
+    }
+
+    killed_pids.len()
+  }
+
+  fn current_exe(&self) -> io::Result<PathBuf> {
+    std::env::current_exe().map_err(|err| io::Error::new(err.kind(), format!("Error getting current executable: {:#}", err)))
   }
 
   fn get_cache_dir(&self) -> CanonicalizedPathBuf {
@@ -606,18 +675,6 @@ impl Environment for RealEnvironment {
     SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs()
   }
 
-  fn get_selection(&self, prompt_message: &str, item_indent_width: u16, items: &[String]) -> Result<usize> {
-    show_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
-  }
-
-  fn get_multi_selection(&self, prompt_message: &str, item_indent_width: u16, items: Vec<MultiSelectItem>) -> Result<Vec<usize>> {
-    show_multi_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
-  }
-
-  fn confirm_with_strategy(&self, strategy: &dyn ShowConfirmStrategy) -> Result<bool> {
-    show_confirm(&self.logger, "dprint", strategy)
-  }
-
   fn run_command_get_status(&self, mut args: Vec<OsString>) -> io::Result<Option<i32>> {
     let command_name = args.remove(0);
     let command_path = which::which(command_name).map_err(|err| io::Error::new(io::ErrorKind::NotFound, err))?;
@@ -634,40 +691,11 @@ impl Environment for RealEnvironment {
     }
   }
 
-  fn is_terminal_interactive(&self) -> bool {
-    is_terminal_interactive()
-  }
-
-  #[inline]
-  fn log_level(&self) -> LogLevel {
-    self.logger.log_level()
-  }
-
-  fn compile_wasm(&self, plugin_display: &str, wasm_bytes: &[u8], control: &crate::plugins::WasmCompileControl) -> Result<CompilationResult> {
-    crate::plugins::compile_wasm_supervised(self, plugin_display, wasm_bytes, control)
-  }
-
-  fn wasm_cache_key(&self) -> String {
-    let cpu = self.cpu_arch();
-    let mut hash = FastInsecureHasher::default();
-    // wasmtime tunes native code to the host CPU features and refuses to
-    // deserialize an artifact compiled for incompatible ones (the caller then
-    // recompiles), so include what it checks in the key. that way artifacts for
-    // different CPUs get distinct cache entries and coexist in a cache directory
-    // shared across machines, such as one restored from a CI cache, rather than
-    // each machine overwriting the other's. the rustc version is hashed too
-    // because deserialization can break across a rust upgrade.
-    // https://github.com/dprint/dprint/issues/735
-    env!("RUSTC_VERSION_TEXT").hash(&mut hash);
-    crate::plugins::wasm_precompile_compatibility_hash().hash(&mut hash);
-    format!("{}-{}", cpu, hash.finish())
-  }
-
   async fn cpu_usage(&self) -> u8 {
     // the documentation recommends calling this twice in order
     // to get a more accurate cpu reading
     let system = self.system.clone();
-    let Ok(system) = dprint_core::async_runtime::spawn_blocking(move || {
+    let Ok(system) = dprint_async_runtime::spawn_blocking(move || {
       {
         let mut system = system.lock();
         system.refresh_cpu_usage();
@@ -682,7 +710,7 @@ impl Environment for RealEnvironment {
     // wait a duration that allows getting a more accurate cpu usage
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
 
-    dprint_core::async_runtime::spawn_blocking(move || {
+    dprint_async_runtime::spawn_blocking(move || {
       let mut system = system.lock();
       system.refresh_cpu_usage();
       let utilization = system.cpus().iter().map(|c| c.cpu_usage()).sum::<f32>() / system.cpus().len() as f32;
@@ -694,18 +722,6 @@ impl Environment for RealEnvironment {
     })
     .await
     .unwrap_or(0)
-  }
-
-  fn stdout(&self) -> Box<dyn io::Write + Send> {
-    Box::new(io::stdout())
-  }
-
-  fn stdin(&self) -> Box<dyn io::Read + Send> {
-    Box::new(io::stdin())
-  }
-
-  fn progress_bars(&self) -> Option<&Arc<ProgressBars>> {
-    self.progress_bars.as_ref()
   }
 
   #[cfg(windows)]

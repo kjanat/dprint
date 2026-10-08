@@ -1,0 +1,8 @@
+[package]
+name              = "dprint-test-support"
+version           = "0.1.0"
+edition.workspace = true
+publish           = false
+
+[dependencies]
+dprint = { path = "../dprint", features = ["test-support"] }
