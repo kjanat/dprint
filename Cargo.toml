@@ -29,87 +29,94 @@ dprint-process-plugin = { path = "crates/dprint-process-plugin", version = "=0.1
 dprint-test-support   = { path = "crates/dprint-test-support", version = "=0.1.0" }
 dprint-wasm-plugin    = { path = "crates/dprint-wasm-plugin", version = "=0.1.0" }
 
-tree-fucker = { git = "https://github.com/kjanat/tree-fucker", rev = "b30f8c4a5fcb99916a044d135701687230dbda43" }
+json-schema-sort.version          = "0.1"
+json-schema-sort.default-features = false
+tree-fucker.git                   = "https://github.com/kjanat/tree-fucker"
+tree-fucker.rev                   = "b30f8c4a5fcb99916a044d135701687230dbda43"
 
-# Keep exact pins when present: cargo install does not use the lockfile by default.
-anyhow              = "1.0.98"
-async-trait         = "0.1.72"
-base64              = "=0.22.1"
-boon                = "0.6.1"
-bumpalo             = "3.17.0"
-clap                = "=4.6.7"
-clap_complete       = "=4.6.9"
-console             = "0.16.3"
-console_static_text = "=0.9.0"
-crossbeam-channel   = "0.5.14"
-# Manually retest everything when bumping this crate.
-crossterm           = "=0.27.0"
-deno_npmrc          = "=0.9.0"
-deno_semver         = "=0.10.1"
-deno_terminal       = "=0.2.3"
-dirs                = "=6.0.0"
-dunce               = "=1.0.4"
-file_test_runner    = "0.12.1"
-flate2              = "=1.1.9"
-fs3                 = "=0.5.0"
-futures             = "0.3.34"
-globset             = "=0.4.18"
-hashbrown           = "0.17.1"
-ignore              = "=0.4.23"
-indexmap            = { version = "2.9.0", features = ["serde"] }
-ipnet               = "2.11.0"
-json-schema-sort    = { version = "=0.1.0", default-features = false }
-jsonc-parser        = "=0.32.4"
-# Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
-libc                = "=0.2.189"
-monch               = "=0.6.0"
-once_cell           = "=1.21.3"
-parking_lot         = "0.12.5"
-# Keep this version for consistent output across platforms.
-path-clean          = "1.0.1"
-percent-encoding    = "=2.3.1"
-pretty_assertions   = "1.4.1"
-quote               = "1.0"
-rand                = "=0.9.3"
-# Pin for cargo install: patch upgrades may break previously serialized data.
-rkyv                = "=0.8.16"
-rustc-hash          = "2.1.3"
-rustls              = { version = "=0.23.45", default-features = false }
-rustls-native-certs = "=0.7.0"
-rustls-pemfile      = "=2.1.2"
-schemars            = "=1.2.2"
-serde               = { version = "1.0.219", features = ["derive"] }
-serde_json          = { version = "1.0.140", features = ["preserve_order"] }
-serde_path_to_error = "=0.1.20"
-sha2                = "=0.10.9"
-signal-hook         = "=0.4.5"
-similar             = "2.7.0"
-syn                 = "1.0"
-sys_traits          = "=0.1.28"
-sysinfo             = { version = "=0.39.6", default-features = false }
-tar                 = "=0.4.46"
-tempfile            = "3.20"
-text-size           = "=1.1.1"
-thiserror           = "2.0.18"
-tokio               = { version = "1.37.0", features = ["macros", "rt", "rt-multi-thread", "time"] }
-tokio-util          = "=0.7.19"
-toml_edit           = "=0.25.15"
-tower-lsp           = "=0.20.0"
-twox-hash           = "=2.1.0"
-unicode-width       = "0.2.2"
-ureq                = { version = "=2.12.1", default-features = false }
-url                 = "=2.5.4"
-wasmi               = { version = "=2.0.0", default-features = false }
-wasmtime            = { version = "=43.0.2", default-features = false }
-webpki-roots        = "=1.0.9"
-which               = "=8.0.0"
-winapi              = "0.3.9"
-winreg              = "=0.55.0"
-zip                 = "=2.4.1"
+anyhow                    = "1"
+async-trait               = "0.1"
+base64                    = "0.22"
+boon                      = "0.6"
+bumpalo                   = "3"
+clap                      = "4"
+clap_complete             = "4"
+console                   = "0.16"
+console_static_text       = "0.9"
+crossbeam-channel         = "0.5"
+crossterm                 = "0.27"                                       # Manually retest everything when bumping this crate.
+deno_npmrc                = "0.9"
+deno_semver               = "0.10"
+deno_terminal             = "0.2"
+dirs                      = "6"
+dunce                     = "1"
+file_test_runner          = "0.12"
+flate2                    = "1"
+fs3                       = "0.5"
+futures                   = "0.3"
+globset                   = "0.4"
+hashbrown                 = "0.17"
+ignore                    = "0.4"
+indexmap.version          = "2.14"
+indexmap.features         = ["serde"]
+ipnet                     = "2.11"
+jsonc-parser              = "0.32"
+libc                      = " 1.0.0-alpha.5"                             # Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
+monch                     = "0.6"
+once_cell                 = "1.21"
+parking_lot               = "0.12"
+path-clean                = "1.0"                                        # Keep this version for consistent output across platforms.
+percent-encoding          = "2"
+pretty_assertions         = "1"
+quote                     = "1"
+rand                      = "0.9"
+rkyv                      = "0.8"                                        # Pin for cargo install: patch upgrades may break previously serialized data.
+rustc-hash                = "2"
+rustls.version            = "0.23"
+rustls.default-features   = false
+rustls-native-certs       = "0.7"
+rustls-pemfile            = "2.1"
+schemars                  = "1.2"
+serde.version             = "1"
+serde.features            = ["derive"]
+serde_json.version        = "1"
+serde_json.features       = ["preserve_order"]
+serde_path_to_error       = "0.1"
+sha2                      = "0.10"
+signal-hook               = "0.4"
+similar                   = "2"
+syn                       = "1"
+sys_traits                = "0.1"
+sysinfo.version           = "0.39"
+sysinfo.default-features  = false
+tar                       = "0.4"
+tempfile                  = "3"
+text-size                 = "1"
+thiserror                 = "2"
+tokio.version             = "1"
+tokio.features            = ["macros", "rt", "rt-multi-thread", "time"]
+tokio-util                = "0.7"
+toml_edit                 = "0.25"
+tower-lsp                 = "0.20"
+twox-hash                 = "2"
+unicode-width             = "0.2"
+ureq.version              = "2"
+ureq.default-features     = false
+url                       = "2"
+wasmi.version             = "2"
+wasmi.default-features    = false
+wasmtime.version          = "43"
+wasmtime.default-features = false
+webpki-roots              = "1"
+which                     = "8"
+winapi                    = "0.3"
+winreg                    = "0.55"
+zip                       = "2.4"
 
 [patch.crates-io]
 # unreleased fixes on top of 0.6.1
-boon = { git = "https://github.com/santhosh-tekuri/boon", rev = "b487e6a75097d8719b185486269c8723f0176ed7" }
+boon.git = "https://github.com/santhosh-tekuri/boon"
+boon.rev = "b487e6a75097d8719b185486269c8723f0176ed7"
 
 # Build release with debug symbols: cargo build --profile=release-with-debug
 [profile.release-with-debug]

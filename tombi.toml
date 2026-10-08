@@ -54,8 +54,8 @@ enabled = true
 strict  = true
 catalog = {
   paths = [
-    "tombi://www.schemastore.org/api/json/catalog.json",
     "https://www.schemastore.org/api/json/catalog.json",
+    "tombi://www.schemastore.org/api/json/catalog.json",
   ],
 }
 

@@ -1,6 +1,7 @@
 use crate::utils::PathSource;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use dprint_plugin_types::PluginInfo;
@@ -82,14 +83,24 @@ pub async fn compile_native_module<TEnvironment: Environment>(plugin_display: &s
   // the compile is stopped once nothing waits for it, rather than left
   // running in its blocking task
   let _cancel_on_drop = CancelOnDrop(&control);
-  let compile_result = dprint_async_runtime::spawn_blocking({
+  let (compile_result, elapsed) = dprint_async_runtime::spawn_blocking({
     let environment = environment.clone();
     let plugin_display = plugin_display.to_string();
     let control = control.clone();
-    move || environment.compile_wasm(&plugin_display, &wasm_bytes, &control)
+    move || {
+      let start = Instant::now();
+      let result = environment.compile_wasm(&plugin_display, &wasm_bytes, &control);
+      (result, start.elapsed())
+    }
   })
-  .await??;
-  Ok(compile_result.bytes)
+  .await?;
+  // Clear the transient progress display before leaving a permanent timing.
+  drop(guard);
+  match &compile_result {
+    Ok(_) => log_stderr_info!(environment, "Compiled {} in {:.3}s", plugin_display, elapsed.as_secs_f64()),
+    Err(_) => log_stderr_info!(environment, "Failed compiling {} after {:.3}s", plugin_display, elapsed.as_secs_f64()),
+  }
+  Ok(compile_result?.bytes)
 }
 
 #[cfg(test)]
@@ -145,6 +156,16 @@ mod test {
   }
 
   #[tokio::test]
+  async fn reports_failed_compilation_without_claiming_success() {
+    let environment = TestEnvironment::new();
+    assert!(compile_native_module("broken 1.0", b"invalid wasm".to_vec(), &environment).await.is_err());
+    assert_eq!(
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
+      vec!["Compiling broken 1.0", "Failed compiling broken 1.0 after <elapsed>"]
+    );
+  }
+
+  #[tokio::test]
   async fn compiles_by_the_deadline_of_what_its_for() {
     let environment = TestEnvironment::new();
     let bytes = WASM_PLUGIN_BYTES.to_vec();
@@ -155,6 +176,14 @@ mod test {
       .unwrap()
       .unwrap();
     assert_eq!(environment.take_wasm_compile_deadlines(), vec![None, Some(deadline)]);
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling /plugin.wasm", "Compiling /plugin.wasm"]);
+    assert_eq!(
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
+      vec![
+        "Compiling /plugin.wasm",
+        "Compiled /plugin.wasm in <elapsed>",
+        "Compiling /plugin.wasm",
+        "Compiled /plugin.wasm in <elapsed>"
+      ]
+    );
   }
 }

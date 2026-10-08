@@ -17,6 +17,27 @@ macro_rules! assert_contains {
   }
 }
 
+/// Checks that compilation completion messages contain elapsed seconds, then
+/// replaces the variable measurements so callers can compare the whole output.
+pub fn normalize_compile_times(messages: Vec<String>) -> Vec<String> {
+  messages
+    .into_iter()
+    .map(|message| {
+      let separator = if message.starts_with("Compiled ") {
+        " in "
+      } else if message.starts_with("Failed compiling ") {
+        " after "
+      } else {
+        return message;
+      };
+      let (label, seconds) = message.rsplit_once(separator).expect("compile timing");
+      let seconds: f64 = seconds.strip_suffix('s').expect("seconds suffix").parse().expect("elapsed seconds");
+      assert!(seconds.is_finite() && seconds >= 0.0, "{message}");
+      format!("{label}{separator}<elapsed>")
+    })
+    .collect()
+}
+
 // this file should automatically be built when building the workspace
 // These fixtures load before the mock environments that consume them exist.
 pub static TEST_PROCESS_PLUGIN_PATH: Lazy<PathBuf> = Lazy::new(|| {

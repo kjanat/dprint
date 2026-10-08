@@ -536,18 +536,20 @@ mod test {
     environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("native"));
     run_test_cli(vec!["fmt"], &environment).unwrap();
     environment.take_stdout_messages();
-    let mut messages = environment.take_stderr_messages();
+    let mut messages = crate::test_helpers::normalize_compile_times(environment.take_stderr_messages());
     assert_eq!(
       messages.remove(0),
-      "Compiling 2 plugins to native code to format these files: test-plugin 0.2.0 (4 bytes), test-plugin 0.1.0 (4 bytes)."
+      "Compiling 2 plugins to native code to format these files:\n  test-plugin 0.2.0 (4 bytes)\n  test-plugin 0.1.0 (4 bytes)"
     );
-    // then each plugin's own line, in whichever order they start
+    // Starts and completions may interleave, but each plugin keeps its timing.
     messages.sort();
     assert_eq!(
       messages,
       vec![
-        "Compiling https://plugins.dprint.dev/test-plugin-0.1.0.wasm",
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+        "Compiled test-plugin 0.1.0 in <elapsed>",
+        "Compiled test-plugin 0.2.0 in <elapsed>",
+        "Compiling test-plugin 0.1.0",
+        "Compiling test-plugin 0.2.0",
       ]
     );
 
@@ -671,10 +673,11 @@ mod test {
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
     assert_eq!(
-      environment.take_stderr_messages(),
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
       vec![
-        "Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 (300.0 KB).",
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+        "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 (300.0 KB)",
+        "Compiling test-plugin 0.2.0",
+        "Compiled test-plugin 0.2.0 in <elapsed>",
       ]
     );
     assert_eq!(environment.take_wasm_compile_deadlines().len(), 1);
@@ -713,10 +716,11 @@ mod test {
     environment.write_file("/file.txt", &format!("{}_formatted", "b".repeat(300 * 1024))).unwrap();
     run_test_cli(vec!["check"], &environment).unwrap();
     assert_eq!(
-      environment.take_stderr_messages(),
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
       vec![
-        "Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 (300.0 KB).",
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm",
+        "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 (300.0 KB)",
+        "Compiling test-plugin 0.2.0",
+        "Compiled test-plugin 0.2.0 in <elapsed>",
       ]
     );
   }

@@ -4234,8 +4234,12 @@ text2"
     };
     let compiling = |bytes| {
       vec![
-        format!("Compiling 1 plugin to native code to format these files: test-plugin 0.2.0 ({} bytes).", bytes),
-        "Compiling https://plugins.dprint.dev/test-plugin.wasm".to_string(),
+        format!(
+          "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 ({} bytes)",
+          bytes
+        ),
+        "Compiling test-plugin 0.2.0".to_string(),
+        "Compiled test-plugin 0.2.0 in <elapsed>".to_string(),
       ]
     };
 
@@ -4251,7 +4255,7 @@ text2"
     environment.write_file(file_path, "changed").unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.read_file(file_path).unwrap(), "changed_formatted");
-    assert_eq!(environment.take_stderr_messages(), compiling(7));
+    assert_eq!(crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()), compiling(7));
 
     // and so does a configuration it hasn't resolved before
     break_compiled_module();
@@ -4264,7 +4268,7 @@ text2"
     environment.write_file(file_path, "text").unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.read_file(file_path).unwrap(), "text_custom");
-    assert_eq!(environment.take_stderr_messages(), compiling(4));
+    assert_eq!(crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()), compiling(4));
     environment.clear_logs();
 
     // which it then knows without loading it

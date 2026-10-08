@@ -213,7 +213,8 @@ impl<TEnvironment: Environment> WasmModuleLoader<TEnvironment> {
       .load_from_cache(|environment, file_path| Ok((file_path.to_path_buf(), environment.read_file_bytes(file_path)?)))
       .await?;
     let plugin_display = self.plugin_reference.display();
-    let compiled = wasm::compile_native_module(&plugin_display, wasm_bytes, &self.environment)
+    let plugin_name = format!("{} {}", self.info.name, self.info.version);
+    let compiled = wasm::compile_native_module(&plugin_name, wasm_bytes, &self.environment)
       .await
       .with_context(|| format!("Error compiling plugin {}", plugin_display))?;
     let native_path = native_module_path(&file_path);
@@ -593,7 +594,10 @@ mod test {
     assert!(plugin.compiles_to_format());
     assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(format_with(&initialized).await.unwrap(), Some(b"text_formatted".to_vec()));
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    assert_eq!(
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
+      vec!["Compiling test-plugin 0.2.0", "Compiled test-plugin 0.2.0 in <elapsed>"]
+    );
     assert_eq!(environment.take_wasm_compile_deadlines().len(), 1);
     assert!(environment.path_exists(native_module_path(&cache_item.file_path)));
     assert!(!plugin.compiles_to_format());
@@ -624,7 +628,10 @@ mod test {
     let plugin = create().await.unwrap();
     plugin.choose_format_engine(100 * 1024 * 1024);
     assert!(format_with(&plugin.initialize().await.unwrap()).await.is_ok());
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    assert_eq!(
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
+      vec!["Compiling test-plugin 0.2.0", "Compiled test-plugin 0.2.0 in <elapsed>"]
+    );
 
     // ex. it was compiled for a CPU with different features, or the file is corrupt
     environment.write_file_bytes(native_module_path(&cache_item.file_path), b"corrupt").unwrap();
@@ -632,7 +639,10 @@ mod test {
     environment.add_remote_file("https://plugins.dprint.dev/test.wasm", b"corrupt");
     let plugin = create().await.unwrap().initialize().await.unwrap();
     assert_eq!(format_with(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
-    assert_eq!(environment.take_stderr_messages(), vec!["Compiling https://plugins.dprint.dev/test.wasm"]);
+    assert_eq!(
+      crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
+      vec!["Compiling test-plugin 0.2.0", "Compiled test-plugin 0.2.0 in <elapsed>"]
+    );
   }
 
   #[tokio::test]

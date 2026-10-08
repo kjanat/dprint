@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::InitializedPlugin;
+use super::implementations::ExecFormatter;
 use super::implementations::WasmModuleCreator;
 use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
@@ -101,10 +102,16 @@ impl PluginWrapper {
   }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum PluginCacheKey {
+  Source(PluginSourceReference),
+  BuiltinExec,
+}
+
 pub struct PluginResolver<TEnvironment: Environment> {
   environment: TEnvironment,
   plugin_cache: Rc<PluginCache<TEnvironment>>,
-  memory_cache: RefCell<HashMap<PluginSourceReference, Rc<tokio::sync::OnceCell<Rc<PluginWrapper>>>>>,
+  memory_cache: RefCell<HashMap<PluginCacheKey, Rc<tokio::sync::OnceCell<Rc<PluginWrapper>>>>>,
   wasm_module_creator: WasmModuleCreator,
   next_config_id: IdGenerator,
 }
@@ -157,6 +164,21 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     FormatConfigId::from_raw(self.next_config_id.next() + 1)
   }
 
+  /// Resolves exec without inventing an external dependency. It shares the
+  /// resolver's lifecycle management with downloaded plugins.
+  pub async fn resolve_builtin_exec(&self) -> Rc<PluginWrapper> {
+    let cell = self
+      .memory_cache
+      .borrow_mut()
+      .entry(PluginCacheKey::BuiltinExec)
+      .or_insert_with(|| Rc::new(tokio::sync::OnceCell::new()))
+      .clone();
+    cell
+      .get_or_init(|| async { Rc::new(PluginWrapper::new(Box::new(ExecFormatter::default()))) })
+      .await
+      .clone()
+  }
+
   pub async fn resolve_plugins(self: &Rc<Self>, plugin_references: Vec<PluginSourceReference>) -> Result<Vec<Rc<PluginWrapper>>> {
     let handles = plugin_references
       .into_iter()
@@ -198,7 +220,7 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
     let cell = {
       let mut mem_cache = self.memory_cache.borrow_mut();
       mem_cache
-        .entry(plugin_reference.clone())
+        .entry(PluginCacheKey::Source(plugin_reference.clone()))
         .or_insert_with(|| Rc::new(tokio::sync::OnceCell::new()))
         .clone()
     };
@@ -233,7 +255,26 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
 #[cfg(test)]
 mod lifecycle_tests {
   use super::*;
+  use crate::environment::TestEnvironment;
   use crate::plugins::TestPlugin;
+
+  #[tokio::test]
+  async fn direct_exec_is_cached_and_retired_only_after_its_owners_release_it() {
+    let environment = TestEnvironment::new();
+    let resolver = PluginResolver::new(environment.clone(), PluginCache::new(environment));
+    let first = resolver.resolve_builtin_exec().await;
+    assert!(Rc::ptr_eq(&first, &resolver.resolve_builtin_exec().await));
+    resolver.shutdown_unused().await;
+    assert!(Rc::ptr_eq(&first, &resolver.resolve_builtin_exec().await));
+    let retired = Rc::downgrade(&first);
+    drop(first);
+    resolver.shutdown_unused().await;
+    assert!(retired.upgrade().is_none());
+    let next = resolver.resolve_builtin_exec().await;
+    assert_eq!(next.info().config_key, "exec");
+    resolver.clear_and_shutdown_initialized().await;
+    assert!(!Rc::ptr_eq(&next, &resolver.resolve_builtin_exec().await));
+  }
 
   #[tokio::test]
   async fn a_stopped_wrapper_initializes_a_fresh_instance() {

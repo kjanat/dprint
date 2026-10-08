@@ -16,6 +16,19 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
 
 The CLI has exec built in. When a config references version 0.7.3 of this plugin (ex. `npm:@dprint/exec@0.7.3/plugin.json` or `https://plugins.dprint.dev/exec-0.7.3.json`), the CLI formats with its built-in exec rather than downloading the plugin, so it works on every platform the CLI does (ex. FreeBSD). A reference to another version, or to none in particular (ex. `npm:@dprint/exec` resolved from `node_modules`), gets the plugin it asks for, downloaded and run as a separate process like before. So does a reference with a checksum other than 0.7.3's (of its npm package for an `npm:` reference, or of its `plugin.json` for a url), which then fails the checksum check like any plugin, so a checksum keeps pinning what it pins. To run the separate plugin process for 0.7.3 too, set `DPRINT_BUILTIN_EXEC=0`.
 
+An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required:
+
+```toml
+[exec]
+cwd = "${configDir}"
+
+[[exec.commands]]
+command = "gofmt -s"
+exts    = ["go"]
+```
+
+An explicit exec plugin reference still selects that plugin and its position in the formatter chain. Without a reference, built-in exec runs after the listed plugins. `DPRINT_BUILTIN_EXEC=0` only disables substitution of legacy plugin references; it does not disable a directly configured built-in formatter. Commands inherited from remote configurations still require local `playWithFire` permission as described below.
+
 Compared to the downloaded plugin, the built-in one:
 
 - Kills a command that times out or is cancelled instead of leaving it running.

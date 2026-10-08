@@ -694,7 +694,7 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
     if !compiling.is_empty() {
       log_warn!(
         self.environment,
-        "Compiling {} to native code to format these files: {}.",
+        "Compiling {} to native code to format these files:\n{}",
         if compiling.len() == 1 {
           "1 plugin".to_string()
         } else {
@@ -702,9 +702,9 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
         },
         compiling
           .iter()
-          .map(|(plugin, bytes)| format!("{} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
+          .map(|(plugin, bytes)| format!("  {} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
           .collect::<Vec<_>>()
-          .join(", "),
+          .join("\n"),
       );
     }
     Ok(())
@@ -1364,7 +1364,12 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
 ) -> Result<PluginsScope<TEnvironment>, ResolvePluginsError> {
   // resolve the plugins
-  let plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.sources.clone()).await?);
+  let mut plugins = filter_duplicate_plugin_names(plugin_resolver.resolve_plugins(config.plugins.sources.clone()).await?);
+  // Configuration resolution has already filtered remote commands and applied
+  // inheritance. An explicit exec plugin keeps its selected version and order.
+  if config.plugins.config.contains_key("exec") && !plugins.iter().any(|plugin| plugin.info().config_key == "exec") {
+    plugins.push(plugin_resolver.resolve_builtin_exec().await);
+  }
   let mut config_map = config.plugins.config.clone();
 
   // resolve each plugin's configuration

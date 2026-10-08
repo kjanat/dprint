@@ -1746,7 +1746,7 @@ pub async fn output_config_schema<TEnvironment: Environment>(
     Some(config_file) => resolve_config_with_ancestors_from_path_with_bytes(&config_file, environment).await?,
     None => resolve_config_from_args(args, environment).await?,
   };
-  let schema = generate_config_schema(environment, plugin_resolver, config.plugins.sources).await?;
+  let schema = generate_config_schema(environment, plugin_resolver, config.plugins.sources, config.plugins.config.contains_key("exec")).await?;
   for warning in &schema.warnings {
     log_warn!(environment, "{}", warning);
   }
@@ -1817,6 +1817,7 @@ async fn generate_config_schema<TEnvironment: Environment>(
   environment: &TEnvironment,
   plugin_resolver: &Rc<PluginResolver<TEnvironment>>,
   plugins: Vec<PluginSourceReference>,
+  has_exec_config: bool,
 ) -> Result<GeneratedConfigSchema> {
   let mut missing = Vec::new();
   let mut sources = Vec::new();
@@ -1847,6 +1848,13 @@ async fn generate_config_schema<TEnvironment: Environment>(
       name: info.name.clone(),
       config_key: info.config_key.clone(),
       location,
+    });
+  }
+  if has_exec_config && !sources.iter().any(|source| source.config_key == "exec") {
+    sources.push(PluginSchemaSource {
+      name: "exec".to_string(),
+      config_key: "exec".to_string(),
+      location: PluginSchemaLocation::BuiltIn(dprint_config::exec::input::exec_config_schema()),
     });
   }
   let mut schemas = Vec::with_capacity(sources.len());
@@ -2057,7 +2065,7 @@ async fn generate_config_file_schema<TEnvironment: Environment>(
       *plugin = addition.versioned_reference(npm.base_dir.as_ref(), plugin_resolver).await?;
     }
   }
-  generate_config_schema(environment, plugin_resolver, plugins).await
+  generate_config_schema(environment, plugin_resolver, plugins, config.plugins.config.contains_key("exec")).await
 }
 
 /// The names of the plugins a config file resolves to, skipping (with a
@@ -2437,6 +2445,42 @@ mod test {
   "definitions": { "ending": { "type": "string" } },
   "properties": { "ending": { "$ref": "#/definitions/ending" } }
 }"##;
+
+  #[test]
+  fn should_output_deterministically_sorted_config_schema() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .add_remote_file(
+        "https://plugins.dprint.dev/test/schema.json",
+        r#"{
+        "type": "object",
+        "required": ["z", "a"],
+        "properties": {
+          "z": { "type": ["string", "null"], "description": "Last letter", "enum": ["z", "a", null] },
+          "a": { "type": "object", "default": { "z": 1, "a": 2 } }
+        },
+        "description": "A deliberately unsorted schema"
+      }"#,
+      )
+      .write_file("/dprint.toml", "plugins = [\"https://plugins.dprint.dev/test-plugin.wasm\"]\n")
+      .build();
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    let output = environment.take_stdout_messages();
+    let schema: serde_json::Value = serde_json::from_str(&output[0]).unwrap();
+    let plugin = &schema["$defs"]["plugin:test-plugin"];
+    assert_eq!(plugin["required"], serde_json::json!(["a", "z"]));
+    assert_eq!(plugin["properties"]["z"]["type"], serde_json::json!(["null", "string"]));
+    assert_eq!(plugin["properties"]["z"]["enum"], serde_json::json!(["z", "a", null]));
+    assert_eq!(plugin["properties"].as_object().unwrap().keys().take(2).collect::<Vec<_>>(), vec!["z", "a"]);
+    assert_eq!(
+      plugin["properties"]["a"]["default"].as_object().unwrap().keys().collect::<Vec<_>>(),
+      vec!["z", "a"]
+    );
+    assert_eq!(plugin["properties"]["z"].as_object().unwrap().keys().next().unwrap(), "description");
+    assert!(output[0].ends_with('\n'));
+    run_test_cli(vec!["schema"], &environment).unwrap();
+    assert_eq!(environment.take_stdout_messages(), output);
+    assert!(environment.take_stderr_messages().is_empty());
+  }
 
   #[test]
   fn should_output_config_schema() {

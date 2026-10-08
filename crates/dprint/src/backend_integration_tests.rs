@@ -36,3 +36,93 @@ fn checks_the_checksum_of_a_reference_it_doesnt_serve() {
   assert_eq!(environment.read_file("/file.txt").unwrap(), "text\n");
   environment.take_stderr_messages();
 }
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_activates_from_json_and_toml_without_a_plugin_reference() {
+  for (path, config) in [
+    ("/dprint.json", r#"{"exec":{"commands":[{"command":"tr a-z A-Z","exts":["txt"]}]}}"#),
+    ("/dprint.toml", "[[exec.commands]]\ncommand = \"tr a-z A-Z\"\nexts = [\"txt\"]\n"),
+  ] {
+    let environment = TestEnvironmentBuilder::new().write_file(path, config).write_file("/file.txt", "text\n").build();
+    // Check must report a formatting difference, not an unknown exec table.
+    let error = run_test_cli(vec!["check", "/file.txt"], &environment).unwrap_err();
+    error.assert_exit_code(20);
+    environment.take_stdout_messages();
+    environment.take_stderr_messages();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
+    environment.take_stdout_messages();
+    run_test_cli(vec!["check", "/file.txt"], &environment).unwrap();
+    environment.take_stdout_messages();
+  }
+}
+
+#[test]
+fn builtin_exec_has_resolved_config_and_schema_without_a_plugin_reference() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config.add_config_section("exec", r#"{"commands":[{"command":"formatter","exts":["txt"]}]}"#);
+    })
+    .build();
+  // Direct host configuration does not depend on the legacy substitution switch.
+  environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
+  run_test_cli(vec!["output-resolved-config"], &environment).unwrap();
+  let resolved: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
+  assert_eq!(resolved["exec"]["commands"].as_array().unwrap().len(), 1);
+  run_test_cli(vec!["schema"], &environment).unwrap();
+  let schema: serde_json::Value = serde_json::from_str(&environment.take_stdout_messages()[0]).unwrap();
+  assert!(schema["properties"].get("exec").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_inherits_local_commands_without_a_plugin_reference() {
+  let environment = TestEnvironmentBuilder::new()
+    .write_file("/dprint.toml", "extends = \"./commands.toml\"\n")
+    .write_file("/commands.toml", "[[exec.commands]]\ncommand = \"tr a-z A-Z\"\nexts = [\"txt\"]\n")
+    .write_file("/file.txt", "text\n")
+    .build();
+  run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+  assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
+  environment.take_stdout_messages();
+}
+
+#[test]
+fn builtin_exec_rejects_options_outside_the_host_contract() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config.add_config_section("exec", r#"{"commands":[{"command":"formatter","exts":["txt"],"shell":"bash"}]}"#);
+    })
+    .build();
+  run_test_cli(vec!["output-resolved-config"], &environment).unwrap_err().assert_exit_code(1);
+  let diagnostics = environment.take_stderr_messages().join("\n");
+  assert!(diagnostics.contains("unknown field `shell`"), "{}", diagnostics);
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_filters_remote_commands_without_a_plugin_reference() {
+  for (permission, expected) in [("false", "text\n"), ("[\"tr\"]", "TEXT\n")] {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dprint.json",
+        &format!(r#"{{"extends":"https://example.com/config.json","exec":{{"playWithFire":{permission}}}}}"#),
+      )
+      .add_remote_file(
+        "https://example.com/config.json",
+        r#"{"exec":{"commands":[{"command":"tr a-z A-Z","exts":["txt"]}],"playWithFire":true}}"#,
+      )
+      .write_file("/file.txt", "text\n")
+      .build();
+    let result = run_test_cli(vec!["fmt", "/file.txt"], &environment);
+    if permission != "false" {
+      result.unwrap();
+    } else {
+      result.unwrap_err().assert_exit_code(14);
+    }
+    assert_eq!(environment.read_file("/file.txt").unwrap(), expected);
+    environment.take_stdout_messages();
+    environment.take_stderr_messages();
+  }
+}

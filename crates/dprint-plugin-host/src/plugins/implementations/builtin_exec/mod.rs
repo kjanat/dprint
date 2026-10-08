@@ -63,11 +63,17 @@ pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvi
     return None;
   }
   log_debug!(environment, "Using the built-in exec for {}", reference.display());
-  Some(Box::new(InProcessPlugin::new(
-    handler::ExecHandler::default,
-    input::exec_config_schema(),
-    &BUILT_IN,
-  )))
+  Some(Box::new(ExecFormatter::default()))
+}
+
+/// The host's command formatter. Its input contract and schema are defined by
+/// `dprint_config::exec::input`, independently of any external plugin release.
+pub type ExecFormatter = InProcessPlugin<handler::ExecHandler>;
+
+impl Default for ExecFormatter {
+  fn default() -> Self {
+    Self::new(handler::ExecHandler::default, input::exec_config_schema(), &BUILT_IN)
+  }
 }
 
 /// Whether dprint serves the reference with the built-in exec rather than

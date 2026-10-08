@@ -209,10 +209,11 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     )),
   );
   result.extend(root);
-  Ok(ConfigSchema {
-    schema: Value::Object(result),
-    warnings,
-  })
+  let mut schema = Value::Object(result);
+  let mut options = json_schema_sort::SortOptions::default();
+  options.properties = json_schema_sort::PropertyOrdering::Preserve;
+  json_schema_sort::sort_schema_with_options(&mut schema, options);
+  Ok(ConfigSchema { schema, warnings })
 }
 
 /// The name for the schema of a plugin's overrides in its resource's

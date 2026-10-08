@@ -18,6 +18,7 @@ thiserror            = { workspace = true }
 monch                = { workspace = true }
 toml_edit            = { workspace = true }
 jsonc-parser         = { workspace = true, features = ["cst", "preserve_order"] }
+json-schema-sort     = { workspace = true }
 deno_terminal        = { workspace = true }
 dprint-discovery     = { workspace = true }
 dprint-platform      = { workspace = true }
@@ -34,7 +35,6 @@ url                  = { workspace = true, optional = false }
 [dev-dependencies]
 boon                = { workspace = true }
 dprint-test-support = { workspace = true }
-json-schema-sort    = { workspace = true }
 pretty_assertions   = { workspace = true }
 tempfile            = { workspace = true }
 

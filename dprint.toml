@@ -1,4 +1,4 @@
-#:schema .dprint.schema.json
+#:schema dprint.schema.json
 
 indentWidth = 2
 lineWidth   = 160
@@ -13,23 +13,13 @@ plugins     = [
   "npm:@dprint/typescript@0.96.1",
   "npm:@dprint/json@0.25.2",
   "npm:@dprint/markdown@0.26.0",
+  # STILL NEEDED EVEN THOUGH IT'S A HOST CAPABILITY!
   "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
   "npm:dprint-plugin-malva@0.16.0",
   "npm:dprint-plugin-markup@0.27.5",
   "npm:dprint-plugin-yaml@0.6.0",
   "npm:@dprint/dockerfile@0.7.0"
 ]
-
-[exec]
-cwd = "${configDir}"
-
-[[exec.commands]]
-command = "rustfmt --edition 2024 --config imports_granularity=item"
-exts    = ["rs"]
-
-[[exec.commands]]
-command = "npx -y tombi format - --stdin-filename {{file_path}}"
-exts    = ["toml"]
 
 [malva]
 blockSelectorLinebreak = "always"
@@ -54,7 +44,7 @@ useTabs          = true
 binaryNextLine   = true
 switchCaseIndent = true
 
-[sortPackageJson]
+[sortPackageJson]  # My own shit jsonschema is broken.
 associations = ["package.json"]
 
 [typescript]
@@ -64,3 +54,27 @@ associations = ["package.json"]
 "exportDeclaration.sortTypeOnlyExports" = "none"
 "importDeclaration.sortNamedImports"    = "maintain"
 "importDeclaration.sortTypeOnlyImports" = "none"
+
+# THESE ARE ALL BROKEN CAUSE OF SHIT DESIGN!
+# [typescript.importDeclaration]
+# sortNamedImports    = "maintain"
+# sortTypeOnlyImports = "none"
+#
+# [typescript.exportDeclaration]
+# sortNamedExports    = "maintain"
+# sortTypeOnlyExports = "none"
+#
+# [typescript.module]
+# sortImportDeclarations = "maintain"
+# sortExportDeclarations = "maintain"
+
+[exec]
+cwd = "${configDir}"
+
+[[exec.commands]]
+command = "rustfmt --edition 2024 --config imports_granularity=item"
+exts    = ["rs"]
+
+[[exec.commands]]
+command = "npx -y tombi format - --stdin-filename {{file_path}}"
+exts    = ["toml"]
