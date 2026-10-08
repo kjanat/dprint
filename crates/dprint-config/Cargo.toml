@@ -34,6 +34,7 @@ url                  = { workspace = true, optional = false }
 [dev-dependencies]
 boon                = { workspace = true }
 dprint-test-support = { workspace = true }
+json-schema-sort    = { workspace = true }
 pretty_assertions   = { workspace = true }
 tempfile            = { workspace = true }
 

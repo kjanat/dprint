@@ -640,6 +640,22 @@ mod test {
       .build()
   }
 
+  fn set_predictable_interpreter_rate(environment: &TestEnvironment) {
+    let rates = environment
+      .dir_info(&environment.get_cache_dir().join("plugins"))
+      .unwrap()
+      .into_iter()
+      .filter_map(|entry| match entry {
+        crate::environment::DirEntry::File { path, .. } if path.to_string_lossy().ends_with(".rate.json") => Some(path),
+        _ => None,
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(rates.len(), 1);
+    // Use a fixed 1,600 ns/byte instead of the preceding run's wall-clock
+    // measurement, which varies between debug/release builds and CI runners.
+    environment.write_file(&rates[0], r#"{"bytes":65536,"nanos":104857600}"#).unwrap();
+  }
+
   #[test]
   fn should_compile_a_plugin_that_formats_a_lot() {
     let environment = config_with_uncompiled_plugin();
@@ -650,6 +666,7 @@ mod test {
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert!(environment.take_wasm_compile_deadlines().is_empty());
 
+    set_predictable_interpreter_rate(&environment);
     environment.write_file("/file.txt", &"a".repeat(300 * 1024)).unwrap();
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
@@ -685,6 +702,7 @@ mod test {
     run_test_cli(vec!["check"], &environment).unwrap();
     run_test_cli(vec!["check"], &environment).unwrap();
     environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", None);
+    set_predictable_interpreter_rate(&environment);
 
     // so the next run formats nothing, and doesn't compile
     run_test_cli(vec!["check"], &environment).unwrap();
