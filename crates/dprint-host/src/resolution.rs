@@ -755,11 +755,20 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
     self.inner.len()
   }
 
+  pub fn is_empty(&self) -> bool {
+    self.inner.is_empty()
+  }
+
   pub fn iter(&self) -> impl Iterator<Item = &PluginsScopeAndPaths<TEnvironment>> {
     self.inner.iter()
   }
+}
 
-  pub fn into_iter(self) -> impl Iterator<Item = PluginsScopeAndPaths<TEnvironment>> {
+impl<TEnvironment: Environment> IntoIterator for PluginsScopeAndPathsCollection<TEnvironment> {
+  type Item = PluginsScopeAndPaths<TEnvironment>;
+  type IntoIter = std::vec::IntoIter<PluginsScopeAndPaths<TEnvironment>>;
+
+  fn into_iter(self) -> Self::IntoIter {
     self.inner.into_iter()
   }
 }

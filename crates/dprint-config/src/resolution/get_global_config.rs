@@ -94,7 +94,7 @@ mod tests {
     config_map.insert(String::from("lineWidth"), ConfigMapValue::from_i32(80));
     config_map.insert(String::from("useTabs"), ConfigMapValue::from_bool(true));
     config_map.insert(String::from("indentWidth"), ConfigMapValue::from_i32(2));
-    config_map.insert(String::from("newLineKind"), ConfigMapValue::from_str("crlf"));
+    config_map.insert(String::from("newLineKind"), ConfigMapValue::from("crlf"));
     assert_result(
       config_map,
       GlobalConfiguration {
@@ -110,7 +110,7 @@ mod tests {
   #[test]
   fn should_get_global_for_system_new_line_kind() {
     let mut config_map = ConfigMap::new();
-    config_map.insert(String::from("newLineKind"), ConfigMapValue::from_str("system"));
+    config_map.insert(String::from("newLineKind"), ConfigMapValue::from("system"));
     assert_result(
       config_map,
       GlobalConfiguration {
@@ -156,7 +156,7 @@ mod tests {
   #[test]
   fn should_diagnostic_on_a_value_that_isnt_what_it_may_be() {
     let mut config_map = ConfigMap::new();
-    config_map.insert(String::from("lineWidth"), ConfigMapValue::from_str("test"));
+    config_map.insert(String::from("lineWidth"), ConfigMapValue::from("test"));
     assert_result(
       config_map,
       GlobalConfiguration::default(),

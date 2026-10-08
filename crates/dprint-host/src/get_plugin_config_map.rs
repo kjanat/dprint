@@ -58,7 +58,7 @@ mod tests {
   fn should_error_plugin_key_is_not_object() {
     let mut config_map = ConfigMap::new();
     config_map.insert(String::from("lineWidth"), ConfigMapValue::from_i32(80));
-    config_map.insert(String::from("typescript"), ConfigMapValue::from_str(""));
+    config_map.insert(String::from("typescript"), ConfigMapValue::from(""));
     assert_errors(&mut config_map, "Expected the configuration property 'typescript' to be an object.");
   }
 

@@ -18,7 +18,6 @@ pub use dprint_plugin_host as plugins;
 pub use run_cli::AppError;
 pub mod terminal;
 pub mod utils {
-  pub(crate) use crate::terminal::terminal;
   pub use crate::terminal::*;
   pub use dprint_discovery::*;
   pub use dprint_platform::utils::*;

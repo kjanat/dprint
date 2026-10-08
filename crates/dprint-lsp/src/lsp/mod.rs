@@ -635,8 +635,10 @@ mod test {
       .build();
     environment.add_fifo_path("/dev/fd/63");
 
-    let mut args = SessionOptions::default();
-    args.config = Some(dprint_host_api::options::ConfigArg::PathOrUrl("/dev/fd/63".to_string()));
+    let args = SessionOptions {
+      config: Some(dprint_host_api::options::ConfigArg::PathOrUrl("/dev/fd/63".to_string())),
+      ..Default::default()
+    };
     let err = resolve_config_override(&args, &environment).err().unwrap();
 
     assert_eq!(
@@ -654,8 +656,10 @@ mod test {
       .write_file("/dprint.json", r#"{ "includes": ["**/*.txt"] }"#)
       .build();
 
-    let mut args = SessionOptions::default();
-    args.config = Some(dprint_host_api::options::ConfigArg::PathOrUrl("dprint.json".to_string()));
+    let args = SessionOptions {
+      config: Some(dprint_host_api::options::ConfigArg::PathOrUrl("dprint.json".to_string())),
+      ..Default::default()
+    };
 
     assert_eq!(resolve_config_override(&args, &environment).unwrap(), Some(PathBuf::from("/dprint.json")));
     assert_eq!(resolve_config_override(&SessionOptions::default(), &environment).unwrap(), None);

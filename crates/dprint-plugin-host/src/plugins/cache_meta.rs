@@ -18,7 +18,7 @@ use std::hash::Hasher;
 /// should invalidate existing entries. Folded into each entry's signature so a
 /// bump simply orphans old entries (they stay on disk until `clear-cache`)
 /// rather than busting the whole cache.
-const PLUGIN_CACHE_SCHEMA_VERSION: usize = 11;
+const PLUGIN_CACHE_SCHEMA_VERSION: usize = 12;
 
 /// Size + modification time of a local file, captured at setup. A cache hit
 /// requires every stamp to still match (cheap stat, no read/hash).
@@ -89,7 +89,10 @@ impl PluginCacheMeta {
   /// plugins, or the executable within the extract dir for process plugins.
   pub fn artifact_file_path(&self, hash: &str, environment: &impl Environment) -> PathBuf {
     match self.plugin_kind {
-      PluginKind::Wasm => wasm_module_path(hash, self.source_checksum.as_deref(), environment),
+      PluginKind::Wasm => match self.source_checksum.as_deref() {
+        Some(checksum) => named_wasm_module_path(hash, Some(checksum), &self.info, environment),
+        None => wasm_module_path(hash, None, environment),
+      },
       PluginKind::Process => {
         let sub_path = self.executable_sub_path.as_deref().unwrap_or_default();
         process_dir_path(hash, environment).join(sub_path)
@@ -168,7 +171,17 @@ pub fn to_unix_millis(time: SystemTime) -> u64 {
 }
 
 pub fn plugins_dir(environment: &impl Environment) -> PathBuf {
-  environment.get_cache_dir().join("plugins")
+  environment
+    .get_cache_dir()
+    .join("plugins")
+    .join(format!("v{PLUGIN_CACHE_SCHEMA_VERSION}"))
+    .join(format!(
+      "{}-{}",
+      cache_path_component(&environment.os()),
+      cache_path_component(&environment.cpu_arch())
+    ))
+    .join(format!("wasmtime-{WASM_CACHE_VERSION}"))
+    .join(cache_path_component(&environment.wasm_cache_key()))
 }
 
 /// Where a Wasm plugin's module is kept. Each build of the plugin (by the
@@ -183,6 +196,37 @@ pub fn wasm_module_path(hash: &str, source_checksum: Option<&str>, environment: 
     None => format!("{hash}.wasm"),
   };
   plugins_dir(environment).join(file_name)
+}
+
+/// A readable plugin identity followed by the source/build identity. Both
+/// hashes remain necessary: name/version alone do not identify immutable bytes.
+pub fn named_wasm_module_path(hash: &str, checksum: Option<&str>, info: &PluginInfo, environment: &impl Environment) -> PathBuf {
+  let path = wasm_module_path(hash, checksum, environment);
+  path.with_file_name(format!(
+    "{}-{}-{}",
+    cache_path_component(&info.name),
+    cache_path_component(&info.version),
+    path.file_name().unwrap().to_string_lossy()
+  ))
+}
+
+fn cache_path_component(value: &str) -> String {
+  let text: String = value
+    .chars()
+    .take(96)
+    .map(|c| {
+      if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+        c
+      } else {
+        '_'
+      }
+    })
+    .collect();
+  if text.is_empty() || text == "." || text == ".." {
+    "_".to_string()
+  } else {
+    text
+  }
 }
 
 /// Where the native code compiled from a Wasm plugin's module is kept: next
@@ -268,6 +312,24 @@ mod test {
   }
 
   #[test]
+  fn cache_namespaces_separate_architectures_and_escape_plugin_names() {
+    let environment = TestEnvironment::new();
+    environment.set_cpu_arch("x86_64");
+    let first = plugins_dir(&environment);
+    environment.set_cpu_arch("aarch64");
+    assert_ne!(plugins_dir(&environment), first);
+    assert!(first.to_string_lossy().contains("/v12/"));
+    assert!(first.to_string_lossy().contains("/wasmtime-43.0.2/"));
+    let mut meta = make_meta("signature");
+    meta.info.name = "../../escape".to_string();
+    meta.info.version = "../1.0".to_string();
+    meta.source_checksum = Some("0123456789abcdef".to_string());
+    let path = meta.artifact_file_path("hash", &environment);
+    assert_eq!(path.parent(), Some(plugins_dir(&environment).as_path()));
+    assert!(path.file_name().unwrap().to_string_lossy().contains("escape"));
+  }
+
+  #[test]
   fn should_roundtrip_meta() {
     let environment = TestEnvironment::new();
     environment.mk_dir_all(plugins_dir(&environment)).unwrap();
@@ -292,10 +354,10 @@ mod test {
     let mut meta = make_meta("sig");
     meta.source_checksum = Some("0123456789abcdef0123".to_string());
     write_meta("h", &meta, &environment).unwrap();
-    let module_path = wasm_module_path("h", Some("0123456789abcdef0123"), &environment);
-    assert_eq!(module_path, plugins_dir(&environment).join("h-0123456789abcdef.wasm"));
+    let module_path = meta.artifact_file_path("h", &environment);
+    assert!(module_path.file_name().unwrap().to_string_lossy().ends_with("-h-0123456789abcdef.wasm"));
     let native_path = native_module_path(&module_path);
-    assert_eq!(native_path, plugins_dir(&environment).join("h-0123456789abcdef.cwasm"));
+    assert!(native_path.file_name().unwrap().to_string_lossy().ends_with("-h-0123456789abcdef.cwasm"));
     environment.write_file(&module_path, "module").unwrap();
     environment.write_file(&native_path, "compiled").unwrap();
 

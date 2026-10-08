@@ -66,8 +66,7 @@ impl DirGitIgnores {
   }
 }
 
-/// Resolves the lines of git's global excludes file when global gitignore
-/// support is opted into via the `DPRINT_GLOBAL_GITIGNORE` environment variable.
+/// Resolves Git's global excludes file unless explicitly disabled.
 /// Returns an empty list when disabled or when no global excludes file exists.
 pub fn resolve_global_gitignore_lines(environment: &impl Environment) -> Vec<String> {
   if !global_gitignore_enabled(environment) {
@@ -93,7 +92,7 @@ fn global_gitignore_enabled(environment: &impl Environment) -> bool {
       let value = value.trim();
       value == "1" || value.eq_ignore_ascii_case("true")
     }
-    None => false,
+    None => true,
   }
 }
 
@@ -137,7 +136,7 @@ pub struct GitIgnoreTreeOptions {
   /// Paths that should override what's in the gitignore.
   pub include_paths: Vec<PathBuf>,
   /// Lines from git's global excludes file, applied at the repository root with
-  /// the lowest precedence. Empty unless global gitignore support is opted into.
+  /// the lowest precedence. Empty when global gitignore support is disabled.
   pub global_gitignore_lines: Vec<String>,
 }
 

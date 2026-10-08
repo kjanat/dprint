@@ -11,7 +11,7 @@ use std::io::Write;
 use std::io::stderr;
 use std::io::stdout;
 
-use crate::utils::terminal::get_terminal_size;
+use crate::terminal::get_terminal_size;
 
 pub use dprint_platform::utils::LogLevel;
 

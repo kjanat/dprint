@@ -148,6 +148,7 @@ struct Formatting<TEnvironment: Environment> {
   /// A cached module failed preflight and needs compiling again.
   invalid_native: Cell<bool>,
   native_module_path: PathBuf,
+  native_exists: Cell<Option<bool>>,
   format_rate_path: PathBuf,
   /// What `choose_format_engine` chose for this run. A process that formats
   /// without choosing first (ex. `dprint lsp`) has none.
@@ -157,7 +158,13 @@ struct Formatting<TEnvironment: Environment> {
 
 impl<TEnvironment: Environment> Formatting<TEnvironment> {
   fn has_native_code(&self) -> bool {
-    self.native.is_loaded() || (!self.invalid_native.get() && self.environment.path_exists(&self.native_module_path))
+    self.native.is_loaded()
+      || (!self.invalid_native.get()
+        && self.native_exists.get().unwrap_or_else(|| {
+          let exists = self.environment.path_exists(&self.native_module_path);
+          self.native_exists.set(Some(exists));
+          exists
+        }))
   }
 
   /// How the plugin's next instance formats. Native code that exists is
@@ -185,6 +192,7 @@ impl<TEnvironment: Environment> WasmPlugin<TEnvironment> {
         load_cached_native: modules.load_cached_native,
         invalid_native: Cell::new(false),
         native_module_path: modules.native_module_path,
+        native_exists: Cell::new(None),
         format_rate_path: modules.format_rate_path,
         chosen: Cell::new(None),
         environment: environment.clone(),
@@ -220,7 +228,9 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
         self.formatting.native.set(module).await;
         self.formatting.invalid_native.set(false);
       }
-      Ok(None) => {}
+      Ok(None) => {
+        self.formatting.native_exists.set(Some(false));
+      }
       Err(err) => {
         log_debug!(self.environment, "Error loading cached native code for {}: {:#}", self.plugin_info.name, err);
         self.formatting.invalid_native.set(true);
@@ -741,6 +751,7 @@ mod test {
       load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
       invalid_native: Cell::new(false),
       native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
       chosen: Cell::new(None),
       environment: environment.clone(),
@@ -781,6 +792,7 @@ mod test {
       load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
       invalid_native: Cell::new(false),
       native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
       chosen: Cell::new(Some(FormatEngine::Interpreter)),
       environment: environment.clone(),

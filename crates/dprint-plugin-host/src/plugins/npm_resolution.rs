@@ -37,7 +37,7 @@ pub struct NpmResolvedPlugin {
   pub plugin_bytes: Vec<u8>,
   /// Whether this is a wasm or process plugin.
   pub plugin_kind: PluginKind,
-  /// The local path to the plugin file on disk.
+  /// The source of the plugin file (local extraction or direct CDN URL).
   /// Used as the PathSource for setup so process plugin manifests
   /// can resolve relative URLs against the package directory.
   pub local_path: PathSource,
@@ -52,7 +52,7 @@ pub struct NpmResolvedPlugin {
   /// it's the detected `plugin.wasm` / `plugin.json`.
   pub resolved_path: String,
   /// SHA-256 of the package tarball. For `dprint add` this is the checksum to
-  /// write into the config. `None` for node_modules resolution (no tarball).
+  /// write into the config. `None` for node_modules or direct CDN resolution.
   pub tarball_checksum: Option<String>,
 }
 
@@ -429,9 +429,9 @@ pub struct ResolveNpmRegistryOptions<'a> {
   pub config_dir: Option<&'a Path>,
 }
 
-/// Resolves an npm plugin from the registry (versioned specifier): downloads the
-/// tarball, verifies (or computes) its checksum, extracts it, reads the plugin
-/// file, and resolves the per-platform binary for process plugins.
+/// Resolves a versioned npm plugin. Public Wasm files without a tarball checksum
+/// can use the CDN directly. Other references download, verify and extract the
+/// tarball, then resolve the per-platform binary for process plugins.
 pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, environment: &impl Environment) -> Result<NpmResolvedPlugin> {
   let ResolveNpmRegistryOptions {
     specifier,
@@ -445,6 +445,37 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
     .version
     .as_deref()
     .ok_or_else(|| anyhow::anyhow!("Cannot resolve npm plugin without a version from the registry"))?;
+  // Public, unpinned Wasm packages need only the requested file. A checksum
+  // on an npm reference covers the tarball, so those references retain the
+  // registry path, as do private/custom registries and process plugins.
+  if !detect_path
+    && !establish_checksum
+    && checksum.is_none()
+    && specifier.plugin_kind() == PluginKind::Wasm
+    && registry.url.trim_end_matches('/') == "https://registry.npmjs.org"
+    && registry.auth_header.is_none()
+  {
+    let mut url = url::Url::parse("https://cdn.jsdelivr.net/npm/")?;
+    {
+      let mut path = url.path_segments_mut().expect("CDN URL has a path");
+      path.pop_if_empty();
+      let package = format!("{}@{}", specifier.name, version);
+      path.extend(package.split('/'));
+      path.extend(specifier.path.split('/'));
+    }
+    let (resolved_url, file) = environment.download_file(&url, None).await?;
+    if let Some(file) = file {
+      return Ok(NpmResolvedPlugin {
+        plugin_bytes: file.content,
+        plugin_kind: PluginKind::Wasm,
+        local_path: PathSource::new_remote(resolved_url.into_owned()),
+        pre_resolved_tarball: None,
+        resolved_path: specifier.path.clone(),
+        tarball_checksum: None,
+      });
+    }
+    // A version missing from the CDN may already be available on npm.
+  }
   let registry_segment = registry_dir_segment(&registry.url);
 
   // fetch the packument to get the tarball URL
@@ -990,6 +1021,7 @@ fn extract_tarball_to_dir_inner(tarball_bytes: &[u8], output_dir: &Path, environ
   // be silently dropped.
   let mut wrapper: Option<std::ffi::OsString> = None;
   let mut files_written: usize = 0;
+  let mut created_dirs = std::collections::HashSet::from([output_dir.to_path_buf()]);
 
   for entry in archive.entries().context("Failed to read npm tarball entries")? {
     let mut entry = entry.context("Failed to read npm tarball entry")?;
@@ -1054,12 +1086,16 @@ fn extract_tarball_to_dir_inner(tarball_bytes: &[u8], output_dir: &Path, environ
     }
 
     if entry_type == tar::EntryType::Directory {
-      environment.mk_dir_all(&dest_path)?;
+      if created_dirs.insert(dest_path.clone()) {
+        environment.mk_dir_all(&dest_path)?;
+      }
       continue;
     }
 
     // regular file
-    if let Some(parent) = dest_path.parent() {
+    if let Some(parent) = dest_path.parent()
+      && created_dirs.insert(parent.to_path_buf())
+    {
       environment.mk_dir_all(parent)?;
     }
 
@@ -1109,6 +1145,19 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// 3. ~/.npmrc
 /// 4. https://registry.npmjs.org (no credentials)
 pub fn resolve_registry_for_package(package_name: &str, start_dir: Option<&Path>, environment: &impl Environment) -> NpmRegistryResolution {
+  resolve_registry_with_reader(package_name, start_dir, environment, |path| read_npmrc(path, environment))
+}
+
+pub(super) fn read_npmrc(path: &Path, environment: &impl Environment) -> Option<deno_npmrc::NpmRc> {
+  deno_npmrc::NpmRc::parse(environment, &environment.read_file(path).ok()?).ok()
+}
+
+pub(super) fn resolve_registry_with_reader(
+  package_name: &str,
+  start_dir: Option<&Path>,
+  environment: &impl Environment,
+  mut read: impl FnMut(&Path) -> Option<deno_npmrc::NpmRc>,
+) -> NpmRegistryResolution {
   // env vars take precedence over .npmrc — but they only set the URL,
   // never auth, so we can return immediately.
   if let Some(registry) = environment.env_var("NPM_CONFIG_REGISTRY") {
@@ -1122,7 +1171,7 @@ pub fn resolve_registry_for_package(package_name: &str, start_dir: Option<&Path>
   // walk up from the config file's directory checking for .npmrc files
   if let Some(start) = start_dir {
     for dir in start.ancestors() {
-      if let Some(info) = resolve_registry_from_npmrc(package_name, &dir.join(".npmrc"), environment) {
+      if let Some(info) = read(&dir.join(".npmrc")).and_then(|npmrc| resolve_registry_from_npmrc(package_name, &npmrc, environment)) {
         return info;
       }
     }
@@ -1130,7 +1179,8 @@ pub fn resolve_registry_for_package(package_name: &str, start_dir: Option<&Path>
 
   // user-level ~/.npmrc
   if let Some(home_dir) = environment.get_home_dir()
-    && let Some(info) = resolve_registry_from_npmrc(package_name, &home_dir.join(".npmrc"), environment)
+    && !start_dir.is_some_and(|start| start.ancestors().any(|dir| dir == home_dir.as_ref()))
+    && let Some(info) = read(&home_dir.join(".npmrc")).and_then(|npmrc| resolve_registry_from_npmrc(package_name, &npmrc, environment))
   {
     return info;
   }
@@ -1144,10 +1194,7 @@ pub fn resolve_registry_for_package(package_name: &str, start_dir: Option<&Path>
 /// Parses a single .npmrc file and resolves the registry for a package.
 /// Returns `None` if the file doesn't exist, or if it doesn't configure a registry
 /// that applies to this package (so the caller keeps walking).
-fn resolve_registry_from_npmrc(package_name: &str, npmrc_path: &Path, environment: &impl Environment) -> Option<NpmRegistryResolution> {
-  let text = environment.read_file(npmrc_path).ok()?;
-  let npmrc = deno_npmrc::NpmRc::parse(environment, &text).ok()?;
-
+fn resolve_registry_from_npmrc(package_name: &str, npmrc: &deno_npmrc::NpmRc, environment: &impl Environment) -> Option<NpmRegistryResolution> {
   // figure out whether this .npmrc actually applies to this package — either
   // a scope registry matching the package's scope, or a default registry.
   let scope = scope_of(package_name);

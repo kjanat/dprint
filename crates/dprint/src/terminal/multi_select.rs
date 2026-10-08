@@ -5,8 +5,8 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use deno_terminal::colors;
 
-use crate::utils::terminal::get_terminal_size;
-use crate::utils::terminal::read_terminal_key_press;
+use crate::terminal::get_terminal_size;
+use crate::terminal::read_terminal_key_press;
 
 use super::Logger;
 use super::LoggerRefreshItemKind;

@@ -79,12 +79,12 @@ dprint fmt --no-gitignore
 
 ### Respecting a global .gitignore
 
-By default, dprint does not respect git's global excludes file (`core.excludesFile`, defaulting to `$XDG_CONFIG_HOME/git/ignore`). This is opt-in because it's specific to your machine and won't exist on other machines or CI, so enabling it could cause formatting results to differ between environments.
+By default, dprint respects Git's global excludes file (`core.excludesFile`, defaulting to `$XDG_CONFIG_HOME/git/ignore` or `$HOME/.config/git/ignore`). This includes `~/.gitignore` when Git is configured to use it.
 
-To opt in, set the `DPRINT_GLOBAL_GITIGNORE` environment variable to `1`:
+To disable only the global excludes file, set `DPRINT_GLOBAL_GITIGNORE=0`:
 
 ```sh
-DPRINT_GLOBAL_GITIGNORE=1 dprint fmt
+DPRINT_GLOBAL_GITIGNORE=0 dprint fmt
 ```
 
 The global excludes file has the lowest precedence, so a repository's `.gitignore` or `.git/info/exclude` can re-include files it ignores. Using `--no-gitignore` disables it along with all other gitignore handling.
@@ -472,6 +472,20 @@ Example output:
 ```
 
 This may be useful for finding files that are taking a long time to format and maybe should be excluded from formatting.
+
+### Plugin cache layout
+
+Plugin artifacts are grouped by cache format, operating system, architecture and Wasmtime version:
+
+```text
+plugins/v12/<os>-<arch>/wasmtime-<version>/<compatibility-key>/
+  <plugin-name>-<version>-<source-hash>-<content-hash>.wasm
+  <plugin-name>-<version>-<source-hash>-<content-hash>.cwasm
+```
+
+The compatibility key includes Rust compiler and CPU-feature compatibility. Source and content hashes distinguish plugins that use the same name and version. Restored CI caches can contain multiple compatible namespaces side by side. Old namespaces remain untouched; remove those you no longer use when no dprint process is using them, or use `dprint clear-cache` to remove the whole cache.
+
+Public npm Wasm references without a tarball checksum download only the requested file from jsDelivr. A missing CDN file falls back to the npm registry. References with a tarball checksum, private/custom registries and process plugins use the registry and preserve tarball verification.
 
 ### Clearing Cache
 

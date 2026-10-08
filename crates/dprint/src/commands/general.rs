@@ -578,7 +578,7 @@ mod test {
   fn should_count_corrupt_native_modules_before_formatting() {
     let environment = configs_with_cached_native_plugins();
     let mut corrupted = 0;
-    for entry in environment.dir_info(environment.get_cache_dir().join("plugins")).unwrap() {
+    for entry in environment.dir_info(crate::plugins::plugin_cache_dir(&environment)).unwrap() {
       if let crate::environment::DirEntry::File { path, .. } = entry
         && path.extension().is_some_and(|extension| extension == "cwasm")
       {
@@ -644,7 +644,7 @@ mod test {
 
   fn set_predictable_interpreter_rate(environment: &TestEnvironment) {
     let rates = environment
-      .dir_info(&environment.get_cache_dir().join("plugins"))
+      .dir_info(crate::plugins::plugin_cache_dir(environment))
       .unwrap()
       .into_iter()
       .filter_map(|entry| match entry {
@@ -730,7 +730,7 @@ mod test {
     let environment = config_with_uncompiled_plugin();
     environment.write_file("/file.txt", "text_formatted").unwrap();
     run_test_cli(vec!["check"], &environment).unwrap();
-    let plugins_dir = environment.get_cache_dir().join("plugins");
+    let plugins_dir = crate::plugins::plugin_cache_dir(&environment);
     let rates = environment
       .dir_info(&plugins_dir)
       .unwrap()
@@ -1113,7 +1113,14 @@ mod test {
       .build();
     environment.set_global_gitignore_path("/global_ignore");
 
-    // without the env var, the global excludes file is ignored
+    // global excludes apply by default
+    run_test_cli(vec!["output-file-paths"], &environment).unwrap();
+    let mut logged_messages = environment.take_stdout_messages();
+    logged_messages.sort();
+    assert_eq!(logged_messages, vec!["/file.txt"]);
+
+    // explicitly opting out restores the ignored files
+    environment.set_env_var("DPRINT_GLOBAL_GITIGNORE", Some("0"));
     run_test_cli(vec!["output-file-paths"], &environment).unwrap();
     let mut logged_messages = environment.take_stdout_messages();
     logged_messages.sort();

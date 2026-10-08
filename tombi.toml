@@ -64,6 +64,7 @@ catalog = {
 toml-version = "v1.0.0"
 path         = "https://www.schemastore.org/cargo.json"
 include      = ["Cargo.toml", "**/Cargo.toml"]
+strict       = false
 lint.rules   = {
   deprecated = "off",
 }

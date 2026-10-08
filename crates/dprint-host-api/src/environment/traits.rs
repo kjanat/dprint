@@ -294,7 +294,7 @@ pub trait VcsEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn get_dirty_files(&self) -> Result<Vec<PathBuf>>;
   /// Resolves the path to git's global excludes file (the `core.excludesFile`
   /// config value, falling back to `$XDG_CONFIG_HOME/git/ignore`). Used only when
-  /// global gitignore support is opted into via `DPRINT_GLOBAL_GITIGNORE`. The
+  /// global gitignore support is enabled (the default). The
   /// path is not guaranteed to exist; the caller handles a missing file when
   /// reading it. Returns `None` only when no path can be resolved at all.
   fn global_gitignore_path(&self) -> Option<PathBuf>;
@@ -488,22 +488,6 @@ fn resolve_max_threads(env_var: Option<&str>, available_parallelism: Option<NonZ
   }
 }
 
-#[cfg(test)]
-mod test {
-  use super::*;
-
-  #[test]
-  fn should_resolve_num_threads() {
-    assert_eq!(resolve_max_threads(None, None), 4);
-    assert_eq!(resolve_max_threads(None, NonZeroUsize::new(1)), 1);
-    assert_eq!(resolve_max_threads(None, NonZeroUsize::new(4)), 4);
-    assert_eq!(resolve_max_threads(Some("2"), NonZeroUsize::new(4)), 2);
-    assert_eq!(resolve_max_threads(Some("0"), NonZeroUsize::new(4)), 4);
-    assert_eq!(resolve_max_threads(Some("5"), NonZeroUsize::new(4)), 4);
-    assert_eq!(resolve_max_threads(Some("4"), NonZeroUsize::new(4)), 4);
-  }
-}
-
 /// Files, caching, platform identification, clocks and downloads.
 pub trait PlatformEnvironment:
   FileSystemEnvironment + OutputEnvironment + EnvironmentVariables + DirectoriesEnvironment + SystemEnvironment + ClockEnvironment + UrlDownloader
@@ -526,3 +510,19 @@ impl<T: PlatformEnvironment + FileSystemSys + CompilerEnvironment> PluginEnviron
 /// Formatting and sessions, including selection and configuration policy.
 pub trait HostEnvironment: PluginEnvironment + ConfigEnvironment + DiscoveryEnvironment + ConcurrencyEnvironment + ApplicationEnvironment {}
 impl<T: PluginEnvironment + ConfigEnvironment + DiscoveryEnvironment + ConcurrencyEnvironment + ApplicationEnvironment> HostEnvironment for T {}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  #[test]
+  fn should_resolve_num_threads() {
+    assert_eq!(resolve_max_threads(None, None), 4);
+    assert_eq!(resolve_max_threads(None, NonZeroUsize::new(1)), 1);
+    assert_eq!(resolve_max_threads(None, NonZeroUsize::new(4)), 4);
+    assert_eq!(resolve_max_threads(Some("2"), NonZeroUsize::new(4)), 2);
+    assert_eq!(resolve_max_threads(Some("0"), NonZeroUsize::new(4)), 4);
+    assert_eq!(resolve_max_threads(Some("5"), NonZeroUsize::new(4)), 4);
+    assert_eq!(resolve_max_threads(Some("4"), NonZeroUsize::new(4)), 4);
+  }
+}

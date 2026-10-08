@@ -6,7 +6,7 @@ use crossterm::event::KeyCode;
 use super::Logger;
 use super::LoggerRefreshItemKind;
 use super::LoggerTextItem;
-use crate::utils::terminal::read_terminal_key_press;
+use crate::terminal::read_terminal_key_press;
 
 pub use dprint_platform::utils::BasicShowConfirmStrategy;
 pub use dprint_platform::utils::ShowConfirmStrategy;

@@ -4,10 +4,10 @@
 lint = "clippy --workspace --all-features --all-targets"
 
 # [build]
-# rustflags = "-D warnings"
+# rustflags = "-Dwarnings"
 
 [env]
-RUSTFLAGS = "-D warnings"
+RUSTFLAGS = "-Dwarnings"
 
 [target]
 # statically link the c runtime https://github.com/rust-lang/rust/issues/100874

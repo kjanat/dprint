@@ -11,6 +11,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use anyhow::Result;
+use thiserror::Error;
 
 use dprint_async_runtime::LocalBoxFuture;
 
@@ -32,7 +33,7 @@ impl<T> Default for AsyncCell<T> {
 
 impl<T> AsyncCell<T> {
   pub async fn get_or_try_init<'a>(&self, create: impl FnOnce() -> LocalBoxFuture<'a, Result<T>>) -> Result<&T> {
-    let _permit = self.semaphore.acquire();
+    let _permit = self.semaphore.acquire().await?;
     unsafe {
       if let Ok(state) = self.state.try_borrow_unguarded()
         && let Some(value) = state.as_ref()
@@ -113,6 +114,10 @@ struct SemaphoreState {
   wakers: VecDeque<SemaphoreStateWaker>,
 }
 
+#[derive(Debug, Error)]
+#[error("semaphore closed")]
+pub struct SemaphoreClosed;
+
 pub struct SemaphorePermit(Rc<Semaphore>);
 
 impl Drop for SemaphorePermit {
@@ -137,7 +142,7 @@ impl Semaphore {
     }
   }
 
-  pub fn acquire(self: &Rc<Self>) -> impl Future<Output = Result<SemaphorePermit, ()>> {
+  pub fn acquire(self: &Rc<Self>) -> impl Future<Output = Result<SemaphorePermit, SemaphoreClosed>> {
     AcquireFuture {
       semaphore: self.clone(),
       dropped_flags: Default::default(),
@@ -255,13 +260,13 @@ impl Drop for AcquireFuture {
 }
 
 impl Future for AcquireFuture {
-  type Output = Result<SemaphorePermit, ()>;
+  type Output = Result<SemaphorePermit, SemaphoreClosed>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let mut state = self.semaphore.state.borrow_mut();
 
     if state.closed {
-      Poll::Ready(Err(()))
+      Poll::Ready(Err(SemaphoreClosed))
     } else if state.acquired_permits < state.max_permits {
       state.acquired_permits += 1;
       Poll::Ready(Ok(SemaphorePermit(self.semaphore.clone())))
@@ -284,6 +289,24 @@ mod test {
 
   use super::*;
   use tokio::sync::Notify;
+
+  #[tokio::test]
+  async fn async_cell_initializes_once() {
+    fn create(creates: &RefCell<usize>) -> LocalBoxFuture<'_, Result<usize>> {
+      Box::pin(async move {
+        *creates.borrow_mut() += 1;
+        tokio::task::yield_now().await;
+        Ok(*creates.borrow())
+      })
+    }
+
+    let cell = AsyncCell::default();
+    let creates = RefCell::new(0);
+    let (first, second) = tokio::join!(cell.get_or_try_init(|| create(&creates)), cell.get_or_try_init(|| create(&creates)));
+    assert_eq!(*first.unwrap(), 1);
+    assert_eq!(*second.unwrap(), 1);
+    assert_eq!(*creates.borrow(), 1);
+  }
 
   #[tokio::test]
   async fn semaphore() {

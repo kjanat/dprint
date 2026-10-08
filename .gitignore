@@ -13,3 +13,4 @@ target
 /website/playground/dist
 /crates/test-plugin/Cargo.lock
 /deployment/npm/dist
+/*.fsql

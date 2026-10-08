@@ -1,3 +1,6 @@
+#:schema https://www.schemastore.org/cargo.json
+#:tombi schema.strict = false
+
 [package]
 name        = "dprint-config"
 version     = "0.1.0"
@@ -22,7 +25,7 @@ json-schema-sort     = { workspace = true }
 deno_terminal        = { workspace = true }
 dprint-discovery     = { workspace = true }
 dprint-platform      = { workspace = true }
-anyhow               = { workspace = true, optional = false }
+anyhow               = { workspace = true, optional = false }                                              # idk what's wrong
 dprint-configuration = { workspace = true }
 indexmap             = { workspace = true }
 percent-encoding     = { workspace = true, optional = false }

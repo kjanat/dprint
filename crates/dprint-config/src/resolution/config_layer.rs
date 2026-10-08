@@ -315,7 +315,7 @@ mod test {
   fn has_the_global_configuration_as_values_and_the_tables_as_plugin_configs() {
     let mut expected = ConfigMap::new();
     expected.insert("lineWidth".to_string(), ConfigMapValue::from_i32(80));
-    expected.insert("newLineKind".to_string(), ConfigMapValue::from_str("crlf"));
+    expected.insert("newLineKind".to_string(), ConfigMapValue::from("crlf"));
     expected.insert(
       "typescript".to_string(),
       ConfigMapValue::PluginConfig(RawPluginConfig {

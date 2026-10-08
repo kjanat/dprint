@@ -504,6 +504,12 @@ impl TestEnvironment {
   }
 }
 
+impl Default for TestEnvironment {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl Drop for TestEnvironment {
   fn drop(&mut self) {
     // If this panics that means the logged messages or errors weren't inspected for a test.

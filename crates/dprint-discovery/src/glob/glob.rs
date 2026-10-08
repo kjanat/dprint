@@ -186,7 +186,11 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
 
   if run_traversal {
     let gitignore = git_ignore_options.map(|options| DirScanGitIgnore {
-      above_start_dir: git_ignore_tree.as_mut().and_then(|tree| tree.get_resolved_git_ignore_for_file(&opts.start_dir)),
+      above_start_dir: if environment.path_exists(opts.start_dir.join(".git")) {
+        None
+      } else {
+        git_ignore_tree.as_mut().and_then(|tree| tree.get_resolved_git_ignore_for_file(&opts.start_dir))
+      },
       options,
     });
     let results = scan_dir(
@@ -208,7 +212,27 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
     }
   }
 
-  log_debug!(environment, "File(s) matched: {:?}", output);
+  log_debug!(
+    environment,
+    "Matched {} candidate files, {} nested configs, {} outside paths:",
+    output.file_paths.len(),
+    output.config_files.len(),
+    output.outside_base_paths.len()
+  );
+  for path in &output.file_paths {
+    log_debug!(environment, "  File: {}", path.display());
+  }
+  for path in &output.config_files {
+    log_debug!(environment, "  Nested config: {}", path.display());
+  }
+  for path in &output.outside_base_paths {
+    log_debug!(
+      environment,
+      "  Outside path: {} (config search: {})",
+      path.include_pattern,
+      path.config_search_dir.display()
+    );
+  }
   log_debug!(environment, "Finished globbing in {}ms", start_instant.elapsed().as_millis());
 
   Ok(output)
@@ -835,7 +859,7 @@ mod test {
   }
 
   #[tokio::test]
-  async fn should_respect_global_gitignore_when_opted_in() {
+  async fn should_respect_global_gitignore_by_default() {
     let environment = TestEnvironmentBuilder::new()
       // a `.git` dir makes `/` the repository root, where the global excludes apply
       .write_file("/.git/HEAD", "")
@@ -845,7 +869,6 @@ mod test {
       .write_file("/sub/included.txt", "")
       .write_file("/sub/globally_excluded.txt", "")
       .build();
-    environment.set_env_var("DPRINT_GLOBAL_GITIGNORE", Some("1"));
     environment.set_global_gitignore_path("/global_ignore");
     let root_dir = environment.canonicalize("/").unwrap();
     let result = glob(
@@ -874,14 +897,14 @@ mod test {
   }
 
   #[tokio::test]
-  async fn should_ignore_global_gitignore_when_not_opted_in() {
+  async fn should_ignore_global_gitignore_when_explicitly_disabled() {
     let environment = TestEnvironmentBuilder::new()
       .write_file("/.git/HEAD", "")
       .write_file("/global_ignore", "globally_excluded.txt")
       .write_file("/included.txt", "")
       .write_file("/globally_excluded.txt", "")
       .build();
-    // note: env var not set, so the global excludes file is ignored
+    environment.set_env_var("DPRINT_GLOBAL_GITIGNORE", Some("0"));
     environment.set_global_gitignore_path("/global_ignore");
     let root_dir = environment.canonicalize("/").unwrap();
     let result = glob(

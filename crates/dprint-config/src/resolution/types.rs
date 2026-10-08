@@ -80,12 +80,14 @@ impl ConfigMapValue {
     ConfigMapValue::KeyValue(ConfigKeyValue::from_i32(value))
   }
 
-  pub fn from_str(value: &str) -> ConfigMapValue {
-    ConfigMapValue::KeyValue(ConfigKeyValue::from_str(value))
-  }
-
   pub fn from_bool(value: bool) -> ConfigMapValue {
     ConfigMapValue::KeyValue(ConfigKeyValue::from_bool(value))
+  }
+}
+
+impl From<&str> for ConfigMapValue {
+  fn from(value: &str) -> Self {
+    ConfigMapValue::KeyValue(ConfigKeyValue::from_str(value))
   }
 }
 

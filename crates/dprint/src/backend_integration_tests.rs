@@ -107,7 +107,7 @@ fn builtin_exec_filters_remote_commands_without_a_plugin_reference() {
     let environment = TestEnvironmentBuilder::new()
       .write_file(
         "/dprint.json",
-        &format!(r#"{{"extends":"https://example.com/config.json","exec":{{"playWithFire":{permission}}}}}"#),
+        format!(r#"{{"extends":"https://example.com/config.json","exec":{{"playWithFire":{permission}}}}}"#),
       )
       .add_remote_file(
         "https://example.com/config.json",

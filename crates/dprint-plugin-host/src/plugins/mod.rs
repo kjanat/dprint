@@ -15,6 +15,7 @@ mod types {
 }
 
 pub use cache::*;
+pub use cache_meta::plugins_dir as plugin_cache_dir;
 pub use helpers::*;
 pub use plugin::*;
 pub use repo::*;

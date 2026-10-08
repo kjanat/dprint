@@ -428,3 +428,9 @@ impl TestEnvironmentBuilder {
     self
   }
 }
+
+impl Default for TestEnvironmentBuilder {
+  fn default() -> Self {
+    Self::new()
+  }
+}

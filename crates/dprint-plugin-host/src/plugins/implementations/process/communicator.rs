@@ -61,7 +61,7 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
     // layout (plugins/<hash>/test-process-plugin[.exe]); get_test_safe_executable_path
     // needs a real in-memory file to copy out and launch.
     let exe_name = if cfg!(windows) { "test-process-plugin.exe" } else { "test-process-plugin" };
-    let plugins_dir = environment.get_cache_dir().join("plugins");
+    let plugins_dir = crate::plugins::plugin_cache_dir(&environment);
     let plugin_file_path = environment
       .dir_info(&plugins_dir)
       .unwrap_or_default()

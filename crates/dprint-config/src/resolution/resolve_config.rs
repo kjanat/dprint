@@ -1600,7 +1600,7 @@ lineWidth = 80
         (String::from("lineWidth"), ConfigMapValue::from_i32(1)),
         (String::from("useTabs"), ConfigMapValue::from_bool(true)),
         (String::from("indentWidth"), ConfigMapValue::from_i32(4)),
-        (String::from("newLineKind"), ConfigMapValue::from_str("lf")),
+        (String::from("newLineKind"), ConfigMapValue::from("lf")),
         (
           String::from("test"),
           ConfigMapValue::PluginConfig(RawPluginConfig {

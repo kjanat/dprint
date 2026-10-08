@@ -90,10 +90,10 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
 
   async fn refresh_scope(&self, config: ResolvedConfig, cell: Rc<ScopeCell<TEnvironment>>, on_change: impl FnOnce()) -> Result<Rc<PluginsScope<TEnvironment>>> {
     let mut cell = cell.lock().await;
-    if let Some(existing_scope) = cell.as_ref() {
-      if existing_scope.config.as_deref() == Some(&config) {
-        return Ok(existing_scope.clone());
-      }
+    if let Some(existing_scope) = cell.as_ref()
+      && existing_scope.config.as_deref() == Some(&config)
+    {
+      return Ok(existing_scope.clone());
     }
 
     // Resolve before invalidating the last valid scope: plugin setup can fail.

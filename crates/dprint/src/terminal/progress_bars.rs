@@ -235,6 +235,20 @@ fn get_elapsed_text(elapsed: Duration) -> String {
   format!("[{:0>2}:{:0>2}]", minutes, seconds)
 }
 
+impl dprint_platform::utils::ProgressHandle for ProgressBar {
+  fn set_position(&self, position: usize) {
+    ProgressBar::set_position(self, position);
+  }
+  fn finish(&self) {
+    ProgressBar::finish(self);
+  }
+}
+impl dprint_platform::utils::ProgressReporter for ProgressBars {
+  fn add_progress(&self, message: String, style: ProgressBarStyle, total_size: usize) -> Box<dyn dprint_platform::utils::ProgressHandle> {
+    Box::new(ProgressBars::add_progress(self, message, style, total_size))
+  }
+}
+
 #[cfg(test)]
 mod test {
   use super::*;
@@ -305,19 +319,5 @@ mod test {
     assert_eq!(get_elapsed_text(Duration::from_secs(60 * 60)), "[60:00]");
     assert_eq!(get_elapsed_text(Duration::from_secs(60 * 60 * 3 + 20 * 60 + 2)), "[200:02]");
     assert_eq!(get_elapsed_text(Duration::from_secs(60 * 60 * 99)), "[5940:00]");
-  }
-}
-
-impl dprint_platform::utils::ProgressHandle for ProgressBar {
-  fn set_position(&self, position: usize) {
-    ProgressBar::set_position(self, position);
-  }
-  fn finish(&self) {
-    ProgressBar::finish(self);
-  }
-}
-impl dprint_platform::utils::ProgressReporter for ProgressBars {
-  fn add_progress(&self, message: String, style: ProgressBarStyle, total_size: usize) -> Box<dyn dprint_platform::utils::ProgressHandle> {
-    Box::new(ProgressBars::add_progress(self, message, style, total_size))
   }
 }

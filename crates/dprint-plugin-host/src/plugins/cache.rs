@@ -20,6 +20,7 @@ use super::cache_meta::artifact_id;
 use super::cache_meta::build_id;
 use super::cache_meta::current_signature;
 use super::cache_meta::entry_hash;
+use super::cache_meta::named_wasm_module_path;
 use super::cache_meta::plugins_dir;
 use super::cache_meta::process_dir_path;
 use super::cache_meta::read_meta;
@@ -88,11 +89,9 @@ struct VerifyAndStoreOptions<'a> {
 
 /// On-disk cache of set-up plugins.
 ///
-/// Each plugin gets a flat pair of files under `<cache>/plugins/` keyed by a
-/// hash of its source: a `<hash>.json` sidecar ([`PluginCacheMeta`]) plus the
-/// artifact itself (`<hash>.cwasm` for wasm, a `<hash>/` extract dir for
-/// process plugins). There is no global manifest, so caching or forgetting one
-/// plugin never rewrites state for the others.
+/// Plugins are partitioned by cache format, OS/architecture and compiler
+/// compatibility. Each source has its own metadata and each Wasm build has
+/// a readable name with source/content hashes. There is no global manifest.
 pub struct PluginCache<TEnvironment: Environment> {
   environment: TEnvironment,
   fs_locks: CacheFsLockPool<TEnvironment>,
@@ -100,6 +99,9 @@ pub struct PluginCache<TEnvironment: Environment> {
   /// Resolving via `.npmrc` walks the directory tree, so the same key is hit
   /// multiple times per plugin (cache lookup, store, forget cleanup).
   registry_cache: Mutex<HashMap<RegistryUrlKey, npm_resolution::NpmRegistryResolution>>,
+  // Including missing files: all packages in this cache share one config snapshot.
+  npmrc_cache: Mutex<HashMap<PathBuf, Option<deno_npmrc::NpmRc>>>,
+  cache_dir_ready: Mutex<bool>,
 }
 
 impl<TEnvironment> PluginCache<TEnvironment>
@@ -110,6 +112,8 @@ where
     PluginCache {
       fs_locks: CacheFsLockPool::new(environment.clone()),
       registry_cache: Mutex::new(HashMap::new()),
+      npmrc_cache: Mutex::new(HashMap::new()),
+      cache_dir_ready: Mutex::new(false),
       environment,
     }
   }
@@ -532,10 +536,22 @@ where
     if let Some(item) = self.cached_item(source, &hash, &cache_key) {
       return Ok(CacheLookup::Hit(item));
     }
+    // Fail before starting network work if the artifact directory cannot be
+    // created. Share this check across all plugins in this cache instance.
+    self.ensure_cache_dir()?;
     Ok(CacheLookup::Miss { cache_key, hash, guard })
   }
 
-  /// Sets up a freshly resolved plugin into the flat cache layout, writes its
+  fn ensure_cache_dir(&self) -> Result<()> {
+    let mut ready = self.cache_dir_ready.lock();
+    if !*ready {
+      self.environment.mk_dir_all(plugins_dir(&self.environment))?;
+      *ready = true;
+    }
+    Ok(())
+  }
+
+  /// Sets up a freshly resolved plugin into the versioned cache layout, writes its
   /// sidecar, and returns the cache item. Overwrites any existing entry for the
   /// same hash (e.g. a changed local file), so no explicit forget is needed.
   async fn setup_and_store(&self, options: SetupAndStoreOptions<'_>) -> Result<PluginCacheItem> {
@@ -548,7 +564,7 @@ where
       pre_resolved_tarball,
       local_stamps,
     } = options;
-    self.environment.mk_dir_all(plugins_dir(&self.environment))?;
+    self.ensure_cache_dir()?;
     let source_checksum = get_sha256_checksum(&file_bytes);
     // the Wasm plugin entry this one replaces, if any
     let previous_meta = read_meta(hash, &self.environment).filter(|meta| meta.plugin_kind == PluginKind::Wasm);
@@ -556,7 +572,7 @@ where
       wasm_file_path: wasm_module_path(hash, Some(&source_checksum), &self.environment),
       process_dir_path: process_dir_path(hash, &self.environment),
     };
-    let setup_result = setup_plugin(
+    let mut setup_result = setup_plugin(
       SetupPluginOptions {
         resolved_source,
         file_bytes,
@@ -567,6 +583,12 @@ where
       &self.environment,
     )
     .await?;
+
+    if plugin_kind == PluginKind::Wasm {
+      let named_path = named_wasm_module_path(hash, Some(&source_checksum), &setup_result.plugin_info, &self.environment);
+      self.environment.rename(&setup_result.file_path, &named_path)?;
+      setup_result.file_path = named_path;
+    }
 
     let mut meta = PluginCacheMeta {
       source: cache_key.to_string(),
@@ -724,7 +746,14 @@ where
     }
     // resolved outside the lock since it does file I/O. a concurrent caller may
     // compute the same value — harmless since the result is deterministic.
-    let info = npm_resolution::resolve_registry_for_package(package_name, start_dir, &self.environment);
+    let info = npm_resolution::resolve_registry_with_reader(package_name, start_dir, &self.environment, |path| {
+      self
+        .npmrc_cache
+        .lock()
+        .entry(path.to_path_buf())
+        .or_insert_with(|| npm_resolution::read_npmrc(path, &self.environment))
+        .clone()
+    });
     self.registry_cache.lock().insert(key, info.clone());
     info
   }
@@ -820,6 +849,42 @@ mod test {
     }
   }
 
+  #[test]
+  fn npm_packages_share_one_config_snapshot_without_losing_scope_overrides() {
+    let environment = TestEnvironment::new();
+    environment.mk_dir_all("/repo").unwrap();
+    environment
+      .write_file("/repo/.npmrc", "@one:registry=https://one.example/\n@two:registry=https://two.example/\n")
+      .unwrap();
+    let cache = PluginCache::new(environment.clone());
+    assert_eq!(cache.resolve_registry("@one/a", Some(Path::new("/repo"))).url, "https://one.example");
+    environment.write_file("/repo/.npmrc", "registry=https://changed.example/\n").unwrap();
+    assert_eq!(cache.resolve_registry("@two/b", Some(Path::new("/repo"))).url, "https://two.example");
+    assert_eq!(cache.npmrc_cache.lock().len(), 1);
+    let fresh = PluginCache::new(environment.clone());
+    assert_eq!(fresh.resolve_registry("@two/b", Some(Path::new("/repo"))).url, "https://changed.example");
+  }
+
+  #[tokio::test]
+  async fn public_npm_wasm_downloads_only_the_cdn_file_and_reuses_it() {
+    let environment = TestEnvironment::new();
+    let url = "https://cdn.jsdelivr.net/npm/@dprint/test@1.0.0/plugin.wasm";
+    environment.add_remote_file(url, WASM_PLUGIN_BYTES);
+    let cache = PluginCache::new(environment.clone());
+    let source = crate::plugins::parse_plugin_source_reference(
+      "npm:@dprint/test@1.0.0",
+      &PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/dprint.json")),
+      &environment,
+    )
+    .unwrap();
+    let item = cache.get_plugin_cache_item(&source).await.unwrap();
+    assert_eq!(item.info.name, "test-plugin");
+    assert!(!environment.path_exists(environment.get_cache_dir().join("npm")));
+    environment.remove_remote_file(url);
+    assert_eq!(cache.get_plugin_cache_item(&source).await.unwrap().file_path, item.file_path);
+    assert!(environment.take_stderr_messages().is_empty());
+  }
+
   #[tokio::test]
   async fn should_download_remote_file() -> Result<()> {
     let environment = TestEnvironment::new();
@@ -830,9 +895,9 @@ mod test {
     let plugin_source = PluginSourceReference::new_remote_from_str("https://plugins.dprint.dev/test.wasm");
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
-
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
+    let expected_file_path = read_meta(&hash, &environment).unwrap().artifact_file_path(&hash, &environment);
+    assert!(file_path.file_name().unwrap().to_string_lossy().starts_with("test-plugin-0.2.0-"));
     assert_eq!(file_path, expected_file_path);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
@@ -928,9 +993,9 @@ mod test {
     let plugin_source = PluginSourceReference::new_local(original_file_path.clone());
     let cache_key = plugin_cache.compute_cache_key(&plugin_source.path_source)?;
     let hash = entry_hash(&cache_key, &environment);
-    let expected_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_BYTES)), &environment);
-
     let file_path = plugin_cache.get_plugin_cache_item(&plugin_source).await?.file_path;
+    let expected_file_path = read_meta(&hash, &environment).unwrap().artifact_file_path(&hash, &environment);
+    assert!(file_path.file_name().unwrap().to_string_lossy().starts_with("test-plugin-0.2.0-"));
     assert_eq!(file_path, expected_file_path);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
 
@@ -949,7 +1014,7 @@ mod test {
     // process.
     environment.write_file_bytes(&original_file_path, WASM_PLUGIN_0_1_0_BYTES).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
-    let second_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(WASM_PLUGIN_0_1_0_BYTES)), &environment);
+    let second_file_path = read_meta(&hash, &environment).unwrap().artifact_file_path(&hash, &environment);
     assert_eq!(item.file_path, second_file_path);
     assert_eq!(item.info.version, "0.1.0");
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
@@ -959,7 +1024,7 @@ mod test {
     let third_build = [WASM_PLUGIN_0_1_0_BYTES, &[0x00, 0x05, 0x04, b't', b'e', b's', b't']].concat();
     environment.write_file_bytes(&original_file_path, &third_build).unwrap();
     let item = plugin_cache.get_plugin_cache_item(&plugin_source).await?;
-    let third_file_path = wasm_module_path(&hash, Some(&get_sha256_checksum(&third_build)), &environment);
+    let third_file_path = read_meta(&hash, &environment).unwrap().artifact_file_path(&hash, &environment);
     assert_eq!(item.file_path, third_file_path);
     assert_eq!(environment.take_stderr_messages(), Vec::<String>::new());
     assert!(!environment.path_exists(&file_path));

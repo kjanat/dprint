@@ -4213,13 +4213,15 @@ text2"
       .write_file(file_path, "text")
       .initialize()
       .build();
+    // This exercises native-cache recovery even for a tiny input file.
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("native"));
     run_test_cli(vec!["fmt"], &environment).unwrap();
     assert_eq!(environment.read_file(file_path).unwrap(), "text_formatted");
     environment.clear_logs();
 
     // breaks the plugin's compiled module, so loading the plugin recompiles it
     let break_compiled_module = || {
-      let plugins_dir = environment.get_cache_dir().join("plugins");
+      let plugins_dir = crate::plugins::plugin_cache_dir(&environment);
       let compiled_modules = environment
         .dir_info(&plugins_dir)
         .unwrap()
