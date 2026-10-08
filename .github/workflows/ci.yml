@@ -5,8 +5,6 @@ on:
     branches: [master, the-big-split]
     tags: ["*"]
     paths-ignore:
-      - .github/*
-      - .github/workflows/ci.yml
       - deployment/**
       - website/**
   # every pull request, so a stacked one (based on another's branch) is tested too
@@ -65,7 +63,7 @@ jobs:
           code=true
           if [[ -n "${PR}" ]]; then
             files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --jq '.[].filename')"
-            grep -qvE '^(\.github/[^/]+|deployment/.+|website/.+)$' <<< "${files}" || code=false
+            grep -qvE '^(deployment/.+|website/.+)$' <<< "${files}" || code=false
           fi
           echo "code=${code}" >> "${GITHUB_OUTPUT}"
       - name: Checkout workflow configuration
