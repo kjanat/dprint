@@ -1,6 +1,6 @@
 [package]
 name        = "dprint"
-version     = "0.58.0-kjanat"
+version     = "0.59.0-kjanat"
 authors     = ["Kaj Kowalski <info@kajkowalski.nl>", "dprint code formatting <david@dprint.dev>"]
 edition     = { workspace = true }
 description = "Binary for dprint code formatter—a pluggable and configurable code formatting platform."
@@ -36,8 +36,6 @@ once_cell           = { workspace = true }
 parking_lot         = { workspace = true }
 percent-encoding    = { workspace = true }
 rand                = { workspace = true }
-# pin this to prevent it changing with `cargo install` because patch version increases
-# of rkyv may cause panics when deserializing data serialized with older versions
 rkyv                = { workspace = true }
 rustls              = { workspace = true, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = { workspace = true }
@@ -56,13 +54,10 @@ tokio               = { workspace = true, features = ["io-std"] }
 tokio-util          = { workspace = true }
 toml_edit           = { workspace = true }
 tower-lsp           = { workspace = true }
-# scans directories for files to format (see `src/utils/glob/scan.rs`)
 tree-fucker         = { workspace = true }
 twox-hash           = { workspace = true }
 ureq                = { workspace = true, features = ["gzip", "socks-proxy", "tls"] }
 url                 = { workspace = true }
-# runs a Wasm plugin's configuration functions (its info, resolving a configuration, the files it formats)
-# without compiling it to native code (see `plugins/implementations/wasm/interpreter.rs`)
 wasmi               = { workspace = true, features = ["auto-dispatch", "simd", "stable", "std", "validate"] }
 webpki-roots        = { workspace = true }
 which               = { workspace = true }
@@ -70,18 +65,12 @@ zip                 = { workspace = true }
 
 [dev-dependencies]
 boon              = { workspace = true }
-# stay on this version because it's good enough and makes the output the same on all platforms
 path-clean        = { workspace = true }
 pretty_assertions = { workspace = true }
 sys_traits        = { workspace = true, features = ["memory"] }
 tempfile          = { workspace = true }
 
-# powerpc64/loongarch64 have no native Cranelift backend, and the Android sandbox
-# lacks the signal-based traps native code needs, so these compile to Pulley
-# bytecode (still via Cranelift) and interpret it. the `pulley` feature adds the
-# bytecode emitter; the interpreter is already part of `runtime`.
-[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies]
-[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies."wasmtime"]
+[target."cfg(any(target_arch = \"powerpc64\", target_arch = \"loongarch64\", target_os = \"android\"))".dependencies.wasmtime]
 workspace = true
 features  = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "pulley", "runtime", "std"]
 
@@ -96,7 +85,6 @@ features  = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilati
 wasmtime = { workspace = true, features = ["addr2line", "anyhow", "cranelift", "demangle", "parallel-compilation", "runtime", "std"] }
 
 [target."cfg(target_os = \"freebsd\")".dependencies]
-# Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
 libc = { workspace = true }
 
 [target."cfg(unix)".dependencies]

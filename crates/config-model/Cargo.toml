@@ -24,6 +24,7 @@ url                 = { workspace = true, optional = true }
 
 [dev-dependencies]
 boon              = { workspace = true }
+json-schema-sort  = { workspace = true }
 pretty_assertions = { workspace = true }
 
 [features]

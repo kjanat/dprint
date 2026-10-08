@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members  = ["crates/*"]
+members  = ["crates/config-model", "crates/core", "crates/core-macros", "crates/development", "crates/dprint", "crates/test-process-plugin"]
 # excluded because this needs to be compiled as wasm to work
 exclude  = ["crates/test-plugin"]
 
@@ -40,6 +40,7 @@ hashbrown           = "0.17.1"
 ignore              = "=0.4.23"
 indexmap            = { version = "2.9.0", features = ["serde"] }
 ipnet               = "2.11.0"
+json-schema-sort    = { version = "=0.1.0", default-features = false }
 jsonc-parser        = "=0.32.4"
 # Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
 libc                = "=0.2.189"

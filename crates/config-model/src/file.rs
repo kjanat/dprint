@@ -693,17 +693,23 @@ mod schema_test {
   use crate::from_json;
 
   /// The schema as published, which the website serves.
-  const PUBLISHED: &str = include_str!("../schema/v0.json");
   const PUBLISHED_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/schema/v0.json");
 
   #[test]
   fn the_published_schema_is_the_generated_one() {
-    let generated = crate::schema_json_for::<ConfigFile>();
+    // Match jsonSchemaSort in .dprint.jsonc. Only schema-safe arrays are sorted;
+    // literal values and ordered arrays (such as prefixItems) stay intact.
+    let mut options = json_schema_sort::SortOptions::default();
+    options.properties = json_schema_sort::PropertyOrdering::Preserve;
+    let generated = json_schema_sort::to_string_sorted_with_options(&crate::schema_json_for::<ConfigFile>(), options).unwrap();
     if std::env::var_os("UPDATE_CONFIG_SCHEMA").is_some() {
       std::fs::write(PUBLISHED_PATH, &generated).unwrap();
     }
+    // Read after regenerating so the assertion checks the file just written.
+    let published = std::fs::read_to_string(PUBLISHED_PATH).unwrap();
+    let published = json_schema_sort::to_string_sorted_with_options(&published, options).unwrap();
     assert_eq!(
-      PUBLISHED, generated,
+      published, generated,
       "schema/v0.json isn't the generated schema. Run `UPDATE_CONFIG_SCHEMA=1 cargo test -p dprint-config-model --features schema` to regenerate it."
     );
   }
