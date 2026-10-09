@@ -6,68 +6,51 @@
 //
 // mkdir -p .zed; curl -fsSLo .zed/settings.json https://github.com/kjanat/kjanat/raw/HEAD/.zed/settings.json
 {
-  "formatter": [
-    {
-      "external": {
-        "command": "dprint",
-        "arguments": ["fmt", "--stdin", "{buffer_path}"]
-      }
-    }
-  ],
+  "formatter": [{ "language_server": { "name": "dprint" } }],
   "prettier": { "allowed": false },
   "languages": {
     "TypeScript": {
       "format_on_save": "on",
-      "formatter": {
-        "external": {
-          "command": "dprint",
-          "arguments": ["fmt", "--stdin", "{buffer_path}"]
-        }
-      },
+      "formatter": { "language_server": { "name": "dprint" } },
       "code_actions_on_format": {
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["deno", "typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"]
     },
     "JavaScript": {
       "format_on_save": "on",
-      "formatter": {
-        "external": {
-          "command": "dprint",
-          "arguments": ["fmt", "--stdin", "{buffer_path}"]
-        }
-      },
+      "formatter": { "language_server": { "name": "dprint" } },
       "code_actions_on_format": {
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["deno", "typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"]
     },
     "TSX": {
-      "formatter": {
-        "external": {
-          "command": "dprint",
-          "arguments": ["fmt", "--stdin", "{buffer_path}"]
-        }
-      },
+      "formatter": { "language_server": { "name": "dprint" } },
       "code_actions_on_format": {
         "source.fixAll.biome": true,
         "source.organizeImports.biome": true
       },
-      "language_servers": ["deno", "typescript", "biome"] // https://github.com/kjanat/zed-typescript
+      "language_servers": ["deno", "biome"]
     },
     "Markdown": {
       "language_servers": ["!markdownlint", "rumdl", "..."]
     }
   },
   "lsp": {
+    "dprint": {
+      "binary": {
+        "path": "cargo",
+        "arguments": ["run-dprint", "-c=dprint.toml", "lsp"]
+      }
+    },
     "deno": {
       "settings": {
         "deno": {
           "enable": true,
-          "enablePaths": ["./website", "./website/playground"],
-          "config": "./website/deno.json"
+          "config": "./deno.jsonc"
         }
       }
     },

@@ -1,0 +1,7 @@
+{
+  "workspace": ["./website", "./website/playground", "./.github/scripts", "./deployment/npm", "./crates/dprint-development/trace_analyzer"],
+  "nodeModulesDir": "manual",
+  "allowScripts": ["npm:fsevents", "npm:@parcel/watcher", "npm:core-js-pure", "npm:core-js"],
+  "exclude": ["**/dist", "**/_site", "**/node_modules", "target"],
+  "fmt": { "exclude": ["**"] }
+}

@@ -1,6 +1,0 @@
-{
-  "private": true,
-  "overrides": {
-    "monaco-editor": "^0.57.0"
-  }
-}
