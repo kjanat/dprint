@@ -12,7 +12,6 @@ dprint-platform = { workspace = true }
 tree-fucker = { workspace = true }
 
 anyhow      = { workspace = true }
-ignore      = { workspace = true }
 parking_lot = { workspace = true }
 tokio       = { workspace = true, features = ["io-std"] }
 

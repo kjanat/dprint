@@ -56,7 +56,6 @@ fs3                       = "0.5"
 futures                   = "0.3"
 globset                   = "0.4"
 hashbrown                 = "0.17"
-ignore                    = "0.4"
 indexmap.version          = "2.14"
 indexmap.features         = ["serde"]
 ipnet                     = "2.11"
