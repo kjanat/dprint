@@ -1,9 +1,9 @@
-import { getLatestPluginVersion } from "./plugin-repository.js";
+import { getLatestPluginVersion } from "./plugin-repository.ts";
 
 // Replaces plugin links with the latest version.
 
 // Pre-compute quoted placeholder URLs at module load time
-const pluginPlaceholders = new Map([
+const pluginPlaceholders = new Map<string, string>([
   [
     "\"https://plugins.dprint.dev/typescript-x.x.x.wasm\"",
     "dprint-plugin-typescript",
@@ -46,9 +46,7 @@ const pluginPlaceholders = new Map([
 ]);
 
 export const replacePluginUrls = () => {
-  const elements = getPluginUrlElements();
-  for (const element of elements) {
-    const pluginName = pluginPlaceholders.get(element.textContent);
+  for (const [element, pluginName] of getPluginUrlElements()) {
     getLatestPluginUrl(pluginName)
       .then((url) => {
         element.textContent = `\"${url}\"`;
@@ -59,23 +57,20 @@ export const replacePluginUrls = () => {
   }
 };
 
-const getLatestPluginUrl = async (pluginName) => {
+const getLatestPluginUrl = async (pluginName: string): Promise<string> => {
   const version = await getLatestPluginVersion(pluginName);
   const pluginPath = pluginName
     .replace(/^dprint-plugin-/, "")
     .replace("/dprint-plugin-", "/");
-  const tag = pluginName.includes("/") ? "v" + version : version;
+  const tag = pluginName.includes("/") ? `v${version}` : version;
   return `https://plugins.dprint.dev/${pluginPath}-${tag}.wasm`;
 };
 
-const getPluginUrlElements = () => {
-  const stringElements = document.getElementsByClassName("hljs-string");
-  const result = [];
-  for (let i = 0; i < stringElements.length; i++) {
-    const stringElement = stringElements.item(i);
-    if (pluginPlaceholders.has(stringElement.textContent)) {
-      result.push(stringElement);
-    }
+const getPluginUrlElements = (): [Element, string][] => {
+  const result: [Element, string][] = [];
+  for (const element of document.getElementsByClassName("hljs-string")) {
+    const pluginName = pluginPlaceholders.get(element.textContent ?? "");
+    if (pluginName != null) result.push([element, pluginName]);
   }
   return result;
 };

@@ -1,11 +1,8 @@
 #!/usr/bin/env -S deno run -A
-// @ts-expect-error
-import { parseArgs } from "https://deno.land/std@0.208.0/cli/parse_args.ts";
-// @ts-expect-error
-import $ from "jsr:@david/dax@0.45.0";
-// @ts-expect-error
-// @ts-types="npm:@types/decompress@4.2.7"
-import decompress from "npm:decompress@4.2.1";
+import $ from "@david/dax";
+import { parseArgs } from "@std/cli/parse-args";
+// @ts-types="@types/decompress"
+import decompress from "decompress";
 
 interface Package {
   zipFileName: string;
@@ -163,9 +160,9 @@ if (!args["publish-only"]) {
         packages.map((pkg) => [`@kjanat-dprint/${getPackageNameNoScope(pkg)}`, version]),
       ),
     };
-    currentDir.join("bin.cjs").copyFileToDirSync(dprintDir);
-    currentDir.join("install_api.cjs").copyFileToDirSync(dprintDir);
-    currentDir.join("install.cjs").copyFileToDirSync(dprintDir);
+    for (const entry of ["bin", "install"]) {
+      await $`deno bundle --platform=deno --format=cjs --output=${dprintDir.join(`${entry}.cjs`)} ${currentDir.join(`${entry}.ts`)}`;
+    }
     dprintDir.join("package.json").writeJsonPrettySync(pkgJson);
     rootDir.join("LICENSE").copyFileSync(dprintDir.join("LICENSE"));
     dprintDir.join("README.md").writeTextSync(markdownText);

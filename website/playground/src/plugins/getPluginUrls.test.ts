@@ -1,5 +1,5 @@
 import { deepStrictEqual, rejects, strictEqual } from "node:assert/strict";
-import { getPluginSchemaUrl } from "../../../src/scripts/plugin-repository.js";
+import { getPluginSchemaUrl } from "../../../src/scripts/plugin-repository.ts";
 import { getPluginDownloadUrl, getPluginShortNameFromPluginUrl, getPluginUrls } from "./getPluginUrls.ts";
 
 Deno.test("downloads built-in plugins from npm without changing shared URLs", () => {

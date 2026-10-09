@@ -1,6 +1,8 @@
 const storageKey = "dprint-theme";
 
-const readPreference = () => {
+type Theme = "light" | "dark";
+
+const readPreference = (): Theme | null => {
   try {
     const value = localStorage.getItem(storageKey);
     return value === "light" || value === "dark" ? value : null;
@@ -9,7 +11,7 @@ const readPreference = () => {
   }
 };
 
-export const getTheme = () => {
+export const getTheme = (): Theme => {
   const theme = document.documentElement.dataset.theme;
   if (theme === "light" || theme === "dark") return theme;
   return globalThis.matchMedia("(prefers-color-scheme: dark)").matches
@@ -19,7 +21,7 @@ export const getTheme = () => {
 
 export const setupTheme = () => {
   const systemTheme = globalThis.matchMedia("(prefers-color-scheme: dark)");
-  const buttons = document.querySelectorAll("[data-theme-toggle]");
+  const buttons = document.querySelectorAll<HTMLElement>("[data-theme-toggle]");
   let preference = readPreference();
 
   const update = () => {
@@ -30,7 +32,8 @@ export const setupTheme = () => {
       const label = `Switch to ${nextTheme} mode`;
       button.setAttribute("aria-label", label);
       button.setAttribute("title", label);
-      button.querySelector("[data-theme-label]").textContent = nextTheme === "light" ? "Light" : "Dark";
+      const text = button.querySelector("[data-theme-label]");
+      if (text != null) text.textContent = nextTheme === "light" ? "Light" : "Dark";
       button.removeAttribute("hidden");
     }
     for (const meta of document.querySelectorAll("meta[name=\"theme-color\"]")) {
@@ -51,7 +54,7 @@ export const setupTheme = () => {
     }
     update();
   };
-  const onStorage = (event) => {
+  const onStorage = (event: StorageEvent) => {
     if (event.key !== storageKey && event.key !== null) return;
     preference = readPreference();
     update();

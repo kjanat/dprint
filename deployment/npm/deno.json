@@ -1,0 +1,11 @@
+{
+  "imports": {
+    "@david/dax": "jsr:@david/dax@0.45.0",
+    "@std/cli": "jsr:@std/cli@^1.0.0",
+    "@types/decompress": "npm:@types/decompress@4.2.7",
+    "decompress": "npm:decompress@4.2.1"
+  },
+  "tasks": {
+    "check": "deno check build.ts bin.ts install.ts"
+  }
+}

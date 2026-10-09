@@ -1,6 +1,6 @@
-const getHashTarget = () => {
+const getHashTarget = (): HTMLElement | null => {
   if (location.hash.length <= 1) return null;
-  let id;
+  let id: string;
   try {
     id = decodeURIComponent(location.hash.slice(1));
   } catch {

@@ -1,6 +1,9 @@
 import type { SimulationNodeDatum } from "d3";
 
 declare global {
+  interface Window {
+    d3: typeof import("d3");
+  }
   const rawTraceResult: TracingResult;
   const specMessage: string;
 }

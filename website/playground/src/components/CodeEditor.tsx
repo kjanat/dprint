@@ -1,7 +1,7 @@
 import type * as monacoEditorForTypes from "monaco-editor";
 import React from "react";
 import type ReactMonacoEditorForTypes from "react-monaco-editor";
-import { getTheme } from "../../../src/scripts/theme.js";
+import { getTheme } from "../../../src/scripts/theme.ts";
 import { Spinner } from "./Spinner.tsx";
 import "../monacoWorkers.ts";
 

@@ -41,11 +41,11 @@ site
         format: "iife",
         target: "es2024",
         minify: true,
-        entryPoints: ["scripts.js"],
+        entryPoints: ["scripts.ts"],
       },
     }),
   )
-  .add("scripts.js")
+  .add("scripts.ts")
   .add("style.scss")
   .add("theme.css")
   .copy("assets", ".");

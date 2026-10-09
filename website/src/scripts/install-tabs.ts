@@ -1,5 +1,5 @@
 // drives the install command tabs + copy button on the home page
-const commands = {
+const commands: Record<string, string> = {
   shell: "curl -fsSL https://dprint.kjanat.dev/install.sh | sh",
   pwsh: "irm https://dprint.kjanat.dev/install.ps1 | iex",
   npm: "NOT AVAILABLE", // npm install -g @kjanat/dprint
@@ -8,9 +8,9 @@ const commands = {
 };
 
 export function addInstallTabsEvent() {
-  const tabs = document.querySelectorAll(".os-tab");
+  const tabs = document.querySelectorAll<HTMLElement>(".os-tab");
   const cmdText = document.getElementById("cmd-text");
-  const copyBtn = document.getElementById("copy-btn");
+  const copyBtn = document.querySelector<HTMLButtonElement>("#copy-btn");
   if (tabs.length === 0 || cmdText == null) return; // not on the home page
 
   tabs.forEach((tab) => {
@@ -20,17 +20,18 @@ export function addInstallTabsEvent() {
       });
       tab.classList.add("active");
       const os = tab.getAttribute("data-os");
-      if (commands[os] != null) cmdText.textContent = commands[os];
+      const command = os == null ? undefined : commands[os];
+      if (command != null) cmdText.textContent = command;
       if (copyBtn != null) copyBtn.textContent = "copy";
     });
   });
 
   if (copyBtn != null) {
-    let copyTimeout;
+    let copyTimeout: ReturnType<typeof setTimeout> | undefined;
     copyBtn.addEventListener("click", async () => {
       clearTimeout(copyTimeout);
       copyBtn.disabled = true;
-      const command = cmdText.textContent;
+      const command = cmdText.textContent ?? "";
       try {
         if (navigator.clipboard == null) {
           throw new Error("Clipboard is unavailable.");

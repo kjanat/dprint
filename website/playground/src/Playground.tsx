@@ -2,7 +2,7 @@ import type { FileMatchingInfo, PluginInfo } from "@dprint/formatter";
 import JSON5 from "json5";
 import type React from "react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { setupTheme } from "../../src/scripts/theme.js";
+import { setupTheme } from "../../src/scripts/theme.ts";
 import { CodeEditor, Spinner } from "./components/index.ts";
 import * as formatterWorker from "./FormatterWorker.ts";
 import { getLanguageFromPluginUrl, getPluginShortNameFromPluginUrl } from "./plugins/index.ts";

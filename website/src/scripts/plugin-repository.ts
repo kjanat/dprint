@@ -1,4 +1,10 @@
-export const playgroundPlugins = [
+export interface PluginSource {
+  name: string;
+  npm: string;
+  prefix: string;
+}
+
+export const playgroundPlugins: PluginSource[] = [
   { name: "typescript", npm: "@dprint/typescript", prefix: "typescript-" },
   { name: "json", npm: "@dprint/json", prefix: "json-" },
   { name: "markdown", npm: "@dprint/markdown", prefix: "markdown-" },
@@ -14,12 +20,12 @@ export const playgroundPlugins = [
   { name: "pretty_graphql", npm: "dprint-plugin-graphql", prefix: "g-plane/pretty_graphql-v" },
 ];
 
-const downloadPlugins = [
+const downloadPlugins: PluginSource[] = [
   ...playgroundPlugins,
   { name: "pwsh", npm: "dprint-plugin-pwsh", prefix: "kjanat/pwsh-" },
 ];
 
-export function getPluginDownloadUrl(url) {
+export function getPluginDownloadUrl(url: string): string {
   const match = /^https:\/\/plugins\.dprint\.dev\/(?:[a-zA-Z0-9_-]+\/)?([a-zA-Z0-9_-]+)-v?([0-9]+\.[0-9]+\.[0-9]+)\.wasm$/.exec(url);
   if (!match) return url;
   const plugin = downloadPlugins.find(
@@ -31,7 +37,7 @@ export function getPluginDownloadUrl(url) {
     : url;
 }
 
-const latestVersions = new Map();
+const latestVersions = new Map<string, Promise<string>>();
 const pluginMirrors = new Set([
   "jolars/panache",
   "jolars/badness",
@@ -39,32 +45,38 @@ const pluginMirrors = new Set([
   "jolars/fatou",
 ]);
 
-const getPluginRepository = (pluginName) => {
+const getPluginRepository = (pluginName: string): string => {
   if (!pluginName.includes("/")) return `dprint/${pluginName}`;
   if (pluginMirrors.has(pluginName)) return pluginName.replace("/", "/dprint-plugin-");
   return pluginName;
 };
 
-export const getLatestPluginVersion = (pluginName) => {
-  const repository = getPluginRepository(pluginName);
-  if (!latestVersions.has(repository)) {
-    const version = fetch(`https://data.jsdelivr.com/v1/packages/gh/${repository}/resolved?specifier=latest`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Error resolving plugin version: HTTP ${response.status}`);
-        const data = await response.json();
-        if (typeof data.version !== "string" || data.version.length === 0) throw new Error(`No release version found for ${repository}`);
-        return data.version;
-      })
-      .catch((err) => {
-        latestVersions.delete(repository);
-        throw err;
-      });
-    latestVersions.set(repository, version);
+const readVersion = (data: unknown, repository: string): string => {
+  if (typeof data === "object" && data !== null && "version" in data && typeof data.version === "string" && data.version.length > 0) {
+    return data.version;
   }
-  return latestVersions.get(repository);
+  throw new Error(`No release version found for ${repository}`);
 };
 
-export const getPluginSchemaUrl = async (configSchemaUrl) => {
+export const getLatestPluginVersion = (pluginName: string): Promise<string> => {
+  const repository = getPluginRepository(pluginName);
+  const cached = latestVersions.get(repository);
+  if (cached != null) return cached;
+  const version = fetch(`https://data.jsdelivr.com/v1/packages/gh/${repository}/resolved?specifier=latest`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`Error resolving plugin version: HTTP ${response.status}`);
+      const data: unknown = await response.json();
+      return readVersion(data, repository);
+    })
+    .catch((err) => {
+      latestVersions.delete(repository);
+      throw err;
+    });
+  latestVersions.set(repository, version);
+  return version;
+};
+
+export const getPluginSchemaUrl = async (configSchemaUrl: string): Promise<string> => {
   const url = new URL(configSchemaUrl);
   if (url.origin !== "https://plugins.dprint.dev") return configSchemaUrl;
   const [, owner, name, version, file] = url.pathname.split("/");

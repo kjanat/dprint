@@ -7,7 +7,7 @@
  * wraps to two or three rows on narrow screens.
  */
 export function setupNavHeight() {
-  const nav = document.querySelector(".site-nav");
+  const nav = document.querySelector<HTMLElement>(".site-nav");
   if (nav == null) return;
 
   update();
@@ -17,6 +17,7 @@ export function setupNavHeight() {
   } else globalThis.addEventListener("resize", update);
 
   function update() {
+    if (nav == null) return;
     const height = Math.round(nav.getBoundingClientRect().height);
     document.documentElement.style.setProperty("--nav-h", `${height}px`);
   }

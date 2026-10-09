@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { createFromBuffer, type Formatter } from "@dprint/formatter";
-import { getPluginSchemaUrl } from "../../src/scripts/plugin-repository.js";
+import { getPluginSchemaUrl } from "../../src/scripts/plugin-repository.ts";
 import { getPluginDownloadUrl } from "./plugins/getPluginUrls.ts";
 import { formatTextUntilStable } from "./stableFormat.ts";
 
