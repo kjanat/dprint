@@ -1,30 +1,9 @@
-//! Reads git's index file ([`Documentation/gitformat-index.adoc`],
-//! [`create_from_disk`] and [`read_index_extension`] in [`read-cache.c`]).
-//!
-//! [`Documentation/gitformat-index.adoc`]: https://github.com/git/git/blob/6de20f6092dcf9bdb1c8efe03db4b70c82b423dd/Documentation/gitformat-index.adoc
-//! [`read-cache.c`]: https://github.com/git/git/blob/6de20f6092dcf9bdb1c8efe03db4b70c82b423dd/read-cache.c
-//! [`create_from_disk`]: https://github.com/git/git/blob/6de20f6092dcf9bdb1c8efe03db4b70c82b423dd/read-cache.c#L1781-L1892
-//! [`read_index_extension`]: https://github.com/git/git/blob/6de20f6092dcf9bdb1c8efe03db4b70c82b423dd/read-cache.c#L1743-L1779
-
-use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 
-use crate::bytes::ByteReader;
 use crate::ewah::read_ewah;
+use crate::reader::Reader;
 use crate::untracked_cache::UntrackedCache;
-
-const STAT_DATA_LEN: usize = 40;
-const FLAG_NAME_MASK: u16 = 0x0fff;
-const FLAG_STAGE_MASK: u16 = 0x3000;
-const FLAG_STAGE_SHIFT: u16 = 12;
-const FLAG_EXTENDED: u16 = 0x4000;
-const EXTENDED_FLAG_SKIP_WORKTREE: u16 = 0x4000;
-
-const MODE_TYPE_MASK: u32 = 0o170000;
-const MODE_REGULAR: u32 = 0o100000;
-const MODE_SYMLINK: u32 = 0o120000;
-const MODE_GITLINK: u32 = 0o160000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -37,16 +16,13 @@ pub enum EntryKind {
 pub struct IndexEntry {
   pub path: Vec<u8>,
   pub kind: EntryKind,
-  /// 0 for a merged path, 1 to 3 for the sides of a conflict.
   pub stage: u8,
   pub skip_worktree: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct IndexFile {
-  /// Sorted by path, then by stage. A conflicted path appears once per stage.
   pub entries: Vec<IndexEntry>,
-  /// `None` without the extension or with a protocol V1 timestamp.
   pub fsmonitor: Option<FsmonitorData>,
   pub untracked_cache: Option<UntrackedCache>,
 }
@@ -54,135 +30,154 @@ pub struct IndexFile {
 #[derive(Debug)]
 pub struct FsmonitorData {
   pub token: Vec<u8>,
-  /// Positions in `IndexFile::entries` without git's fsmonitor-valid flag.
   pub dirty_entries: Vec<usize>,
 }
 
+const SIGNATURE: &[u8; 4] = b"DIRC";
+const STAT_FIELDS_BEFORE_MODE: usize = 24;
+const STAT_FIELDS_AFTER_MODE: usize = 12;
+const EXTENDED_FLAG: u16 = 0x4000;
+const STAGE_SHIFT: u16 = 12;
+const NAME_LEN_MASK: u16 = 0xfff;
+const SKIP_WORKTREE_FLAG: u16 = 0x4000;
+
 pub fn parse_index(data: &[u8], hash_len: usize) -> Result<IndexFile> {
-  if data.len() < 12 + hash_len {
-    bail!("the index is too short");
+  if hash_len != 20 && hash_len != 32 {
+    bail!("unsupported hash length {hash_len}");
   }
-  let mut reader = ByteReader::new(&data[..data.len() - hash_len]);
-  if reader.take(4)? != b"DIRC" {
-    bail!("the index has no DIRC signature");
+  let Some(body_len) = data.len().checked_sub(hash_len) else {
+    bail!("the index is shorter than its checksum");
+  };
+  let mut reader = Reader::new(&data[..body_len]);
+  if reader.bytes(4)? != SIGNATURE {
+    bail!("the index doesn't start with DIRC");
   }
   let version = reader.u32()?;
   if !(2..=4).contains(&version) {
-    bail!("unsupported index version {}", version);
+    bail!("unsupported index version {version}");
   }
-  let entry_count = reader.u32()? as usize;
-  let mut entries = Vec::with_capacity(entry_count.min(1 << 20));
-  for _ in 0..entry_count {
-    let previous = entries.last().map(|entry: &IndexEntry| entry.path.as_slice());
-    let entry = read_entry(&mut reader, version, hash_len, previous).with_context(|| format!("reading index entry {}", entries.len()))?;
+  let count = reader.usize32()?;
+  let mut entries: Vec<IndexEntry> = Vec::with_capacity(count.min(body_len / (STAT_FIELDS_BEFORE_MODE + 4)));
+  for _ in 0..count {
+    let previous_path = entries.last().map_or(&[][..], |entry| entry.path.as_slice());
+    let entry = read_entry(&mut reader, version, hash_len, previous_path)?;
+    if let Some(previous) = entries.last()
+      && !is_ordered(previous, &entry)
+    {
+      bail!(
+        "the index lists {:?} stage {} after {:?} stage {}",
+        String::from_utf8_lossy(&entry.path),
+        entry.stage,
+        String::from_utf8_lossy(&previous.path),
+        previous.stage
+      );
+    }
     entries.push(entry);
   }
-  check_entry_order(&entries)?;
 
   let mut index = IndexFile {
     entries,
     fsmonitor: None,
     untracked_cache: None,
   };
+  let mut has_fsmonitor = false;
   while !reader.is_empty() {
-    let signature = reader.take(4)?;
-    let len = reader.u32()? as usize;
-    let extension = reader.take(len)?;
-    match signature {
-      b"FSMN" => index.fsmonitor = read_fsmonitor(extension).context("reading the FSMN extension")?,
-      b"UNTR" => index.untracked_cache = Some(UntrackedCache::parse(extension, hash_len).context("reading the UNTR extension")?),
+    let signature: [u8; 4] = reader.array()?;
+    let size = reader.usize32()?;
+    let payload = reader.bytes(size)?;
+    match &signature {
+      b"FSMN" => {
+        if std::mem::replace(&mut has_fsmonitor, true) {
+          bail!("the index has two FSMN extensions");
+        }
+        index.fsmonitor = parse_fsmonitor(payload, index.entries.len())?;
+      }
+      b"UNTR" => {
+        if index.untracked_cache.is_some() {
+          bail!("the index has two UNTR extensions");
+        }
+        index.untracked_cache = Some(UntrackedCache::parse(payload, hash_len)?);
+      }
+      // gitformat-index.adoc, "Extensions", makes signatures starting with 'A'..'Z' optional.
       [b'A'..=b'Z', ..] => {}
-      _ => bail!("the index uses the {} extension", String::from_utf8_lossy(signature)),
+      _ => bail!("the index uses the {} extension", String::from_utf8_lossy(&signature)),
     }
   }
   Ok(index)
 }
 
-/// Git's `check_ce_order`.
-fn check_entry_order(entries: &[IndexEntry]) -> Result<()> {
-  for pair in entries.windows(2) {
-    match pair[0].path.cmp(&pair[1].path) {
-      std::cmp::Ordering::Less => {}
-      std::cmp::Ordering::Greater => bail!("unordered stage entries in index"),
-      std::cmp::Ordering::Equal if pair[0].stage == 0 => {
-        bail!("multiple stage entries for merged file '{}'", String::from_utf8_lossy(&pair[0].path))
-      }
-      std::cmp::Ordering::Equal if pair[0].stage > pair[1].stage => {
-        bail!("unordered stage entries for '{}'", String::from_utf8_lossy(&pair[0].path))
-      }
-      std::cmp::Ordering::Equal => {}
-    }
-  }
-  Ok(())
-}
-
-fn read_entry(reader: &mut ByteReader, version: u32, hash_len: usize, previous_path: Option<&[u8]>) -> Result<IndexEntry> {
-  let start = reader.pos();
-  let stat = reader.take(STAT_DATA_LEN)?;
-  let mode = u32::from_be_bytes(stat[24..28].try_into()?);
-  reader.take(hash_len)?;
+fn read_entry(reader: &mut Reader, version: u32, hash_len: usize, previous_path: &[u8]) -> Result<IndexEntry> {
+  let start = reader.position();
+  reader.skip(STAT_FIELDS_BEFORE_MODE)?;
+  let mode = reader.u32()?;
+  reader.skip(STAT_FIELDS_AFTER_MODE + hash_len)?;
   let flags = reader.u16()?;
-  let extended_flags = if flags & FLAG_EXTENDED != 0 { reader.u16()? } else { 0 };
+  let extended_flags = if flags & EXTENDED_FLAG != 0 { reader.u16()? } else { 0 };
   let path = if version == 4 {
-    let strip_len = usize::try_from(reader.varint()?)?;
-    let previous_path = previous_path.unwrap_or_default();
-    let Some(keep_len) = previous_path.len().checked_sub(strip_len) else {
-      bail!("the entry strips {} bytes from a {} byte path", strip_len, previous_path.len());
+    let strip = reader.varint()?;
+    let suffix = reader.nul_terminated()?;
+    let Some(keep) = previous_path.len().checked_sub(strip) else {
+      bail!("an index entry removes {strip} bytes from a {}-byte path", previous_path.len());
     };
-    let suffix = reader.c_str()?;
-    let mut path = Vec::with_capacity(keep_len + suffix.len());
-    path.extend_from_slice(&previous_path[..keep_len]);
-    path.extend_from_slice(suffix);
-    path
+    [&previous_path[..keep], suffix].concat()
   } else {
-    let path = reader.c_str()?.to_vec();
-    let name_len = usize::from(flags & FLAG_NAME_MASK);
-    if name_len != usize::from(FLAG_NAME_MASK) && name_len != path.len() {
-      bail!("the entry's name length {} doesn't match its {} byte path", name_len, path.len());
+    let name = reader.nul_terminated()?.to_vec();
+    let len = reader.position() - start;
+    let padding = reader.bytes(len.next_multiple_of(8) - len)?;
+    if padding.iter().any(|byte| *byte != 0) {
+      bail!("an index entry has non-NUL padding");
     }
-    let unpadded_len = reader.pos() - 1 - start;
-    reader.skip_to(start + ((unpadded_len + 8) & !7))?;
-    path
+    name
   };
-  let kind = match mode & MODE_TYPE_MASK {
-    MODE_REGULAR => EntryKind::File,
-    MODE_SYMLINK => EntryKind::Symlink,
-    MODE_GITLINK => EntryKind::Gitlink,
-    _ => bail!("unknown mode {:o}", mode),
+  let name_len = usize::from(flags & NAME_LEN_MASK);
+  if path.is_empty() || (name_len < usize::from(NAME_LEN_MASK) && path.len() != name_len) || path.len() < name_len {
+    bail!("an index entry's path {:?} doesn't match its length {name_len}", String::from_utf8_lossy(&path));
+  }
+  let kind = match mode >> 12 {
+    0b1000 => EntryKind::File,
+    0b1010 => EntryKind::Symlink,
+    0b1110 => EntryKind::Gitlink,
+    _ => bail!("the index entry {:?} has mode {mode:o}", String::from_utf8_lossy(&path)),
   };
   Ok(IndexEntry {
     path,
     kind,
-    stage: ((flags & FLAG_STAGE_MASK) >> FLAG_STAGE_SHIFT) as u8,
-    skip_worktree: extended_flags & EXTENDED_FLAG_SKIP_WORKTREE != 0,
+    stage: ((flags >> STAGE_SHIFT) & 3) as u8,
+    skip_worktree: extended_flags & SKIP_WORKTREE_FLAG != 0,
   })
 }
 
-fn read_fsmonitor(data: &[u8]) -> Result<Option<FsmonitorData>> {
-  let mut reader = ByteReader::new(data);
-  let token = match reader.u32()? {
-    1 => {
-      reader.u64()?;
-      None
-    }
-    2 => Some(reader.c_str()?.to_vec()),
-    version => bail!("unknown version {}", version),
-  };
-  let ewah_len = reader.u32()? as usize;
-  let mut ewah_reader = ByteReader::new(reader.take(ewah_len)?);
-  let dirty_entries = read_ewah(&mut ewah_reader)?;
-  if !ewah_reader.is_empty() || !reader.is_empty() {
-    bail!("trailing data");
+fn is_ordered(previous: &IndexEntry, entry: &IndexEntry) -> bool {
+  match previous.path.cmp(&entry.path) {
+    std::cmp::Ordering::Less => true,
+    std::cmp::Ordering::Equal => previous.stage != 0 && previous.stage < entry.stage,
+    std::cmp::Ordering::Greater => false,
   }
-  Ok(token.map(|token| FsmonitorData { token, dirty_entries }))
+}
+
+fn parse_fsmonitor(payload: &[u8], entry_count: usize) -> Result<Option<FsmonitorData>> {
+  let mut reader = Reader::new(payload);
+  match reader.u32()? {
+    1 => return Ok(None),
+    2 => {}
+    version => bail!("unsupported FSMN version {version}"),
+  }
+  let token = reader.nul_terminated()?.to_vec();
+  let bitmap_len = reader.usize32()?;
+  let mut bitmap = Reader::new(reader.bytes(bitmap_len)?);
+  let dirty_entries = read_ewah(&mut bitmap, entry_count)?;
+  if !bitmap.is_empty() || !reader.is_empty() {
+    bail!("the FSMN extension has trailing data");
+  }
+  Ok(Some(FsmonitorData { token, dirty_entries }))
 }
 
 #[cfg(any(test, feature = "test-util"))]
 pub(crate) mod test_writer {
-  //! Writes index files like git's `do_write_index`.
-
-  use crate::bytes::encode_varint;
   use crate::ewah::write_ewah;
+  use crate::hash::blob_oid;
+  use crate::hash::digest;
+  use crate::reader::write_varint;
 
   pub struct TestEntry {
     pub path: String,
@@ -197,7 +192,7 @@ pub(crate) mod test_writer {
     }
 
     pub fn with_mode(path: &str, mode: u32) -> Self {
-      Self {
+      TestEntry {
         path: path.to_string(),
         mode,
         stage: 0,
@@ -207,54 +202,58 @@ pub(crate) mod test_writer {
   }
 
   pub fn write_index(version: u32, hash_len: usize, entries: &[TestEntry], extensions: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
-    let mut bytes = b"DIRC".to_vec();
-    bytes.extend(version.to_be_bytes());
-    bytes.extend((entries.len() as u32).to_be_bytes());
-    let mut previous: &[u8] = b"";
+    let oid = blob_oid(&[b""], hash_len).unwrap_or_else(|| panic!("unsupported hash length {hash_len}"));
+    let mut out = super::SIGNATURE.to_vec();
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    let mut previous_path: &[u8] = b"";
     for entry in entries {
-      let start = bytes.len();
-      let mut stat = [0u8; 40];
-      stat[24..28].copy_from_slice(&entry.mode.to_be_bytes());
-      bytes.extend(stat);
-      bytes.extend(vec![0xab; hash_len]);
+      let start = out.len();
       let path = entry.path.as_bytes();
-      let mut flags = path.len().min(0xfff) as u16 | u16::from(entry.stage) << 12;
+      out.extend_from_slice(&[0; super::STAT_FIELDS_BEFORE_MODE]);
+      out.extend_from_slice(&entry.mode.to_be_bytes());
+      out.extend_from_slice(&[0; super::STAT_FIELDS_AFTER_MODE]);
+      out.extend_from_slice(&oid);
+      let mut flags = (u16::from(entry.stage) << super::STAGE_SHIFT) | path.len().min(usize::from(super::NAME_LEN_MASK)) as u16;
       if entry.skip_worktree {
-        flags |= 0x4000;
+        flags |= super::EXTENDED_FLAG;
       }
-      bytes.extend(flags.to_be_bytes());
+      out.extend_from_slice(&flags.to_be_bytes());
       if entry.skip_worktree {
-        bytes.extend(0x4000u16.to_be_bytes());
+        out.extend_from_slice(&super::SKIP_WORKTREE_FLAG.to_be_bytes());
       }
       if version == 4 {
-        let common = previous.iter().zip(path).take_while(|(a, b)| a == b).count();
-        bytes.extend(encode_varint((previous.len() - common) as u64));
-        bytes.extend(&path[common..]);
-        bytes.push(0);
+        let common = previous_path.iter().zip(path).take_while(|(a, b)| a == b).count();
+        write_varint(&mut out, previous_path.len() - common);
+        out.extend_from_slice(&path[common..]);
+        out.push(0);
       } else {
-        bytes.extend(path);
-        let len = bytes.len() - start;
-        bytes.extend(vec![0; ((len + 8) & !7) - len]);
+        out.extend_from_slice(path);
+        out.push(0);
+        let len = out.len() - start;
+        out.resize(start + len.next_multiple_of(8), 0);
       }
-      previous = path;
+      previous_path = path;
     }
-    for (signature, data) in extensions {
-      bytes.extend(signature.as_slice());
-      bytes.extend((data.len() as u32).to_be_bytes());
-      bytes.extend(data);
+    for (signature, payload) in extensions {
+      out.extend_from_slice(*signature);
+      out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+      out.extend_from_slice(payload);
     }
-    bytes.extend(vec![0; hash_len]);
-    bytes
+    let checksum = digest(&[&out], hash_len).unwrap_or_default();
+    out.extend_from_slice(&checksum);
+    out
   }
 
   pub fn fsmonitor_extension(token: &str, dirty_entries: &[usize]) -> Vec<u8> {
-    let mut bytes = 2u32.to_be_bytes().to_vec();
-    bytes.extend(token.as_bytes());
-    bytes.push(0);
-    let ewah = write_ewah(dirty_entries);
-    bytes.extend((ewah.len() as u32).to_be_bytes());
-    bytes.extend(ewah);
-    bytes
+    let mut bitmap = Vec::new();
+    write_ewah(&mut bitmap, dirty_entries);
+    let mut out = 2u32.to_be_bytes().to_vec();
+    out.extend_from_slice(token.as_bytes());
+    out.push(0);
+    out.extend_from_slice(&(bitmap.len() as u32).to_be_bytes());
+    out.extend_from_slice(&bitmap);
+    out
   }
 }
 
@@ -262,47 +261,67 @@ pub(crate) mod test_writer {
 mod test {
   use super::test_writer::*;
   use super::*;
+  use crate::test_git::TempRepo;
+  use crate::untracked_cache::test_writer::*;
 
-  #[test]
-  fn reads_entries_of_every_version() {
-    let entries = [
-      TestEntry::file("a.txt"),
-      TestEntry::file("dir/b.txt"),
-      TestEntry::file("dir/c.txt"),
-      TestEntry::with_mode("dir/link", 0o120000),
+  fn entry(path: &str, stage: u8) -> TestEntry {
+    TestEntry {
+      stage,
+      ..TestEntry::file(path)
+    }
+  }
+
+  fn summary(index: &IndexFile) -> Vec<(String, EntryKind, u8, bool)> {
+    index
+      .entries
+      .iter()
+      .map(|entry| (String::from_utf8_lossy(&entry.path).into_owned(), entry.kind, entry.stage, entry.skip_worktree))
+      .collect()
+  }
+
+  fn varied_entries() -> Vec<TestEntry> {
+    let long_a = format!("{}/a", "d".repeat(300));
+    let long_b = format!("{}/b", "e".repeat(5000));
+    vec![
+      entry("conflict", 1),
+      entry("conflict", 2),
+      entry("conflict", 3),
+      TestEntry::file(&long_a),
+      TestEntry::file("dir/sub/aaaaaaaa"),
+      TestEntry::file("dir/sub/aaaabbbb"),
+      TestEntry::file(&long_b),
+      TestEntry::with_mode("exe", 0o100755),
+      TestEntry::with_mode("gitlink", 0o160000),
+      TestEntry::with_mode("link", 0o120000),
       TestEntry {
         skip_worktree: true,
-        ..TestEntry::with_mode("dir/sparse.txt", 0o100755)
+        ..TestEntry::file("sparse")
       },
-      TestEntry::with_mode("sub", 0o160000),
-    ];
+      TestEntry::file("z"),
+    ]
+  }
+
+  fn expected_summary(entries: &[TestEntry]) -> Vec<(String, EntryKind, u8, bool)> {
+    entries
+      .iter()
+      .map(|entry| {
+        let kind = match entry.mode {
+          0o160000 => EntryKind::Gitlink,
+          0o120000 => EntryKind::Symlink,
+          _ => EntryKind::File,
+        };
+        (entry.path.clone(), kind, entry.stage, entry.skip_worktree)
+      })
+      .collect()
+  }
+
+  #[test]
+  fn round_trips_every_version_and_hash() {
+    let entries = varied_entries();
     for version in [2, 3, 4] {
       for hash_len in [20, 32] {
         let index = parse_index(&write_index(version, hash_len, &entries, &[]), hash_len).unwrap();
-        let paths = index
-          .entries
-          .iter()
-          .map(|entry| String::from_utf8(entry.path.clone()).unwrap())
-          .collect::<Vec<_>>();
-        assert_eq!(
-          paths,
-          ["a.txt", "dir/b.txt", "dir/c.txt", "dir/link", "dir/sparse.txt", "sub"],
-          "version {version}"
-        );
-        let kinds = index.entries.iter().map(|entry| entry.kind).collect::<Vec<_>>();
-        assert_eq!(
-          kinds,
-          [
-            EntryKind::File,
-            EntryKind::File,
-            EntryKind::File,
-            EntryKind::Symlink,
-            EntryKind::File,
-            EntryKind::Gitlink
-          ]
-        );
-        let skip_worktree = index.entries.iter().map(|entry| entry.skip_worktree).collect::<Vec<_>>();
-        assert_eq!(skip_worktree, [false, false, false, false, true, false]);
+        assert_eq!(summary(&index), expected_summary(&entries), "version {version} hash {hash_len}");
         assert!(index.fsmonitor.is_none());
         assert!(index.untracked_cache.is_none());
       }
@@ -310,77 +329,325 @@ mod test {
   }
 
   #[test]
-  fn checks_the_entry_order_like_git() {
-    let conflict = |stage| TestEntry { stage, ..TestEntry::file("c") };
-    let index = parse_index(&write_index(2, 20, &[TestEntry::file("a"), conflict(1), conflict(2), conflict(3)], &[]), 20).unwrap();
-    let stages = index.entries.iter().map(|entry| entry.stage).collect::<Vec<_>>();
-    assert_eq!(stages, [0, 1, 2, 3]);
-    for (entries, message) in [
-      (vec![TestEntry::file("b"), TestEntry::file("a")], "unordered stage entries in index"),
-      (vec![TestEntry::file("c"), conflict(1)], "multiple stage entries for merged file 'c'"),
-      (vec![conflict(2), conflict(1)], "unordered stage entries for 'c'"),
-    ] {
-      let err = parse_index(&write_index(2, 20, &entries, &[]), 20).unwrap_err();
-      assert_eq!(err.to_string(), message);
-    }
+  fn reads_an_empty_index() {
+    let index = parse_index(&write_index(2, 20, &[], &[]), 20).unwrap();
+    assert!(index.entries.is_empty());
   }
 
   #[test]
-  fn reads_long_paths() {
-    let path = format!("{}file", "d/".repeat(3000));
-    for version in [2, 4] {
-      let index = parse_index(&write_index(version, 20, &[TestEntry::file(&path)], &[]), 20).unwrap();
-      assert_eq!(index.entries[0].path, path.as_bytes());
-    }
+  fn writes_the_documented_layout() {
+    let data = write_index(2, 20, &[TestEntry::file("a")], &[]);
+    assert_eq!(&data[..12], b"DIRC\0\0\0\x02\0\0\0\x01");
+    assert_eq!(&data[36..40], &0o100644u32.to_be_bytes());
+    assert_eq!(&data[72..76], b"\0\x01a\0");
+    assert_eq!(data.len(), 12 + 64 + 20);
+    let data = write_index(4, 20, &[TestEntry::file("ab"), TestEntry::file("ac")], &[]);
+    assert_eq!(&data[12 + 62..12 + 62 + 4], b"\0ab\0");
+    assert_eq!(&data[12 + 66 + 62..12 + 66 + 62 + 3], b"\x01c\0");
   }
 
   #[test]
-  fn reads_the_fsmonitor_token() {
-    let extensions = [(b"FSMN", fsmonitor_extension("builtin:abc:7", &[1, 3]))];
-    let index = parse_index(
-      &write_index(
-        2,
-        20,
-        &[TestEntry::file("a"), TestEntry::file("b"), TestEntry::file("c"), TestEntry::file("d")],
-        &extensions,
-      ),
-      20,
-    )
-    .unwrap();
+  fn reads_the_fsmonitor_token_and_dirty_entries() {
+    let entries = ["a", "b", "c", "d"].map(TestEntry::file);
+    let index = parse_index(&write_index(2, 20, &entries, &[(b"FSMN", fsmonitor_extension("builtin:x:1", &[1, 3]))]), 20).unwrap();
     let fsmonitor = index.fsmonitor.unwrap();
-    assert_eq!(fsmonitor.token, b"builtin:abc:7");
-    assert_eq!(fsmonitor.dirty_entries, [1, 3]);
+    assert_eq!(fsmonitor.token, b"builtin:x:1");
+    assert_eq!(fsmonitor.dirty_entries, vec![1, 3]);
+    let index = parse_index(&write_index(2, 20, &entries, &[(b"FSMN", fsmonitor_extension("t", &[]))]), 20).unwrap();
+    assert!(index.fsmonitor.unwrap().dirty_entries.is_empty());
   }
 
   #[test]
-  fn ignores_a_v1_fsmonitor_timestamp() {
-    let ewah = crate::ewah::write_ewah(&[]);
-    let mut data = 1u32.to_be_bytes().to_vec();
-    data.extend(123u64.to_be_bytes());
-    data.extend((ewah.len() as u32).to_be_bytes());
-    data.extend(ewah);
-    let index = parse_index(&write_index(2, 20, &[], &[(b"FSMN", data)]), 20).unwrap();
+  fn writes_the_fsmonitor_extension_git_writes() {
+    let mut expected = 2u32.to_be_bytes().to_vec();
+    expected.extend_from_slice(b"tok:2\0");
+    expected.extend_from_slice(&[0, 0, 0, 28, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0]);
+    assert_eq!(fsmonitor_extension("tok:2", &[1]), expected);
+  }
+
+  #[test]
+  fn ignores_the_timestamp_fsmonitor_version() {
+    let mut payload = 1u32.to_be_bytes().to_vec();
+    payload.extend_from_slice(&1_700_000_000_000_000_000u64.to_be_bytes());
+    payload.extend_from_slice(&20u32.to_be_bytes());
+    crate::ewah::write_ewah(&mut payload, &[]);
+    let index = parse_index(&write_index(2, 20, &[TestEntry::file("a")], &[(b"FSMN", payload)]), 20).unwrap();
     assert!(index.fsmonitor.is_none());
   }
 
   #[test]
-  fn skips_unknown_optional_extensions_and_rejects_required_ones() {
-    let index = parse_index(&write_index(2, 20, &[], &[(b"TREE", vec![1, 2, 3]), (b"EOIE", vec![0; 24])]), 20).unwrap();
-    assert!(index.entries.is_empty());
-    for signature in [b"link", b"sdir"] {
-      let err = parse_index(&write_index(2, 20, &[], &[(signature, Vec::new())]), 20).unwrap_err();
-      assert!(err.to_string().contains(std::str::from_utf8(signature).unwrap()), "{err}");
+  fn rejects_bad_fsmonitor_extensions() {
+    let entries = ["a", "b"].map(TestEntry::file);
+    let parse = |payload: Vec<u8>| parse_index(&write_index(2, 20, &entries, &[(b"FSMN", payload)]), 20);
+    assert!(parse(fsmonitor_extension("t", &[2])).is_err());
+    let mut unknown = fsmonitor_extension("t", &[]);
+    unknown[3] = 3;
+    assert!(parse(unknown).is_err());
+    let mut trailing = fsmonitor_extension("t", &[]);
+    trailing.push(0);
+    assert!(parse(trailing).is_err());
+    let good = fsmonitor_extension("t", &[1]);
+    for len in 0..good.len() {
+      assert!(parse(good[..len].to_vec()).is_err(), "{len}");
+    }
+    let twice = [(b"FSMN", fsmonitor_extension("t", &[])), (b"FSMN", fsmonitor_extension("t", &[]))];
+    assert!(parse_index(&write_index(2, 20, &entries, &twice), 20).is_err());
+  }
+
+  #[test]
+  fn reads_the_untracked_cache() {
+    let cache = write_untracked_cache(&TestUntrackedCache {
+      ident: "Location /repo, system Linux".to_string(),
+      dir_flags: 6,
+      info_exclude_oid: vec![1; 32],
+      excludes_file_oid: vec![2; 32],
+      root: Some(TestDir::valid("", &["new.ts"], vec![TestDir::valid("src", &[], vec![])])),
+    });
+    let index = parse_index(&write_index(3, 32, &[TestEntry::file("src/a.ts")], &[(b"UNTR", cache)]), 32).unwrap();
+    let cache = index.untracked_cache.unwrap();
+    assert_eq!(cache.ident, b"Location /repo, system Linux");
+    assert_eq!(cache.find(b"src"), Some(1));
+    let twice = [(b"UNTR", Vec::new()), (b"UNTR", Vec::new())];
+    assert!(parse_index(&write_index(2, 20, &[], &twice), 20).is_err());
+  }
+
+  #[test]
+  fn skips_optional_extensions_and_rejects_required_ones() {
+    let entries = [TestEntry::file("a")];
+    let optional = [(b"TREE", b"\x001 0\n".to_vec()), (b"ZZZZ", vec![1, 2, 3]), (b"EOIE", vec![0; 24])];
+    assert_eq!(parse_index(&write_index(2, 20, &entries, &optional), 20).unwrap().entries.len(), 1);
+    let err = parse_index(&write_index(2, 20, &entries, &[(b"link", vec![0; 20])]), 20).unwrap_err();
+    assert!(err.to_string().contains("the index uses the link extension"), "{err}");
+    let err = parse_index(&write_index(2, 20, &entries, &[(b"sdir", Vec::new())]), 20).unwrap_err();
+    assert!(err.to_string().contains("the index uses the sdir extension"), "{err}");
+  }
+
+  #[test]
+  fn rejects_misordered_entries() {
+    let cases: &[&[TestEntry]] = &[
+      &[TestEntry::file("b"), TestEntry::file("a")],
+      &[TestEntry::file("a"), TestEntry::file("a")],
+      &[TestEntry::file("a"), entry("a", 1)],
+      &[entry("a", 1), TestEntry::file("a")],
+      &[entry("a", 2), entry("a", 1)],
+      &[entry("a", 2), entry("a", 2)],
+      &[TestEntry::file("a/b"), TestEntry::file("a.b")],
+    ];
+    for entries in cases {
+      for version in [2, 4] {
+        assert!(parse_index(&write_index(version, 20, entries, &[]), 20).is_err());
+      }
+    }
+    let ordered = [
+      TestEntry::file("a"),
+      entry("a-b", 1),
+      entry("a-b", 3),
+      TestEntry::file("a.b"),
+      TestEntry::file("a/b"),
+      TestEntry::file("a0"),
+    ];
+    assert_eq!(parse_index(&write_index(2, 20, &ordered, &[]), 20).unwrap().entries.len(), 6);
+  }
+
+  #[test]
+  fn rejects_unknown_modes() {
+    for mode in [0o040000, 0o100000 | (1 << 16), 0o060644, 0] {
+      assert!(
+        parse_index(&write_index(2, 20, &[TestEntry::with_mode("a", mode)], &[]), 20).is_err(),
+        "{mode:o}"
+      );
+    }
+    for mode in [0o100600, 0o100777, 0o120777] {
+      assert!(
+        parse_index(&write_index(2, 20, &[TestEntry::with_mode("a", mode)], &[]), 20).is_ok(),
+        "{mode:o}"
+      );
     }
   }
 
   #[test]
-  fn rejects_invalid_indexes() {
-    assert!(parse_index(b"DIRC", 20).is_err());
-    assert!(parse_index(&write_index(5, 20, &[], &[]), 20).is_err());
-    let mut bytes = write_index(2, 20, &[TestEntry::file("a")], &[]);
-    bytes[0] = b'X';
-    assert!(parse_index(&bytes, 20).is_err());
-    let truncated = write_index(2, 20, &[TestEntry::file("a")], &[]);
-    assert!(parse_index(&truncated[..truncated.len() - 30], 20).is_err());
+  fn rejects_bad_headers() {
+    let good = write_index(2, 20, &[TestEntry::file("a")], &[]);
+    assert!(parse_index(&good, 21).is_err());
+    let mut bad = good.clone();
+    bad[0] = b'X';
+    assert!(parse_index(&bad, 20).is_err());
+    for version in [0u32, 1, 5] {
+      let mut bad = good.clone();
+      bad[4..8].copy_from_slice(&version.to_be_bytes());
+      assert!(parse_index(&bad, 20).is_err());
+    }
+    let mut bad = good.clone();
+    bad[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(parse_index(&bad, 20).is_err());
+  }
+
+  #[test]
+  fn rejects_inconsistent_entries() {
+    let good = write_index(2, 20, &[TestEntry::file("abc")], &[]);
+    let mut bad = good.clone();
+    bad[12 + 61] = 2;
+    assert!(parse_index(&bad, 20).is_err());
+    let mut bad = good.clone();
+    bad[12 + 62 + 3 + 1] = 1;
+    assert!(parse_index(&bad, 20).is_err());
+    let v4 = write_index(4, 20, &[TestEntry::file("ab"), TestEntry::file("ac")], &[]);
+    let mut bad = v4.clone();
+    bad[12 + 66 + 62] = 3;
+    assert!(parse_index(&bad, 20).is_err());
+  }
+
+  #[test]
+  fn never_panics_on_truncated_or_corrupted_input() {
+    let cache = write_untracked_cache(&TestUntrackedCache {
+      ident: "Location /r, system Linux".to_string(),
+      dir_flags: 6,
+      info_exclude_oid: vec![0; 20],
+      excludes_file_oid: vec![0; 20],
+      root: Some(TestDir::valid("", &["x"], vec![TestDir::valid("d", &["y/"], vec![])])),
+    });
+    let fsmonitor = fsmonitor_extension("tok", &[0, 3]);
+    for version in [2, 3, 4] {
+      let data = write_index(version, 20, &varied_entries(), &[(b"FSMN", fsmonitor.clone()), (b"UNTR", cache.clone())]);
+      assert!(parse_index(&data, 20).is_ok());
+      let extensions_end = data.len() - 20;
+      let after_fsmonitor = extensions_end - 8 - cache.len();
+      let entries_end = after_fsmonitor - 8 - fsmonitor.len();
+      for len in 0..extensions_end {
+        let mut truncated = data[..len].to_vec();
+        truncated.extend_from_slice(&[0; 20]);
+        let result = parse_index(&truncated, 20);
+        if len == entries_end || len == after_fsmonitor {
+          assert!(result.is_ok(), "version {version} length {len}");
+        } else {
+          assert!(result.is_err(), "version {version} length {len}");
+        }
+        let _ = parse_index(&data[..len], 20);
+      }
+      for position in (0..data.len()).step_by(7) {
+        for value in [0, 0x7f, 0x80, 0xff] {
+          let mut corrupted = data.clone();
+          corrupted[position] = value;
+          let _ = parse_index(&corrupted, 20);
+        }
+      }
+    }
+  }
+
+  fn ls_files(repo: &TempRepo) -> Vec<(String, EntryKind, u8, bool)> {
+    let output = repo.git(&["ls-files", "--stage", "-t", "-z"]);
+    output
+      .split(|byte| *byte == 0)
+      .filter(|line| !line.is_empty())
+      .map(|line| {
+        let line = String::from_utf8_lossy(line);
+        let (tag, rest) = line.split_once(' ').unwrap();
+        let (info, path) = rest.split_once('\t').unwrap();
+        let fields: Vec<&str> = info.split(' ').collect();
+        let kind = match fields[0] {
+          "160000" => EntryKind::Gitlink,
+          "120000" => EntryKind::Symlink,
+          _ => EntryKind::File,
+        };
+        (path.to_string(), kind, fields[2].parse().unwrap(), tag == "S")
+      })
+      .collect()
+  }
+
+  #[test]
+  fn git_accepts_written_indexes() {
+    let entries: Vec<TestEntry> = varied_entries().into_iter().filter(|entry| !entry.skip_worktree).collect();
+    for version in [2, 3, 4] {
+      for (format, hash_len) in [("sha1", 20), ("sha256", 32)] {
+        let Some(repo) = TempRepo::new(&[&format!("--object-format={format}")]) else {
+          return;
+        };
+        std::fs::write(repo.path(".git/index"), write_index(version, hash_len, &entries, &[])).unwrap();
+        assert_eq!(ls_files(&repo), expected_summary(&entries), "version {version} {format}");
+      }
+    }
+  }
+
+  #[test]
+  fn git_accepts_written_extensions() {
+    let Some(repo) = TempRepo::new(&[]) else {
+      return;
+    };
+    let entries = ["a", "b"].map(TestEntry::file);
+    let cache = write_untracked_cache(&TestUntrackedCache {
+      ident: format!("Location {}, system Linux", repo.root().display()),
+      dir_flags: 6,
+      info_exclude_oid: vec![0; 20],
+      excludes_file_oid: vec![0; 20],
+      root: Some(TestDir::valid("", &["new"], vec![])),
+    });
+    let extensions = [(b"FSMN", fsmonitor_extension("tok", &[1])), (b"UNTR", cache)];
+    std::fs::write(repo.path(".git/index"), write_index(2, 20, &entries, &extensions)).unwrap();
+    let output = repo.try_git(&["ls-files"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, b"a\nb\n");
+  }
+
+  #[test]
+  fn reads_indexes_git_writes() {
+    for version in ["2", "3", "4"] {
+      let Some(repo) = TempRepo::new(&["-b", "main"]) else {
+        return;
+      };
+      repo.git(&["config", "index.version", version]);
+      repo.write("conflict", b"base\n");
+      repo.write("dir/sub/aaaaaaaa", b"x\n");
+      repo.write("dir/sub/aaaabbbb", b"y\n");
+      repo.write(&format!("{}/a", "d".repeat(200)), b"long\n");
+      repo.write(&format!("{}/b", "e".repeat(200)), b"long\n");
+      repo.write("sparse", b"s\n");
+      repo.write("exe", b"e\n");
+      repo.git(&["add", "."]);
+      repo.git(&["update-index", "--chmod=+x", "exe"]);
+      repo.git(&["commit", "-q", "-m", "one"]);
+      repo.git(&["checkout", "-q", "-b", "other"]);
+      repo.write("conflict", b"other\n");
+      repo.git(&["commit", "-q", "-am", "other"]);
+      repo.git(&["checkout", "-q", "main"]);
+      repo.write("conflict", b"main\n");
+      repo.git(&["commit", "-q", "-am", "main"]);
+      assert!(!repo.try_git(&["merge", "-q", "other"]).status.success());
+      repo.git(&["update-index", "--skip-worktree", "sparse"]);
+      let head = String::from_utf8(repo.git(&["rev-parse", "HEAD"])).unwrap();
+      repo.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},gitlink", head.trim())]);
+      let blob = String::from_utf8(repo.git(&["hash-object", "-w", "exe"])).unwrap();
+      repo.git(&["update-index", "--add", "--cacheinfo", &format!("120000,{},link", blob.trim())]);
+      let index = parse_index(&repo.read(".git/index"), 20).unwrap();
+      let expected = ls_files(&repo);
+      assert_eq!(summary(&index), expected, "version {version}");
+      assert!(expected.iter().any(|(path, _, stage, _)| path == "conflict" && *stage == 3));
+      assert!(expected.iter().any(|(path, _, _, skip)| path == "sparse" && *skip));
+    }
+  }
+
+  #[test]
+  fn reads_fsmonitor_data_git_writes() {
+    let Some(repo) = TempRepo::new(&[]) else {
+      return;
+    };
+    let hook = repo.path(".git/fsmonitor-hook");
+    std::fs::write(&hook, "printf 'tok:1\\0/'\n").unwrap();
+    repo.git(&["config", "core.fsmonitor", &format!("sh {}", hook.display())]);
+    repo.git(&["config", "core.fsmonitorHookVersion", "2"]);
+    for path in ["a", "b", "c", "sub/d"] {
+      repo.write(path, path.as_bytes());
+    }
+    repo.git(&["add", "."]);
+    repo.git(&["status", "--porcelain"]);
+    let fsmonitor = parse_index(&repo.read(".git/index"), 20).unwrap().fsmonitor.unwrap();
+    assert_eq!(fsmonitor.token, b"tok:1");
+    assert!(fsmonitor.dirty_entries.is_empty());
+    std::fs::write(&hook, "printf 'tok:2\\0b\\0sub/d\\0'\n").unwrap();
+    repo.write("b", b"changed");
+    repo.git(&["status", "--porcelain"]);
+    let fsmonitor = parse_index(&repo.read(".git/index"), 20).unwrap().fsmonitor.unwrap();
+    assert_eq!(fsmonitor.token, b"tok:2");
+    assert_eq!(fsmonitor.dirty_entries, vec![1]);
   }
 }
