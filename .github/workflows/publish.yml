@@ -82,10 +82,10 @@ jobs:
           storage: ./storage
           uplinks: {}
           packages:
-            '@dprint/*':
+            '@kprint/*':
               access: $all
               publish: $all
-            'dprint':
+            '@kprint/dprint':
               access: $all
               publish: $all
             '**':
@@ -113,7 +113,7 @@ jobs:
         id: publish-verdaccio
         run: |
           DIST_DIR="deployment/npm/dist"
-          for pkg_dir in "${DIST_DIR}"/@dprint/*/; do
+          for pkg_dir in "${DIST_DIR}"/@kprint/*/; do
             echo "Publishing $(basename "${pkg_dir}") to Verdaccio..."
             (cd "${pkg_dir}" && npm publish --registry http://localhost:4873/)
           done
@@ -128,27 +128,27 @@ jobs:
           cd "${TEST_DIR}"
           npm init -y
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install dprint@${{ steps.publish-verdaccio.outputs.version }}
+          npm install @kprint/dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(npx dprint -v)"
           echo "${ACTUAL}"
           [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
       - name: Test dprint via bin.cjs fallback
         run: |
           cd "${{ runner.temp }}/npm-test"
-          node node_modules/dprint/bin.cjs -v
+          node node_modules/@kprint/dprint/bin.cjs -v
       - name: Test dprint via simulated readonly file system
         run: |
           TEST_DIR="${{ runner.temp }}/readonly-test"
           mkdir -p "${TEST_DIR}"
           cd "${TEST_DIR}"
           npm init -y
-          npm install dprint@${{ steps.publish-verdaccio.outputs.version }}
-          rm -f node_modules/dprint/dprint*
-          DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/dprint/bin.cjs -v
+          npm install @kprint/dprint@${{ steps.publish-verdaccio.outputs.version }}
+          rm -f node_modules/@kprint/dprint/dprint*
+          DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/@kprint/dprint/bin.cjs -v
       - name: Test npm global install dprint
         run: |
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install -g dprint@${{ steps.publish-verdaccio.outputs.version }}
+          npm install -g @kprint/dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(dprint -v)"
           echo "${ACTUAL}"
           [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
@@ -164,15 +164,15 @@ jobs:
             echo "${LINK_TARGET}" | grep -q "bin.cjs" && { echo "ERROR: dprint symlink still points to bin.cjs"; exit 1; }
             echo "dprint symlink correctly points to native binary"
           fi
-          npm uninstall -g dprint
+          npm uninstall -g @kprint/dprint
       - name: Test npm global install dprint (--ignore-scripts)
         run: |
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install -g --ignore-scripts dprint@${{ steps.publish-verdaccio.outputs.version }}
+          npm install -g --ignore-scripts @kprint/dprint@${{ steps.publish-verdaccio.outputs.version }}
           ACTUAL="$(dprint -v)"
           echo "${ACTUAL}"
           [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
-          npm uninstall -g dprint
+          npm uninstall -g @kprint/dprint
   publish-npm:
     name: npm publish
     needs:

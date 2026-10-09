@@ -117,7 +117,7 @@ npm CLI distribution for [dprint](https://dprint.kjanat.dev)—a pluggable and c
 const currentDir = $.path(import.meta.url).parentOrThrow();
 const rootDir = currentDir.parentOrThrow().parentOrThrow();
 const outputDir = currentDir.join("./dist");
-const scopeDir = outputDir.join("@dprint");
+const scopeDir = outputDir.join("@kprint");
 const dprintDir = outputDir.join("dprint");
 const version = resolveVersion();
 
@@ -136,7 +136,7 @@ if (!args["publish-only"]) {
   {
     $.logStep(`Setting up dprint ${version}...`);
     const pkgJson = {
-      name: "@kjanat/dprint",
+      name: "@kprint/dprint",
       version: version,
       description: "Pluggable and configurable code formatting platform written in Rust.",
       bin: "bin.cjs",
@@ -157,7 +157,7 @@ if (!args["publish-only"]) {
         postinstall: "node ./install.cjs",
       },
       optionalDependencies: Object.fromEntries(
-        packages.map((pkg) => [`@kjanat-dprint/${getPackageNameNoScope(pkg)}`, version]),
+        packages.map((pkg) => [`@kprint/${getPackageNameNoScope(pkg)}`, version]),
       ),
     };
     for (const entry of ["bin", "install"]) {
@@ -173,7 +173,7 @@ if (!args["publish-only"]) {
     const executableHashes: Record<string, string> = {};
     for (const pkg of packages) {
       const pkgName = getPackageNameNoScope(pkg);
-      $.logStep(`Setting up @kjanat-dprint/${pkgName}...`);
+      $.logStep(`Setting up @kprint/${pkgName}...`);
       const pkgDir = scopeDir.join(pkgName);
       const zipPath = pkgDir.join("output.zip");
 
@@ -196,10 +196,10 @@ if (!args["publish-only"]) {
       pkgDir
         .join("README.md")
         .writeTextSync(
-          `# @kjanat-dprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
+          `# @kprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
         );
       pkgDir.join("package.json").writeJsonPrettySync({
-        name: `@kjanat-dprint/${pkgName}`,
+        name: `@kprint/${pkgName}`,
         version: version,
         description: `${pkgName} distribution of the dprint code formatter`,
         repository: {
@@ -230,15 +230,15 @@ if (!args["publish-only"]) {
     $.logStep("Verifying packages...");
     const testPlatform = Deno.build.os === "windows"
       ? Deno.build.arch === "x86_64"
-        ? "@kjanat-dprint/win32-x64"
-        : "@kjanat-dprint/win32-arm64"
+        ? "@kprint/win32-x64"
+        : "@kprint/win32-arm64"
       : Deno.build.os === "darwin"
       ? Deno.build.arch === "x86_64"
-        ? "@kjanat-dprint/darwin-x64"
-        : "@kjanat-dprint/darwin-arm64"
+        ? "@kprint/darwin-x64"
+        : "@kprint/darwin-arm64"
       : Deno.build.arch === "x86_64"
-      ? "@kjanat-dprint/linux-x64-glibc"
-      : "@kjanat-dprint/linux-arm64-glibc";
+      ? "@kprint/linux-x64-glibc"
+      : "@kprint/linux-arm64-glibc";
     $.logLight("Test platform:", testPlatform);
     outputDir.join("package.json").writeJsonPrettySync({
       workspaces: [
@@ -246,7 +246,7 @@ if (!args["publish-only"]) {
         // There seems to be a bug with npm workspaces where this doesn't
         // work, so for now make some assumptions and only include the package
         // that works on the CI for the current operating system
-        // ...packages.map(p => `@kjanat-dprint/${getPackageNameNoScope(p)}`),
+        // ...packages.map(p => `@kprint/${getPackageNameNoScope(p)}`),
         testPlatform,
       ],
     });
@@ -278,8 +278,8 @@ if (!args["publish-only"]) {
 if (args.publish || args["publish-only"]) {
   for (const pkg of packages) {
     const pkgName = getPackageNameNoScope(pkg);
-    $.logStep(`Publishing @kjanat-dprint/${pkgName}...`);
-    if (await checkPackagePublished(`@kjanat-dprint/${pkgName}`)) {
+    $.logStep(`Publishing @kprint/${pkgName}...`);
+    if (await checkPackagePublished(`@kprint/${pkgName}`)) {
       $.logLight("  Already published.");
       continue;
     }

@@ -22,7 +22,7 @@ export function runInstall(): string {
   const sourceExecutablePath = resolveSourceExecutablePath(target, dprintFileName);
 
   if (sourceExecutablePath == null) {
-    // the @dprint/<target> optional dependency isn't installed (for example the user ran `npm install --omit=optional`),
+    // the @kprint/<target> optional dependency isn't installed (for example the user ran `npm install --omit=optional`),
     // so download the binary directly from the registry like esbuild does
     downloadExecutable(target, dprintFileName, targetExecutablePath);
     if (os.platform() !== "win32") chmodX(targetExecutablePath);
@@ -54,14 +54,14 @@ export function runInstall(): string {
 }
 
 /**
- * Resolves the path to the executable provided by the @dprint/<target>
+ * Resolves the path to the executable provided by the @kprint/<target>
  * optional dependency, or undefined when that package isn't installed.
  */
 function resolveSourceExecutablePath(target: string, dprintFileName: string): string | undefined {
   let sourcePackagePath: string;
   try {
     sourcePackagePath = path.dirname(
-      createRequire(__filename).resolve(`@dprint/${target}/package.json`),
+      createRequire(__filename).resolve(`@kprint/${target}/package.json`),
     );
   } catch {
     // the optional dependency wasn't installed
@@ -88,10 +88,10 @@ function downloadExecutable(target: string, dprintFileName: string, destinationP
     process.env.npm_config_registry || "https://registry.npmjs.org"
   ).replace(/\/+$/, "");
   // npm tarball urls drop the scope from the file name (e.g.
-  // https://registry.npmjs.org/@dprint/win32-x64/-/win32-x64-1.0.0.tgz)
-  const tarballUrl = `${registry}/@dprint/${target}/-/${target}-${version}.tgz`;
+  // https://registry.npmjs.org/@kprint/win32-x64/-/win32-x64-1.0.0.tgz)
+  const tarballUrl = `${registry}/@kprint/${target}/-/${target}-${version}.tgz`;
   console.error(
-    `[dprint] Optional dependency @dprint/${target} was not installed. Downloading from ${tarballUrl}`,
+    `[dprint] Optional dependency @kprint/${target} was not installed. Downloading from ${tarballUrl}`,
   );
   const tarballBuffer = downloadBufferSync(tarballUrl);
   // files inside an npm tarball live under the "package/" directory
@@ -118,14 +118,14 @@ function verifyExecutableHash(target: string, buffer: Buffer): void {
   }
   if (typeof expected !== "string") {
     throw new Error(
-      `No known hash for @dprint/${target} to verify the download against.`,
+      `No known hash for @kprint/${target} to verify the download against.`,
     );
   }
   const actual = createHash("sha256").update(buffer).digest("hex");
   if (actual !== expected) {
     throw new Error(
       `\
-Integrity check failed for the downloaded @dprint/${target} binary.
+Integrity check failed for the downloaded @kprint/${target} binary.
   Expected sha256: ${expected}
   Actual sha256:   ${actual}`,
     );
