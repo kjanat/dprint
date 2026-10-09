@@ -91,7 +91,7 @@ function downloadExecutable(target: string, dprintFileName: string, destinationP
   // https://registry.npmjs.org/@kprint/win32-x64/-/win32-x64-1.0.0.tgz)
   const tarballUrl = `${registry}/@kprint/${target}/-/${target}-${version}.tgz`;
   console.error(
-    `[dprint] Optional dependency @kprint/${target} was not installed. Downloading from ${tarballUrl}`,
+    `[kprint] Optional dependency @kprint/${target} was not installed. Downloading from ${tarballUrl}`,
   );
   const tarballBuffer = downloadBufferSync(tarballUrl);
   // files inside an npm tarball live under the "package/" directory
@@ -389,18 +389,18 @@ export function replaceBinEntry(exePath: string): void {
   if (os.platform() === "win32") {
     // rewrite .cmd and .ps1 wrappers to invoke the native binary directly
     fs.writeFileSync(
-      path.join(binDir, "dprint.cmd"),
+      path.join(binDir, "kprint.cmd"),
       `@"%~dp0${relative}" %*\r\n`,
     );
     fs.writeFileSync(
-      path.join(binDir, "dprint.ps1"),
+      path.join(binDir, "kprint.ps1"),
       `& (Join-Path $PSScriptRoot "${relative.replace(/\\/g, "/")}") $args\r\nexit $LASTEXITCODE\r\n`,
     );
   } else {
     // replace symlink to point directly at the native binary
-    const binDprint = path.join(binDir, "dprint");
-    fs.unlinkSync(binDprint);
-    fs.symlinkSync(relative, binDprint);
+    const binKprint = path.join(binDir, "kprint");
+    fs.unlinkSync(binKprint);
+    fs.symlinkSync(relative, binKprint);
   }
 }
 
@@ -438,11 +438,11 @@ function isBinDirForThisPackage(binDir: string): boolean {
   try {
     if (os.platform() === "win32") {
       // verify the .cmd wrapper references our bin.cjs
-      const content = fs.readFileSync(path.join(binDir, "dprint.cmd"), "utf8");
+      const content = fs.readFileSync(path.join(binDir, "kprint.cmd"), "utf8");
       return content.includes("bin.cjs");
     } else {
       // verify the symlink points into our package directory
-      const linkTarget = fs.readlinkSync(path.join(binDir, "dprint"));
+      const linkTarget = fs.readlinkSync(path.join(binDir, "kprint"));
       const resolved = path.resolve(binDir, linkTarget);
       return resolved.endsWith("bin.cjs");
     }

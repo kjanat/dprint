@@ -109,7 +109,7 @@ const packages: Package[] = [
   },
 ];
 
-const markdownText = `# dprint
+const markdownText = `# kprint
 
 npm CLI distribution for [dprint](https://dprint.kjanat.dev)—a pluggable and configurable code formatting platform.
 `;
@@ -118,7 +118,7 @@ const currentDir = $.path(import.meta.url).parentOrThrow();
 const rootDir = currentDir.parentOrThrow().parentOrThrow();
 const outputDir = currentDir.join("./dist");
 const scopeDir = outputDir.join("@kprint");
-const dprintDir = outputDir.join("dprint");
+const dprintDir = outputDir.join("kprint");
 const version = resolveVersion();
 
 $.logStep(`Publishing ${version}...`);
@@ -134,9 +134,9 @@ if (!args["publish-only"]) {
 
   // setup dprint packages
   {
-    $.logStep(`Setting up dprint ${version}...`);
+    $.logStep(`Setting up kprint ${version}...`);
     const pkgJson = {
-      name: "@kprint/dprint",
+      name: "kprint",
       version: version,
       description: "Pluggable and configurable code formatting platform written in Rust.",
       bin: "bin.cjs",
@@ -242,7 +242,7 @@ if (!args["publish-only"]) {
     $.logLight("Test platform:", testPlatform);
     outputDir.join("package.json").writeJsonPrettySync({
       workspaces: [
-        "dprint",
+        "kprint",
         // There seems to be a bug with npm workspaces where this doesn't
         // work, so for now make some assumptions and only include the package
         // that works on the CI for the current operating system
@@ -291,7 +291,7 @@ if (args.publish || args["publish-only"]) {
     await $`cd ${pkgDir} && npm publish --provenance --access public`;
   }
 
-  $.logStep(`Publishing dprint...`);
+  $.logStep(`Publishing kprint...`);
   await $`cd ${dprintDir} && npm publish --provenance --access public`;
 }
 
