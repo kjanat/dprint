@@ -3,16 +3,34 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dprint_git::PatternList;
+use dprint_git::PatternMatch;
+
 use crate::environment::DirEntry;
 use crate::environment::DiscoveryEnvironment as Environment;
+use crate::utils::DirPrefix;
 use crate::utils::escape_glob_text;
+use crate::utils::path_to_slash_bytes;
 
-/// Lifted from the Deno code.
-/// Copyright 2018-2024 the Deno authors. MIT license.
 /// Resolved gitignore for a directory.
 pub struct DirGitIgnores {
-  current: Option<Arc<ignore::gitignore::Gitignore>>,
+  current: Option<DirPatterns>,
   parent: Option<Arc<DirGitIgnores>>,
+}
+
+/// Gitignore patterns for the entries of `dir`.
+struct DirPatterns {
+  dir: DirPrefix,
+  patterns: PatternList,
+}
+
+impl DirPatterns {
+  fn matched(&self, path: &Path, is_dir: bool) -> PatternMatch {
+    match self.dir.strip(path) {
+      Some(relative) if !relative.as_os_str().is_empty() => self.patterns.matched(&path_to_slash_bytes(relative), is_dir),
+      _ => PatternMatch::None,
+    }
+  }
 }
 
 impl DirGitIgnores {
@@ -23,21 +41,17 @@ impl DirGitIgnores {
     }
     if let Some(current) = &self.current {
       match current.matched(path, is_dir) {
-        ignore::Match::None => {}
-        ignore::Match::Ignore(_) => {
-          is_ignored = true;
-        }
-        ignore::Match::Whitelist(_) => {
-          is_ignored = false;
-        }
+        PatternMatch::None => {}
+        PatternMatch::Positive => is_ignored = true,
+        PatternMatch::Negative => is_ignored = false,
       }
     }
     is_ignored
   }
 
-  /// Resolves the gitignores for a directory's entries, given its parent's
-  /// gitignores and its listing. Files the listing shows are missing aren't
-  /// read.
+  /// Resolves the gitignores for a directory's entries from its parent's
+  /// gitignores and its listing. dprint doesn't read a file absent from the
+  /// listing.
   pub fn for_listed_dir(
     environment: &impl Environment,
     dir_path: &Path,
@@ -53,9 +67,9 @@ impl DirGitIgnores {
   }
 
   /// Adds a directory's gitignore to its parent's. A directory without one
-  /// shares its parent's, so checking a path only visits directories that
-  /// have a gitignore.
-  fn chain(current: Option<Arc<ignore::gitignore::Gitignore>>, parent: Option<Arc<DirGitIgnores>>) -> Option<Arc<DirGitIgnores>> {
+  /// shares its parent's, so checking a path only visits directories with a
+  /// gitignore.
+  fn chain(current: Option<DirPatterns>, parent: Option<Arc<DirGitIgnores>>) -> Option<Arc<DirGitIgnores>> {
     match current {
       Some(current) => Some(Arc::new(DirGitIgnores {
         current: Some(current),
@@ -96,9 +110,8 @@ fn global_gitignore_enabled(environment: &impl Environment) -> bool {
   }
 }
 
-/// Whether `.gitignore` and `.git` are present in a directory the caller has
-/// already listed. Providing this lets resolution skip file system calls for
-/// files it can already tell are absent.
+/// Whether `.gitignore` and `.git` are present in an already listed directory.
+/// With this, resolution skips file system calls for absent files.
 #[derive(Clone, Copy, Default)]
 pub struct DirEntriesHint {
   pub has_gitignore: bool,
@@ -133,15 +146,14 @@ impl DirEntriesHint {
 
 #[derive(Default, Clone)]
 pub struct GitIgnoreTreeOptions {
-  /// Paths that should override what's in the gitignore.
+  /// Paths exempt from the gitignore.
   pub include_paths: Vec<PathBuf>,
   /// Lines from git's global excludes file, applied at the repository root with
   /// the lowest precedence. Empty when global gitignore support is disabled.
   pub global_gitignore_lines: Vec<String>,
 }
 
-/// Resolves gitignores in a directory tree taking into account
-/// ancestor gitignores that may be found in a directory.
+/// Resolves gitignores in a directory tree, including ancestor gitignores.
 pub struct GitIgnoreTree<TEnvironment> {
   environment: TEnvironment,
   ignores: HashMap<PathBuf, Option<Arc<DirGitIgnores>>>,
@@ -157,8 +169,8 @@ impl<TEnvironment: Environment> GitIgnoreTree<TEnvironment> {
     }
   }
 
-  /// Resolves the gitignore for the children of a directory the caller has
-  /// already listed, passing a hint so resolution can avoid redundant reads.
+  /// Resolves the gitignore for the children of an already listed directory.
+  /// The hint lets resolution avoid redundant reads.
   pub fn get_resolved_git_ignore_for_dir_children(&mut self, dir_path: &Path, hint: DirEntriesHint) -> Option<Arc<DirGitIgnores>> {
     self.get_resolved_git_ignore_inner(dir_path, Some(hint))
   }
@@ -203,58 +215,53 @@ fn resolve_current_gitignore(
   is_repo_root: bool,
   hint: Option<DirEntriesHint>,
   options: &GitIgnoreTreeOptions,
-) -> Option<Arc<ignore::gitignore::Gitignore>> {
+) -> Option<DirPatterns> {
   // skip the read when the caller's listing already shows there's no `.gitignore`
   let maybe_has_gitignore = hint.map(|h| h.has_gitignore).unwrap_or(true);
-  let gitignore_text = if maybe_has_gitignore {
-    environment.read_file(dir_path.join(".gitignore")).ok()
+  let gitignore_bytes = if maybe_has_gitignore {
+    environment.read_file_bytes(dir_path.join(".gitignore")).ok()
   } else {
     None
   };
-  // git also reads `.git/info/exclude` at the repository root, treating it
-  // like an uncommitted `.gitignore` there (https://git-scm.com/docs/gitignore).
-  // Only the repo root can have this file, so avoid the read everywhere else.
-  let exclude_text = if is_repo_root {
-    environment.read_file(dir_path.join(".git").join("info").join("exclude")).ok()
+  // git reads `.git/info/exclude` and the global excludes file only at the
+  // repository root (https://git-scm.com/docs/gitignore)
+  let exclude_bytes = if is_repo_root {
+    environment.read_file_bytes(dir_path.join(".git").join("info").join("exclude")).ok()
   } else {
     None
   };
-  // git's global excludes file applies repository-wide, so resolve it at the
-  // repo root where it becomes the parent of every descendant directory
   let global_lines: &[String] = if is_repo_root { options.global_gitignore_lines.as_slice() } else { &[] };
-  if gitignore_text.is_none() && exclude_text.is_none() && global_lines.is_empty() {
+  if gitignore_bytes.is_none() && exclude_bytes.is_none() && global_lines.is_empty() {
     return None;
   }
 
-  let mut builder = ignore::gitignore::GitignoreBuilder::new(dir_path);
   // git's precedence is global excludes < `.git/info/exclude` < `.gitignore`,
   // and the last matching pattern wins, so add them in that order
+  let mut patterns = PatternList::new(/* ignore case */ false);
   for line in global_lines {
-    builder.add_line(None, line).ok()?;
+    patterns.add_line(line.as_bytes());
   }
-  if let Some(text) = &exclude_text {
-    for line in text.lines() {
-      builder.add_line(None, line).ok()?;
-    }
+  if let Some(bytes) = &exclude_bytes {
+    patterns.add_buffer(bytes);
   }
-  if let Some(text) = &gitignore_text {
-    for line in text.lines() {
-      builder.add_line(None, line).ok()?;
-    }
+  if let Some(bytes) = &gitignore_bytes {
+    patterns.add_buffer(bytes);
   }
   // override the gitignore contents to include these paths (escaping so a
   // path with glob characters in its name matches literally)
   for path in &options.include_paths {
     if let Ok(suffix) = path.strip_prefix(dir_path) {
       let suffix = escape_glob_text(&suffix.to_string_lossy().replace('\\', "/"));
-      let _ignore = builder.add_line(None, &format!("!/{}", suffix));
+      patterns.add_line(format!("!/{}", suffix).as_bytes());
       if !suffix.ends_with('/') {
-        let _ignore = builder.add_line(None, &format!("!/{}/", suffix));
+        patterns.add_line(format!("!/{}/", suffix).as_bytes());
       }
     }
   }
-  let gitignore = builder.build().ok()?;
-  Some(Arc::new(gitignore))
+  Some(DirPatterns {
+    dir: DirPrefix::new(dir_path.to_path_buf()),
+    patterns,
+  })
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+[package]
+name                 = "dprint-git"
+version              = "0.1.0"
+edition.workspace    = true
+repository.workspace = true
+license              = "GPL-2.0-only"
+
+[dependencies]
+anyhow = { workspace = true }
+sha1   = { workspace = true }
+sha2   = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+test-util = []

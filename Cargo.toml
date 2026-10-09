@@ -18,6 +18,7 @@ dprint-configuration  = { path = "crates/dprint-configuration", version = "=0.1.
 dprint-core           = { path = "crates/dprint-core", version = "=0.70.0", default-features = false }
 dprint-discovery      = { path = "crates/dprint-discovery", version = "=0.1.0" }
 dprint-formatting     = { path = "crates/dprint-formatting", version = "=0.1.0" }
+dprint-git            = { path = "crates/dprint-git", version = "=0.1.0" }
 dprint-host           = { path = "crates/dprint-host", version = "=0.1.0" }
 dprint-host-api       = { path = "crates/dprint-host-api", version = "=0.1.0" }
 dprint-lsp            = { path = "crates/dprint-lsp", version = "=0.1.0" }
@@ -81,6 +82,7 @@ serde.features            = ["derive"]
 serde_json.version        = "1"
 serde_json.features       = ["preserve_order"]
 serde_path_to_error       = "0.1"
+sha1                      = "0.10"
 sha2                      = "0.10"
 signal-hook               = "0.4"
 similar                   = "2"

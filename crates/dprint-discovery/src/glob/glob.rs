@@ -10,6 +10,7 @@ use crate::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::DiscoveryEnvironment as Environment;
 use crate::environment::PathKind;
+use crate::repo_index::RepoIndex;
 use crate::utils::gitignore::GitIgnoreTree;
 use crate::utils::gitignore::GitIgnoreTreeOptions;
 use crate::utils::gitignore::resolve_global_gitignore_lines;
@@ -116,6 +117,8 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
 
   let discover_configs = opts.config_discovery.traverse_descendants();
   let mut config_file_finder = DirConfigFileFinder::new(environment, opts.current_config_path.clone());
+  let index = git_ignore_options.as_ref().and_then(|_| RepoIndex::load(environment, &opts.start_dir));
+  let mut start_dir_gitignored = false;
 
   // check the directories between the pattern base and the start directory the
   // same way a traversal descending from the pattern base would so matching
@@ -130,13 +133,15 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
   // doesn't run because the start directory is the pattern base.
   if run_traversal && opts.start_dir != opts.pattern_base.as_ref() && opts.start_dir.starts_with(opts.pattern_base.as_ref()) {
     match check_dir_chain(
+      environment,
       &glob_matcher,
       &mut git_ignore_tree,
+      index.as_deref(),
       discover_configs.then_some(&mut config_file_finder),
       opts.pattern_base.as_ref(),
       &opts.start_dir,
     ) {
-      DirChainResult::Matched => {}
+      DirChainResult::Matched { gitignored } => start_dir_gitignored = gitignored,
       DirChainResult::Excluded => {
         log_debug!(environment, "Skipping traversal because the start directory is excluded.");
         run_traversal = false;
@@ -151,8 +156,8 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
   }
 
   // match the literal file paths (a gitignored file is still matched when
-  // explicitly specified, but not when one of its ancestor directories is
-  // gitignored because a traversal wouldn't descend into the directory)
+  // explicitly specified, but not an untracked file in a gitignored directory
+  // because a traversal wouldn't find it)
   for file_path in literal_arg_paths.file_paths {
     if run_traversal && file_path.starts_with(&opts.start_dir) {
       continue; // the traversal will find this file
@@ -165,13 +170,19 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
       && parent.starts_with(opts.pattern_base.as_ref())
     {
       match check_dir_chain(
+        environment,
         &glob_matcher,
         &mut git_ignore_tree,
+        index.as_deref(),
         discover_configs.then_some(&mut config_file_finder),
         opts.pattern_base.as_ref(),
         parent,
       ) {
-        DirChainResult::Matched => {}
+        DirChainResult::Matched { gitignored } => {
+          if gitignored && !index.as_ref().is_some_and(|index| index.contains_file(&file_path)) {
+            continue;
+          }
+        }
         DirChainResult::Excluded => continue,
         DirChainResult::HasConfigFile(config_file) => {
           push_dedup_config_file(&mut output.config_files, config_file);
@@ -192,6 +203,8 @@ pub fn glob(environment: &impl Environment, mut opts: GlobOptions) -> Result<Glo
         git_ignore_tree.as_mut().and_then(|tree| tree.get_resolved_git_ignore_for_file(&opts.start_dir))
       },
       options,
+      index,
+      start_dir_gitignored,
     });
     let results = scan_dir(
       environment,
@@ -510,9 +523,11 @@ fn expand_start_dir_for_arg_patterns(mut start_dir: PathBuf, file_patterns: &Glo
 }
 
 enum DirChainResult {
-  /// Nothing along the chain prevents matching within the directory.
-  Matched,
-  /// A directory along the chain is excluded or gitignored.
+  /// Nothing along the chain prevents matching within the directory. In a
+  /// gitignored directory, only tracked paths match.
+  Matched { gitignored: bool },
+  /// A directory along the chain is excluded, or gitignored without tracked
+  /// paths.
   Excluded,
   /// A directory along the chain has its own config file, so the sub scope
   /// created for that config file handles everything within it.
@@ -523,35 +538,52 @@ enum DirChainResult {
 /// provided directory (inclusive) top down the same way a traversal
 /// descending into them would.
 fn check_dir_chain<TEnvironment: Environment>(
+  environment: &TEnvironment,
   glob_matcher: &GlobMatcher,
   git_ignore_tree: &mut Option<GitIgnoreTree<TEnvironment>>,
+  index: Option<&RepoIndex>,
   mut config_file_finder: Option<&mut DirConfigFileFinder<'_, TEnvironment>>,
   base_dir: &Path,
   dir: &Path,
 ) -> DirChainResult {
+  let mut gitignored = false;
   for dir in dirs_from_base_to(base_dir, dir) {
     if dir.file_name().is_some_and(|f| f == ".git") {
       return DirChainResult::Excluded;
     }
     match glob_matcher.is_dir_ignored(dir) {
       ExcludeMatchDetail::Excluded => return DirChainResult::Excluded,
-      ExcludeMatchDetail::OptedOutExclude => {}
+      ExcludeMatchDetail::OptedOutExclude => gitignored = false,
       ExcludeMatchDetail::NotExcluded => {
-        if let Some(tree) = git_ignore_tree.as_mut()
+        if environment.path_exists(dir.join(".git")) {
+          gitignored = false;
+        } else if !gitignored
+          && let Some(tree) = git_ignore_tree.as_mut()
           && let Some(gitignore) = tree.get_resolved_git_ignore_for_file(dir)
-          && gitignore.is_ignored(dir, /* is dir */ true)
         {
-          return DirChainResult::Excluded;
+          gitignored = gitignore.is_ignored(dir, /* is dir */ true);
         }
       }
     }
-    if let Some(finder) = config_file_finder.as_deref_mut()
-      && let Some(config_file) = finder.find(dir)
-    {
-      return DirChainResult::HasConfigFile(config_file);
+    if gitignored && !index.is_some_and(|index| index.contains_dir(dir)) {
+      return DirChainResult::Excluded;
+    }
+    if let Some(finder) = config_file_finder.as_deref_mut() {
+      for config_file in finder.find(dir) {
+        let is_tracked = index.is_some_and(|index| index.contains_file(&config_file));
+        let is_ignored = gitignored
+          || git_ignore_tree
+            .as_mut()
+            .and_then(|tree| tree.get_resolved_git_ignore_for_file(&config_file))
+            .is_some_and(|gitignore| gitignore.is_ignored(&config_file, /* is dir */ false));
+        // git doesn't see an untracked, gitignored config file
+        if is_tracked || !is_ignored {
+          return DirChainResult::HasConfigFile(config_file);
+        }
+      }
     }
   }
-  DirChainResult::Matched
+  DirChainResult::Matched { gitignored }
 }
 
 /// Gets the directories between the base directory (exclusive) and the
@@ -575,7 +607,7 @@ fn push_dedup_config_file(config_files: &mut Vec<PathBuf>, config_file: PathBuf)
 struct DirConfigFileFinder<'a, TEnvironment: Environment> {
   environment: &'a TEnvironment,
   current_config_path: Option<PathBuf>,
-  cache: HashMap<PathBuf, Option<PathBuf>>,
+  cache: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
@@ -587,7 +619,8 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
     }
   }
 
-  pub fn find(&mut self, dir: &Path) -> Option<PathBuf> {
+  /// The config files in `dir`, in order of preference.
+  pub fn find(&mut self, dir: &Path) -> Vec<PathBuf> {
     if let Some(result) = self.cache.get(dir) {
       return result.clone();
     }
@@ -596,7 +629,8 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
       .map(|file_name| dir.join(file_name))
       // the config file already in use doesn't create a new scope
       .filter(|path| Some(path.as_path()) != self.current_config_path.as_deref())
-      .find(|path| self.environment.path_is_file(path));
+      .filter(|path| self.environment.path_is_file(path))
+      .collect::<Vec<_>>();
     self.cache.insert(dir.to_path_buf(), result.clone());
     result
   }
@@ -608,6 +642,7 @@ mod test {
   use pretty_assertions::assert_eq;
 
   use super::*;
+  use crate::environment::TestEnvironment;
   use crate::environment::TestEnvironmentBuilder;
   use crate::utils::GlobPattern;
 
@@ -1390,6 +1425,106 @@ mod test {
     let mut result = result.file_paths.into_iter().map(|r| r.to_string_lossy().to_string()).collect::<Vec<_>>();
     result.sort();
     assert_eq!(result, vec!["/dir/b/b.txt"]);
+  }
+
+  fn tracked_ignored_environment() -> TestEnvironment {
+    let entries = ["cfg/dprint.json", "ignored/kept.txt", "ignored/sub/deep.txt", "tracked.log"].map(dprint_git::test_util::TestEntry::file);
+    TestEnvironmentBuilder::new()
+      .write_file("/.git/index", dprint_git::test_util::write_index(2, 20, &entries, &[]))
+      .write_file("/.gitignore", "ignored/\n*.log\n/cfg/dprint.json\n/nocfg/dprint.json\n")
+      .write_file("/a.txt", "")
+      .write_file("/tracked.log", "")
+      .write_file("/new.log", "")
+      .write_file("/ignored/kept.txt", "")
+      .write_file("/ignored/new.txt", "")
+      .write_file("/ignored/sub/deep.txt", "")
+      .write_file("/ignored/sub/other.txt", "")
+      .write_file("/ignored/untracked/x.txt", "")
+      .write_file("/cfg/dprint.json", "{}")
+      .write_file("/cfg/b.txt", "")
+      .write_file("/nocfg/dprint.json", "{}")
+      .write_file("/nocfg/c.txt", "")
+      .build()
+  }
+
+  fn glob_tracked_ignored(environment: &TestEnvironment, start_dir: &str, arg_includes: Option<&[&str]>) -> (Vec<String>, Vec<String>) {
+    let root_dir = environment.canonicalize("/").unwrap();
+    let result = glob(
+      environment,
+      GlobOptions {
+        current_config_path: None,
+        start_dir: PathBuf::from(start_dir),
+        config_discovery: ConfigDiscovery::Default,
+        file_patterns: GlobPatterns {
+          shebangs: Vec::new(),
+          arg_includes: arg_includes.map(|paths| paths.iter().map(|path| GlobPattern::new(path.to_string(), root_dir.clone())).collect()),
+          config_includes: Some(vec![GlobPattern::new("**/*.{txt,log}".to_string(), root_dir)]),
+          arg_excludes: None,
+          config_excludes: Vec::new(),
+        },
+        pattern_base: CanonicalizedPathBuf::new_for_testing("/"),
+        no_gitignore: false,
+      },
+    )
+    .unwrap();
+    let to_strings = |paths: Vec<PathBuf>| {
+      let mut paths = paths.into_iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>();
+      paths.sort();
+      paths
+    };
+    (to_strings(result.file_paths), to_strings(result.config_files))
+  }
+
+  #[tokio::test]
+  async fn should_match_tracked_files_like_git() {
+    let environment = tracked_ignored_environment();
+    assert_eq!(
+      glob_tracked_ignored(&environment, "/", None),
+      (
+        vec![
+          "/a.txt".to_string(),
+          "/ignored/kept.txt".to_string(),
+          "/ignored/sub/deep.txt".to_string(),
+          "/nocfg/c.txt".to_string(),
+          "/tracked.log".to_string(),
+        ],
+        vec!["/cfg/dprint.json".to_string()],
+      )
+    );
+  }
+
+  #[tokio::test]
+  async fn should_match_tracked_files_below_a_gitignored_start_dir() {
+    let environment = tracked_ignored_environment();
+    assert_eq!(
+      glob_tracked_ignored(&environment, "/ignored", None),
+      (vec!["/ignored/kept.txt".to_string(), "/ignored/sub/deep.txt".to_string()], Vec::new())
+    );
+    assert_eq!(glob_tracked_ignored(&environment, "/ignored/untracked", None), (Vec::new(), Vec::new()));
+    assert_eq!(
+      glob_tracked_ignored(&environment, "/nocfg", None),
+      (vec!["/nocfg/c.txt".to_string()], Vec::new())
+    );
+    assert_eq!(
+      glob_tracked_ignored(&environment, "/cfg", None),
+      (Vec::new(), vec!["/cfg/dprint.json".to_string()])
+    );
+  }
+
+  #[tokio::test]
+  async fn should_match_literal_paths_in_a_gitignored_dir_when_tracked() {
+    let environment = tracked_ignored_environment();
+    assert_eq!(
+      glob_tracked_ignored(
+        &environment,
+        "/",
+        Some(&["./ignored/kept.txt", "./ignored/new.txt", "./ignored/sub/other.txt", "./new.log", "./cfg/b.txt"])
+      ),
+      (
+        vec!["/ignored/kept.txt".to_string(), "/new.log".to_string()],
+        vec!["/cfg/dprint.json".to_string()],
+      )
+    );
   }
 
   #[test]

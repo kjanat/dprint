@@ -136,6 +136,8 @@ impl Write for TestPipeWriter {
 }
 
 type RunCommandResult = (Vec<OsString>, io::Result<Option<i32>>);
+/// A git IPC request's socket path and message.
+type GitIpcRequest = (PathBuf, Vec<u8>);
 
 #[derive(Clone)]
 pub struct TestEnvironment {
@@ -144,6 +146,8 @@ pub struct TestEnvironment {
   staged_files: Arc<Mutex<Vec<PathBuf>>>,
   dirty_files: Arc<Mutex<Vec<PathBuf>>>,
   global_gitignore_path: Arc<Mutex<Option<PathBuf>>>,
+  git_ipc_responses: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
+  git_ipc_requests: Arc<Mutex<Vec<GitIpcRequest>>>,
   stdout_messages: Arc<Mutex<Vec<String>>>,
   stderr_messages: Arc<Mutex<Vec<String>>>,
   remote_files: Arc<Mutex<HashMap<String, Result<Vec<u8>>>>>,
@@ -203,6 +207,8 @@ impl TestEnvironment {
       staged_files: Default::default(),
       dirty_files: Default::default(),
       global_gitignore_path: Default::default(),
+      git_ipc_responses: Default::default(),
+      git_ipc_requests: Default::default(),
       stdout_messages: Default::default(),
       stderr_messages: Default::default(),
       remote_files: Default::default(),
@@ -428,6 +434,12 @@ impl TestEnvironment {
   }
   pub fn set_global_gitignore_path(&self, path: impl AsRef<Path>) {
     *self.global_gitignore_path.lock() = Some(path.as_ref().to_path_buf());
+  }
+  pub fn set_git_ipc_response(&self, socket_path: impl AsRef<Path>, response: impl Into<Vec<u8>>) {
+    self.git_ipc_responses.lock().insert(socket_path.as_ref().to_path_buf(), response.into());
+  }
+  pub fn take_git_ipc_requests(&self) -> Vec<GitIpcRequest> {
+    std::mem::take(&mut *self.git_ipc_requests.lock())
   }
   pub fn set_dir_info_error(&self, err: io::Error) {
     *self.dir_info_error.lock() = Some(err);
@@ -847,6 +859,16 @@ impl dprint_platform::environment::VcsEnvironment for TestEnvironment {
 
   fn global_gitignore_path(&self) -> Option<PathBuf> {
     self.global_gitignore_path.lock().clone()
+  }
+
+  fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
+    self.git_ipc_requests.lock().push((socket_path.to_path_buf(), message.to_vec()));
+    self
+      .git_ipc_responses
+      .lock()
+      .get(socket_path)
+      .cloned()
+      .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no git IPC server at {}", socket_path.display())))
   }
 }
 

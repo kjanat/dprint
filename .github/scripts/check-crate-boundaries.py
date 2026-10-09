@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Check ownership and dependency direction without building the CLI."""
 from pathlib import Path
-import tomllib
+
+import tomllib  # ty: ignore[unresolved-import]  # pyright: ignore[reportMissingImports]
 
 ROOT = Path(__file__).resolve().parents[2]
+DPRINT_CRATES = {path.parent.name for path in (ROOT / "crates").glob("*/Cargo.toml")}
 FORBIDDEN = {
+    "dprint-git": DPRINT_CRATES - {"dprint-git"},
     "dprint-configuration": {"dprint-formatting", "dprint-plugin-types", "dprint-async-runtime"},
     "dprint-formatting": {"dprint-configuration", "dprint-plugin-types", "dprint-async-runtime"},
     "dprint-host-api": {"dprint-config", "dprint-platform", "dprint-discovery", "dprint-plugin-host", "dprint-host", "dprint-lsp"},
@@ -31,7 +34,7 @@ for manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
                 package = spec.get("package", alias) if isinstance(spec, dict) else alias
                 if package in blocked:
                     errors.append(f"{name}: {kind} cannot depend on {package}")
-                if name == "dprint-test-support" and package in {"dprint-plugin-host", "dprint-config"}:
+                if name == "dprint-test-support" and package in {"dprint-plugin-host", "dprint-config"}:  # ruff: ignore[collapsible-if]
                     if not isinstance(spec, dict) or not spec.get("optional"):
                         errors.append(f"{name}: {package} must be optional for lightweight fixtures")
     for source in (manifest.parent / "src").rglob("*.rs"):

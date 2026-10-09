@@ -14,3 +14,4 @@ target
 /crates/test-plugin/Cargo.lock
 /deployment/npm/dist
 /*.fsql
+/crates/*/temp/

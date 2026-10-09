@@ -6,6 +6,7 @@ repository.workspace = true
 license.workspace    = true
 
 [dependencies]
+dprint-git      = { workspace = true }
 dprint-host-api = { workspace = true }
 dprint-platform = { workspace = true }
 
@@ -16,6 +17,7 @@ parking_lot = { workspace = true }
 tokio       = { workspace = true, features = ["io-std"] }
 
 [dev-dependencies]
+dprint-git                  = { workspace = true, features = ["test-util"] }
 dprint-test-support         = { workspace = true }
 path-clean.workspace        = true
 pretty_assertions.workspace = true

@@ -43,6 +43,8 @@ use tree_fucker::ScanPolicy;
 
 use crate::POSSIBLE_CONFIG_FILE_NAMES;
 use crate::environment::DiscoveryEnvironment as Environment;
+use crate::repo_index::IndexDir;
+use crate::repo_index::RepoIndex;
 use crate::utils::gitignore::DirEntriesHint;
 use crate::utils::gitignore::DirGitIgnores;
 use crate::utils::gitignore::GitIgnoreTreeOptions;
@@ -50,6 +52,7 @@ use crate::utils::gitignore::GitIgnoreTreeOptions;
 use super::ExcludeMatchDetail;
 use super::GlobMatcher;
 use super::GlobMatchesDetail;
+use super::path_to_slash_bytes;
 
 pub struct DirScanOptions {
   /// Directory to walk.
@@ -68,6 +71,11 @@ pub struct DirScanGitIgnore {
   /// Gitignores from the directories above the start directory.
   pub above_start_dir: Option<Arc<DirGitIgnores>>,
   pub options: GitIgnoreTreeOptions,
+  /// The index of the start directory's repository. A start directory with its
+  /// own `.git` loads its own.
+  pub index: Option<Arc<RepoIndex>>,
+  /// The start directory is inside a gitignored directory.
+  pub start_dir_gitignored: bool,
 }
 
 #[derive(Debug, Default)]
@@ -81,8 +89,18 @@ pub struct DirScanOutput {
   pub config_files: Vec<PathBuf>,
 }
 
-/// Walks `options.start_dir` and returns the files to format.
+/// Finds the files to format in [`options.start_dir`][`DirScanOptions::start_dir`], from git's index when it
+/// can and by walking the directory otherwise.
 pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: DirScanOptions) -> Result<DirScanOutput> {
+  #[cfg(unix)]
+  if let Some(output) = crate::git_index::scan_with_git_index(environment, &options)? {
+    return Ok(output);
+  }
+  walk_dir(environment, options)
+}
+
+/// Walks [`options.start_dir`][`DirScanOptions::start_dir`] and returns the files to format.
+pub fn walk_dir<TEnvironment: Environment>(environment: &TEnvironment, options: DirScanOptions) -> Result<DirScanOutput> {
   scan_dir_with_file_system(environment, options, environment.scan_file_system())
 }
 
@@ -177,14 +195,45 @@ struct DirContext {
   dir: PathBuf,
   /// Gitignores that apply to entries of `dir`.
   gitignore: Option<Arc<DirGitIgnores>>,
+  /// `dir` is gitignored. Only its tracked entries count.
+  gitignored: bool,
+  index: Option<Arc<RepoIndex>>,
+  /// The index entries below `dir`.
+  index_dir: Option<IndexDir>,
   /// `dir` has its own config file. Its contents belong to that config's
   /// scope, so the scan skips them.
   has_config_file: bool,
 }
 
 impl DirContext {
+  /// Whether git ignores an entry of `dir`. Git looks the path up in the index
+  /// first and checks the gitignore only for untracked paths.
   fn is_gitignored(&self, path: &Path, is_dir: bool) -> bool {
-    self.gitignore.as_ref().is_some_and(|gitignore| gitignore.is_ignored(path, is_dir))
+    !self.is_tracked(path, is_dir) && (self.gitignored || self.gitignore.as_ref().is_some_and(|gitignore| gitignore.is_ignored(path, is_dir)))
+  }
+
+  /// Whether git tracks an entry of `dir`.
+  fn is_tracked(&self, path: &Path, is_dir: bool) -> bool {
+    let (Some(index), Some(index_dir), Some(name)) = (&self.index, &self.index_dir, path.file_name()) else {
+      return false;
+    };
+    let name = path_to_slash_bytes(Path::new(name));
+    if is_dir {
+      index.contains_dir_in(index_dir, &name)
+    } else {
+      index.contains_file_in(index_dir, &name)
+    }
+  }
+
+  /// Whether `dir` is gitignored, given its parent's context.
+  fn child_dir_gitignored(&self, dir: &Path, matcher: &GlobMatcher) -> bool {
+    match matcher.is_dir_ignored(dir) {
+      // an explicitly opted out exclude takes precedence over the gitignore
+      ExcludeMatchDetail::OptedOutExclude => false,
+      ExcludeMatchDetail::Excluded | ExcludeMatchDetail::NotExcluded => {
+        self.gitignored || self.gitignore.as_ref().is_some_and(|gitignore| gitignore.is_ignored(dir, /* is dir */ true))
+      }
+    }
   }
 }
 
@@ -201,8 +250,9 @@ impl<TEnvironment: Environment> DiscoveryPolicy<TEnvironment> {
     PolicyContext::new(0, context)
   }
 
-  /// Returns the config file in `dir` that starts a new scope, if any.
-  fn config_file(&self, dir: &Path, listing: &DirectoryListing) -> Option<PathBuf> {
+  /// Returns the config file in `dir` that starts a new scope, if any. A
+  /// gitignored config file only counts when git tracks it.
+  fn config_file(&self, context: &DirContext, listing: &DirectoryListing) -> Option<PathBuf> {
     POSSIBLE_CONFIG_FILE_NAMES
       .iter()
       .filter(|file_name| {
@@ -211,9 +261,10 @@ impl<TEnvironment: Environment> DiscoveryPolicy<TEnvironment> {
           .iter()
           .any(|entry| entry.info.kind == ObservedKind::Resolved(EntryKind::File) && entry.name == **file_name)
       })
-      .map(|file_name| self.environment.dir_entry_path(dir, file_name.as_ref()))
+      .map(|file_name| self.environment.dir_entry_path(&context.dir, file_name.as_ref()))
       // the config file in use doesn't start a new scope
-      .find(|path| Some(path) != self.options.current_config_path.as_ref())
+      .filter(|path| Some(path) != self.options.current_config_path.as_ref())
+      .find(|path| !context.is_gitignored(path, /* is dir */ false))
   }
 }
 
@@ -234,9 +285,15 @@ impl<TEnvironment: Environment> ScanPolicy for DiscoveryPolicy<TEnvironment> {
 
   fn root_context(&self, _root: &EntryInfo) -> PolicyContext {
     let start_dir = &self.options.start_dir;
+    let gitignore = self.options.gitignore.as_ref();
+    let dir = start_dir.parent().unwrap_or(start_dir).to_path_buf();
+    let index = gitignore.and_then(|gitignore| gitignore.index.clone());
     self.context(DirContext {
-      dir: start_dir.parent().unwrap_or(start_dir).to_path_buf(),
-      gitignore: self.options.gitignore.as_ref().and_then(|gitignore| gitignore.above_start_dir.clone()),
+      index_dir: index.as_ref().and_then(|index| index.dir(&dir)),
+      dir,
+      gitignore: gitignore.and_then(|gitignore| gitignore.above_start_dir.clone()),
+      gitignored: gitignore.is_some_and(|gitignore| gitignore.start_dir_gitignored),
+      index,
       has_config_file: false,
     })
   }
@@ -254,53 +311,71 @@ impl<TEnvironment: Environment> ScanPolicy for DiscoveryPolicy<TEnvironment> {
       return ScanDecision::Excluded;
     }
     let dir_path = self.environment.dir_entry_path(&parent.dir, name);
-    match self.options.matcher.is_dir_ignored(&dir_path) {
-      ExcludeMatchDetail::Excluded => ScanDecision::Excluded,
-      // an explicitly opted out exclude takes precedence over the gitignore
-      ExcludeMatchDetail::OptedOutExclude => DESCEND,
-      ExcludeMatchDetail::NotExcluded if parent.is_gitignored(&dir_path, /* is dir */ true) => ScanDecision::Excluded,
-      ExcludeMatchDetail::NotExcluded => DESCEND,
+    if self.options.matcher.is_dir_ignored(&dir_path) == ExcludeMatchDetail::Excluded {
+      return ScanDecision::Excluded;
     }
+    // a gitignored directory only matters for the tracked paths in it
+    if parent.child_dir_gitignored(&dir_path, &self.options.matcher) && !parent.is_tracked(&dir_path, /* is dir */ true) {
+      return ScanDecision::Excluded;
+    }
+    DESCEND
   }
 
   /// Picks the files to format from a fresh listing and returns the context
   /// for classifying its subdirectories.
   fn child_context(&self, parent: &PolicyContext, path: &RelativePath, listing: &DirectoryListing) -> PolicyContext {
+    let parent = dir_context(parent);
     let dir = match path.file_name() {
-      Some(name) => self.environment.dir_entry_path(&dir_context(parent).dir, name),
+      Some(name) => self.environment.dir_entry_path(&parent.dir, name),
       None => self.options.start_dir.clone(),
     };
+    let mut hint = DirEntriesHint::default();
+    for entry in &listing.entries {
+      // `.git` is usually a directory but a file in worktrees; symlinks to
+      // either are ignored
+      if matches!(entry.info.kind, ObservedKind::Resolved(EntryKind::File | EntryKind::Directory)) {
+        hint.has_gitignore |= entry.name == ".gitignore";
+        hint.has_git |= entry.name == ".git";
+      }
+    }
+    // a repository root starts over with its own gitignores and index
+    let (gitignored, index) = if path.is_root() {
+      let index = match &parent.index {
+        None if hint.has_git && self.options.gitignore.is_some() => RepoIndex::load(&self.environment, &dir),
+        index => index.clone(),
+      };
+      (parent.gitignored && !hint.has_git, index)
+    } else if hint.has_git && self.options.gitignore.is_some() {
+      (false, RepoIndex::load(&self.environment, &dir))
+    } else {
+      (parent.child_dir_gitignored(&dir, &self.options.matcher), parent.index.clone())
+    };
+    let gitignore = match &self.options.gitignore {
+      Some(gitignore) if !gitignored => DirGitIgnores::for_listed_dir(&self.environment, &dir, hint, parent.gitignore.as_ref(), &gitignore.options),
+      _ => None,
+    };
+    let context = DirContext {
+      index_dir: index.as_ref().and_then(|index| index.dir(&dir)),
+      dir,
+      gitignore,
+      gitignored,
+      index,
+      has_config_file: false,
+    };
+
     // skip the start directory: it holds the config in use, or it's below that
     // config's directory, and a config file there must not take over the scan
     if self.options.discover_configs
       && !path.is_root()
-      && let Some(config_file) = self.config_file(&dir, listing)
+      && let Some(config_file) = self.config_file(&context, listing)
     {
       self.found.lock().config_files.push(config_file);
       return self.context(DirContext {
-        dir,
         gitignore: None,
         has_config_file: true,
+        ..context
       });
     }
-
-    let gitignore = self.options.gitignore.as_ref().and_then(|gitignore| {
-      let mut hint = DirEntriesHint::default();
-      for entry in &listing.entries {
-        // `.git` is usually a directory but a file in worktrees; symlinks to
-        // either are ignored
-        if matches!(entry.info.kind, ObservedKind::Resolved(EntryKind::File | EntryKind::Directory)) {
-          hint.has_gitignore |= entry.name == ".gitignore";
-          hint.has_git |= entry.name == ".git";
-        }
-      }
-      DirGitIgnores::for_listed_dir(&self.environment, &dir, hint, dir_context(parent).gitignore.as_ref(), &gitignore.options)
-    });
-    let context = DirContext {
-      dir,
-      gitignore,
-      has_config_file: false,
-    };
 
     let mut file_paths = Vec::new();
     for entry in &listing.entries {

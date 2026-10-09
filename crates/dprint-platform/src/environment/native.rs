@@ -444,6 +444,32 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
   fn global_gitignore_path(&self) -> Option<PathBuf> {
     CACHED_GLOBAL_GITIGNORE_PATH.get_or_init(|| self.resolve_global_gitignore_path()).clone()
   }
+
+  fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
+    log_debug!(self, "Sending git IPC request to {}", socket_path.display());
+    git_ipc_request(socket_path, message)
+  }
+}
+
+/// The longest a git IPC server may take to answer before dprint gives up on
+/// it. The fsmonitor daemon waits for its own cookie file before answering.
+const GIT_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(unix)]
+fn git_ipc_request(socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
+  let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
+  stream.set_read_timeout(Some(GIT_IPC_TIMEOUT))?;
+  stream.set_write_timeout(Some(GIT_IPC_TIMEOUT))?;
+  dprint_git::write_pkt_line_message(&mut stream, message)?;
+  dprint_git::read_pkt_line_message(&mut stream)
+}
+
+#[cfg(not(unix))]
+fn git_ipc_request(_socket_path: &Path, _message: &[u8]) -> io::Result<Vec<u8>> {
+  Err(io::Error::new(
+    io::ErrorKind::Unsupported,
+    "git IPC is only implemented for Unix domain sockets",
+  ))
 }
 
 impl<S: NativeServices> crate::environment::DirectoriesEnvironment for NativeEnvironment<S> {
@@ -690,6 +716,31 @@ mod test {
       result.unwrap().to_string(),
       "The DPRINT_CACHE_DIR environment variable must specify an absolute path."
     );
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn sends_git_ipc_requests_over_a_unix_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("fsmonitor--daemon.ipc");
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let server = std::thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      let request = dprint_git::read_pkt_line_message(&mut stream).unwrap();
+      dprint_git::write_pkt_line_message(&mut stream, b"builtin:1:3\0a.txt\0dir/\0").unwrap();
+      request
+    });
+    let response = git_ipc_request(&socket_path, b"builtin:1:2").unwrap();
+    assert_eq!(response, b"builtin:1:3\0a.txt\0dir/\0");
+    assert_eq!(server.join().unwrap(), b"builtin:1:2");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn errors_when_no_git_ipc_server_listens() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = git_ipc_request(&dir.path().join("fsmonitor--daemon.ipc"), b"builtin:1:2").unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::NotFound);
   }
 }
 

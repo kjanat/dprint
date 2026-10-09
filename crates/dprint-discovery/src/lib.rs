@@ -1,7 +1,11 @@
 #[macro_use]
 extern crate dprint_platform;
+#[cfg(unix)]
+mod git_index;
+mod git_repo;
 mod gitignore;
 mod glob;
+mod repo_index;
 
 mod config_patterns;
 pub use config_patterns::*;

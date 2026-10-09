@@ -298,6 +298,9 @@ pub trait VcsEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   /// path is not guaranteed to exist; the caller handles a missing file when
   /// reading it. Returns `None` only when no path can be resolved at all.
   fn global_gitignore_path(&self) -> Option<PathBuf>;
+  /// Sends `message` to the git Simple IPC server at `socket_path` and returns
+  /// the response.
+  fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>>;
 }
 
 pub trait OutputEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {

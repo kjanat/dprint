@@ -3,20 +3,19 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-use anyhow::Context;
 use anyhow::Result;
-use ignore::Match;
-use ignore::gitignore::Gitignore;
-use ignore::gitignore::GitignoreBuilder;
-use ignore::overrides::Override;
-use ignore::overrides::OverrideBuilder;
+use dprint_git::PatternList;
+use dprint_git::PatternMatch;
 
 use crate::environment::CanonicalizedPathBuf;
 
+use super::DirPrefix;
 use super::GlobPattern;
 use super::GlobPatternKind;
 use super::GlobPatterns;
+use super::add_glob_line;
 use super::is_pattern;
+use super::path_to_slash_bytes;
 use super::unescape_glob_text;
 
 pub struct GlobMatcherOptions {
@@ -45,6 +44,7 @@ pub enum ExcludeMatchDetail {
 
 pub struct GlobMatcher {
   base_dir: CanonicalizedPathBuf,
+  base_prefix: DirPrefix,
   config_include_matcher: Option<IncludeMatcher>,
   arg_include_matcher: Option<ArgIncludeMatcher>,
   config_exclude_matcher: ExcludeMatcher,
@@ -99,12 +99,13 @@ impl GlobMatcher {
         }),
         None => None,
       },
-      config_exclude_matcher: build_exclude_matcher(&config_excludes, opts, &base_dir)?,
+      config_exclude_matcher: build_exclude_matcher(&config_excludes, opts)?,
       arg_exclude_matcher: match arg_excludes {
-        Some(excludes) => Some(build_exclude_matcher(&excludes, opts, &base_dir)?),
+        Some(excludes) => Some(build_exclude_matcher(&excludes, opts)?),
         None => None,
       },
       include_extensionless_files: !patterns.shebangs.is_empty(),
+      base_prefix: DirPrefix::new(base_dir.clone().into_path_buf()),
       base_dir,
     })
   }
@@ -124,42 +125,45 @@ impl GlobMatcher {
     self.matches_detail_inner(path.as_ref(), self.include_extensionless_files)
   }
 
-  /// Like `matches_detail`, but for a file whose first line was already checked
-  /// against the configured shebangs, so an extensionless file is only matched
-  /// regardless of the includes when it has a matching shebang.
+  /// Like `matches_detail`, for a file with an already checked first line. An
+  /// extensionless file then matches regardless of the includes only with a
+  /// matching shebang.
   pub fn matches_detail_with_shebang_checked(&self, path: impl AsRef<Path>, has_matching_shebang: bool) -> GlobMatchesDetail {
     self.matches_detail_inner(path.as_ref(), self.include_extensionless_files && has_matching_shebang)
   }
 
   fn matches_detail_inner(&self, path: &Path, include_extensionless: bool) -> GlobMatchesDetail {
+    let absolute;
     let path = if path.is_absolute() {
-      Cow::Borrowed(path)
-    } else {
-      Cow::Owned(self.base_dir.join(path))
-    };
-    let path = if let Ok(prefix) = path.strip_prefix(&self.base_dir) {
-      Cow::Borrowed(prefix)
-    } else {
       path
+    } else {
+      absolute = self.base_dir.join(path);
+      &absolute
     };
+    let path = self.base_prefix.strip(path).unwrap_or(path);
 
-    let matched_result = match self.check_exclude(&path, false) {
+    let matched_result = match self.check_exclude(path, false) {
       ExcludeMatchDetail::Excluded => return GlobMatchesDetail::Excluded,
       ExcludeMatchDetail::OptedOutExclude => GlobMatchesDetail::MatchedOptedOutExclude,
       ExcludeMatchDetail::NotExcluded => GlobMatchesDetail::Matched,
     };
 
-    if self.arg_include_matcher.as_ref().map(|m| m.include.is_match(&path)).unwrap_or(true)
+    if self.arg_include_matcher.as_ref().map(|m| m.include.is_match(path)).unwrap_or(true)
       && self
         .config_include_matcher
         .as_ref()
-        .map(|m| m.is_match_or_extensionless(&path, include_extensionless))
+        .map(|m| m.is_match_or_extensionless(path, include_extensionless))
         .unwrap_or(true)
     {
       matched_result
     } else {
       GlobMatchesDetail::NotMatched
     }
+  }
+
+  /// Whether an exclude pattern can opt a path out of gitignore exclusion.
+  pub fn has_opted_out_excludes(&self) -> bool {
+    self.config_exclude_matcher.patterns.negative_count() > 0 || self.arg_exclude_matcher.as_ref().is_some_and(|matcher| matcher.patterns.negative_count() > 0)
   }
 
   pub fn check_exclude(&self, path: &Path, is_dir: bool) -> ExcludeMatchDetail {
@@ -176,7 +180,7 @@ impl GlobMatcher {
 
   pub fn is_dir_ignored(&self, path: impl AsRef<Path>) -> ExcludeMatchDetail {
     let path = path.as_ref();
-    if path.starts_with(&self.base_dir) {
+    if let Some(relative) = self.base_prefix.strip(path) {
       if let Some(include) = &self.arg_include_matcher {
         let has_any_dir = include.includes.iter().any(|base_pattern| base_pattern.matches_dir_for_traversal(path));
         if !has_any_dir {
@@ -184,8 +188,7 @@ impl GlobMatcher {
         }
       }
 
-      let path = path.strip_prefix(&self.base_dir).unwrap();
-      self.check_exclude(path, true)
+      self.check_exclude(relative, true)
     } else if self.base_dir.as_ref().starts_with(path) {
       // an ancestor of the base directory (ex. the config directory when
       // override args cause the base to be a deeper cwd) can't match any
@@ -205,20 +208,18 @@ struct ArgIncludeMatcher {
   includes: Vec<GlobPattern>,
 }
 
-/// Matches include patterns, with literal (non-glob) paths pulled into a hash
-/// set fast path instead of being compiled into `matcher`.
+/// Matches include patterns. Literal (non-glob) paths go into a hash set fast
+/// path.
 ///
-/// This keeps the compiled glob regex small when a large number of literal file
-/// paths are provided (e.g. when a shell expands a glob into thousands of
-/// paths).
+/// This keeps matching fast when a shell expands a glob into thousands of
+/// literal file paths.
 #[derive(Debug)]
 struct IncludeMatcher {
   literal_paths: HashSet<PathBuf>,
-  matcher: Override,
-  /// Only the negated include patterns, so an extensionless file that's
-  /// included regardless of the patterns can still be excluded by them
-  /// (`Override` doesn't distinguish a negated match from no match).
-  negated_matcher: Option<Gitignore>,
+  patterns: PatternList,
+  /// Only the negated include patterns. They still exclude extensionless files,
+  /// which match regardless of the other patterns.
+  negated_patterns: Option<PatternList>,
 }
 
 impl IncludeMatcher {
@@ -232,23 +233,24 @@ impl IncludeMatcher {
   fn is_match_or_extensionless(&self, path: &Path, include_extensionless: bool) -> bool {
     // hashing a path walks its components, so skip it when there's nothing to find
     let is_literal = !self.literal_paths.is_empty() && self.literal_paths.contains(path);
-    if is_literal || matches!(self.matcher.matched(path, false), Match::Whitelist(_)) {
+    let path_bytes = path_to_slash_bytes(path);
+    if is_literal || self.patterns.matched(&path_bytes, /* is dir */ false) == PatternMatch::Positive {
       return true;
     }
     include_extensionless
       && path.extension().is_none()
       && !self
-        .negated_matcher
+        .negated_patterns
         .as_ref()
-        .is_some_and(|m| matches!(m.matched(path, false), Match::Ignore(_)))
+        .is_some_and(|patterns| patterns.matched(&path_bytes, /* is dir */ false) == PatternMatch::Positive)
   }
 }
 
-/// Matches exclude patterns, with literal (non-glob) paths pulled into a hash
-/// set fast path instead of being compiled into `matcher`. See `IncludeMatcher`.
+/// Matches exclude patterns. Literal (non-glob) paths go into a hash set fast
+/// path, like in `IncludeMatcher`.
 struct ExcludeMatcher {
   literal_paths: HashSet<PathBuf>,
-  matcher: Gitignore,
+  patterns: PatternList,
 }
 
 impl ExcludeMatcher {
@@ -257,10 +259,10 @@ impl ExcludeMatcher {
     if !self.literal_paths.is_empty() && self.literal_paths.contains(path) {
       return ExcludeMatchDetail::Excluded;
     }
-    match self.matcher.matched(path, is_dir) {
-      Match::None => ExcludeMatchDetail::NotExcluded,
-      Match::Ignore(_) => ExcludeMatchDetail::Excluded,
-      Match::Whitelist(_) => ExcludeMatchDetail::OptedOutExclude,
+    match self.patterns.matched(&path_to_slash_bytes(path), is_dir) {
+      PatternMatch::None => ExcludeMatchDetail::NotExcluded,
+      PatternMatch::Positive => ExcludeMatchDetail::Excluded,
+      PatternMatch::Negative => ExcludeMatchDetail::OptedOutExclude,
     }
   }
 }
@@ -268,9 +270,8 @@ impl ExcludeMatcher {
 fn build_include_matcher(patterns: &[GlobPattern], opts: &GlobMatcherOptions, base_dir: &CanonicalizedPathBuf) -> Result<IncludeMatcher> {
   let use_fast_path = can_use_literal_fast_path(patterns, opts);
   let mut literal_paths = HashSet::new();
-  let mut builder = OverrideBuilder::new(base_dir);
-  builder.case_insensitive(!opts.case_sensitive)?;
-  let mut negated_builder: Option<GitignoreBuilder> = None;
+  let mut include_patterns = PatternList::new(!opts.case_sensitive);
+  let mut negated_patterns: Option<PatternList> = None;
 
   for pattern in patterns {
     if use_fast_path && let Some(path) = literal_relative_path(pattern) {
@@ -278,58 +279,50 @@ fn build_include_matcher(patterns: &[GlobPattern], opts: &GlobMatcherOptions, ba
     } else {
       let pattern_text = get_include_pattern_text(pattern, base_dir);
       if let Some(negated_text) = pattern_text.strip_prefix('!') {
-        let negated_builder = negated_builder.get_or_insert_with(|| {
-          let mut builder = GitignoreBuilder::new(base_dir);
-          let _ = builder.case_insensitive(!opts.case_sensitive);
-          builder
-        });
-        negated_builder.add_line(None, negated_text)?;
+        let negated_patterns = negated_patterns.get_or_insert_with(|| PatternList::new(!opts.case_sensitive));
+        add_glob_line(negated_patterns, negated_text)?;
       }
-      builder.add(&pattern_text)?;
+      add_glob_line(&mut include_patterns, &pattern_text)?;
     }
   }
 
   Ok(IncludeMatcher {
     literal_paths,
-    matcher: builder.build().with_context(too_many_patterns_message)?,
-    negated_matcher: match negated_builder {
-      Some(builder) => Some(builder.build().with_context(too_many_patterns_message)?),
-      None => None,
-    },
+    patterns: include_patterns,
+    negated_patterns,
   })
 }
 
-fn build_exclude_matcher(patterns: &[GlobPattern], opts: &GlobMatcherOptions, base_dir: &CanonicalizedPathBuf) -> Result<ExcludeMatcher> {
+fn build_exclude_matcher(patterns: &[GlobPattern], opts: &GlobMatcherOptions) -> Result<ExcludeMatcher> {
   let use_fast_path = can_use_literal_fast_path(patterns, opts);
   let mut literal_paths = HashSet::new();
-  let mut builder = GitignoreBuilder::new(base_dir);
-  builder.case_insensitive(!opts.case_sensitive)?;
+  let mut exclude_patterns = PatternList::new(!opts.case_sensitive);
 
   for pattern in patterns {
     if use_fast_path && let Some(path) = literal_relative_path(pattern) {
       literal_paths.insert(path);
     } else {
-      builder.add_line(None, &normalize_pattern(pattern))?;
+      add_glob_line(&mut exclude_patterns, &normalize_pattern(pattern))?;
     }
   }
 
   Ok(ExcludeMatcher {
     literal_paths,
-    matcher: builder.build().with_context(too_many_patterns_message)?,
+    patterns: exclude_patterns,
   })
 }
 
-/// Gets whether literal patterns can be pulled into the hash set fast path.
+/// Gets whether literal patterns can go into the hash set fast path.
 ///
-/// This is only safe when matching case sensitively (the hash set lookup is case
-/// sensitive) and when nothing is negated (a later negation can opt a literal
-/// path back out, which only the order-aware compiled matcher handles correctly).
+/// This is only safe when matching case sensitively (the hash set lookup is
+/// case sensitive) and when nothing is negated (a later negation can opt a
+/// literal path back out, and only the ordered pattern list handles that).
 fn can_use_literal_fast_path(patterns: &[GlobPattern], opts: &GlobMatcherOptions) -> bool {
   opts.case_sensitive && !patterns.iter().any(|p| p.is_negated())
 }
 
-/// Gets the base-relative path for a literal pattern that can be matched by exact
-/// path equality, or `None` when the pattern must go through the compiled matcher.
+/// Gets the base-relative path of a literal pattern for an exact path lookup,
+/// or `None` when the pattern needs the pattern list.
 ///
 /// Only anchored patterns qualify: a bare basename (e.g. `foo.ts`) matches at any
 /// depth and a directory-only pattern (trailing slash) depends on `is_dir`, so
@@ -355,8 +348,7 @@ fn literal_relative_path(pattern: &GlobPattern) -> Option<PathBuf> {
   Some(PathBuf::from(unescape_glob_text(relative).as_ref()))
 }
 
-/// Gets the include pattern text to add to the override builder (only the
-/// include matcher uses overrides—excludes go straight into a gitignore matcher).
+/// Gets the include pattern text to add to the include patterns.
 fn get_include_pattern_text<'a>(pattern: &'a GlobPattern, base_dir: &CanonicalizedPathBuf) -> Cow<'a, str> {
   if pattern.base_dir != *base_dir {
     match pattern.clone().into_new_base(base_dir.clone(), GlobPatternKind::Include) {
@@ -367,18 +359,6 @@ fn get_include_pattern_text<'a>(pattern: &'a GlobPattern, base_dir: &Canonicaliz
   } else {
     normalize_pattern(pattern)
   }
-}
-
-/// Surfaces a helpful message when the compiled glob exceeds the regex size
-/// limit, which generally happens when a shell expands a glob into a huge
-/// number of paths.
-fn too_many_patterns_message() -> String {
-  concat!(
-    "Failed building glob matcher because the provided file patterns were too large to compile. ",
-    "This usually happens when your shell expands a glob into many file paths. ",
-    "Try quoting the glob so dprint expands it instead (ex. dprint fmt \"./**/*.ts\")."
-  )
-  .to_string()
 }
 
 fn normalize_pattern(pattern: &GlobPattern) -> Cow<'_, str> {
@@ -563,10 +543,7 @@ mod test {
   }
 
   #[test]
-  fn cli_args_many_literal_paths_do_not_exceed_regex_limit() {
-    // a shell expanding a glob into a huge number of literal paths used to
-    // overflow the compiled glob regex
-
+  fn cli_args_many_literal_paths_match() {
     let cwd = CanonicalizedPathBuf::new_for_testing("/testing/dir");
     let arg_includes = (0..50_000)
       .map(|i| GlobPattern::new(format!("./some/nested/directory/path/file_{i}.ts"), cwd.clone()))
@@ -626,7 +603,7 @@ mod test {
   #[test]
   fn bare_basename_pattern_matches_at_any_depth() {
     // a non-anchored literal (no internal slash) keeps gitignore semantics of
-    // matching the basename at any depth, so it must stay in the compiled matcher
+    // matching the basename at any depth, so it must stay in the pattern list
     let cwd = CanonicalizedPathBuf::new_for_testing("/testing/dir");
     let glob_matcher = GlobMatcher::new(
       GlobPatterns {
@@ -672,7 +649,7 @@ mod test {
   }
 
   #[test]
-  fn negated_include_falls_back_to_compiled_matcher() {
+  fn negated_include_falls_back_to_the_pattern_list() {
     // a negated pattern in the group disables the literal fast path so the
     // order-dependent opt-out semantics are preserved
     let cwd = CanonicalizedPathBuf::new_for_testing("/testing/dir");
@@ -700,9 +677,9 @@ mod test {
   }
 
   #[test]
-  fn negated_exclude_opt_out_falls_back_to_compiled_matcher() {
+  fn negated_exclude_opt_out_falls_back_to_the_pattern_list() {
     // a negation in the excludes opts a file back in; this must keep working
-    // through the compiled gitignore matcher
+    // through the pattern list
     let cwd = CanonicalizedPathBuf::new_for_testing("/testing/dir");
     let glob_matcher = GlobMatcher::new(
       GlobPatterns {
@@ -751,7 +728,7 @@ mod test {
   #[test]
   fn case_insensitive_does_not_use_literal_fast_path() {
     // the literal fast path is case sensitive, so it must not be used when
-    // matching case insensitively—matching still goes through the compiled matcher
+    // matching case insensitively—matching still goes through the pattern list
     let cwd = CanonicalizedPathBuf::new_for_testing("/testing/dir");
     let glob_matcher = GlobMatcher::new(
       GlobPatterns {
