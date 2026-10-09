@@ -4363,6 +4363,35 @@ text2"
   }
 
   #[test]
+  fn should_keep_the_incremental_file_apart_from_upstream_dprint() {
+    let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin();
+      })
+      .write_file("/file1.txt", "text1")
+      .initialize()
+      .build();
+    run_test_cli(vec!["fmt"], &environment).unwrap();
+    let entries = environment.dir_info(crate::incremental::incremental_dir(&environment)).unwrap();
+    let [crate::environment::DirEntry::File { name, .. }] = entries.as_slice() else {
+      panic!("Expected one file: {:?}", entries);
+    };
+    let upstream_file = environment
+      .get_cache_dir()
+      .join_panic_relative("incremental")
+      .join_panic_relative(name.to_string_lossy());
+    let upstream_text = r#"{"pluginsHash":1,"fileHashes":[]}"#;
+    environment.write_file(&upstream_file, upstream_text).unwrap();
+
+    environment.clear_logs();
+    run_test_cli(vec!["fmt", "--log-level=debug"], &environment).unwrap();
+    let messages = environment.take_stderr_messages();
+    assert!(!messages.iter().any(|msg| msg.contains("Plugins changed")), "{messages:?}");
+    assert!(messages.iter().any(|msg| msg.contains("No change: /file1.txt")), "{messages:?}");
+    assert_eq!(environment.read_file(&upstream_file).unwrap(), upstream_text);
+  }
+
+  #[test]
   fn should_only_write_incremental_file_when_changed() {
     let environment = TestEnvironmentBuilder::with_remote_wasm_plugin()
       .with_default_config(|c| {
@@ -4374,7 +4403,7 @@ text2"
       .initialize()
       .build();
     let read_incremental_file = || {
-      let dir = environment.get_cache_dir().join_panic_relative("incremental");
+      let dir = crate::incremental::incremental_dir(&environment);
       let entries = environment.dir_info(&dir).unwrap();
       assert_eq!(entries.len(), 1);
       match &entries[0] {

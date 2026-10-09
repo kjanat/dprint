@@ -8,6 +8,17 @@ use crate::environment::HostEnvironment as Environment;
 use crate::resolution::PluginsScope;
 use crate::utils::get_bytes_hash;
 
+/// Bumped when the incremental file's format changes.
+const INCREMENTAL_FILE_VERSION: usize = 1;
+
+/// Upstream dprint keeps its incremental files directly in `incremental`.
+pub fn incremental_dir(environment: &impl Environment) -> crate::environment::CanonicalizedPathBuf {
+  environment
+    .get_cache_dir()
+    .join_panic_relative("incremental")
+    .join_panic_relative(format!("v{INCREMENTAL_FILE_VERSION}"))
+}
+
 pub struct GetIncrementalFileOptions {
   pub incremental_cli_arg: Option<bool>,
   /// Whether the cli arguments limit the run to some of the files the
@@ -29,7 +40,7 @@ pub fn get_incremental_file<TEnvironment: Environment>(
   }
 
   // the incremental file is stored in the cache with a key based on the root directory
-  let incremental_dir = environment.get_cache_dir().join_panic_relative("incremental");
+  let incremental_dir = incremental_dir(environment);
   if environment.mk_dir_all(&incremental_dir).is_err() {
     return None;
   }
