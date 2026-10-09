@@ -139,7 +139,7 @@ if (!args["publish-only"]) {
       name: "kprint",
       version: version,
       description: "Pluggable and configurable code formatting platform written in Rust.",
-      bin: "bin.cjs",
+      bin: { kprint: "bin.cjs", dprint: "bin.cjs" },
       repository: {
         type: "git",
         url: `git+${repositoryUrl}.git`,

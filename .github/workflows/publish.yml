@@ -129,9 +129,11 @@ jobs:
           npm init -y
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install kprint@${{ steps.publish-verdaccio.outputs.version }}
-          ACTUAL="$(npx kprint -v)"
-          echo "${ACTUAL}"
-          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+          for command in kprint dprint; do
+            ACTUAL="$(npx "${command}" -v)"
+            echo "${command}: ${ACTUAL}"
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+          done
       - name: Test kprint via bin.cjs fallback
         run: |
           cd "${{ runner.temp }}/npm-test"
@@ -149,29 +151,33 @@ jobs:
         run: |
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install -g kprint@${{ steps.publish-verdaccio.outputs.version }}
-          ACTUAL="$(kprint -v)"
-          echo "${ACTUAL}"
-          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
-          # verify the global bin entry points directly at the native binary, not bin.cjs
-          if [[ "${RUNNER_OS}" = "Windows" ]]; then
-            KPRINT_CMD="$(npm prefix -g)/kprint.cmd"
-            grep -q "bin.cjs" "${KPRINT_CMD}" && { echo "ERROR: kprint.cmd still points to bin.cjs"; exit 1; }
-            echo "kprint.cmd correctly points to native binary"
-          else
-            KPRINT_LINK="$(command -v kprint)"
-            LINK_TARGET="$(readlink "${KPRINT_LINK}")"
-            echo "kprint symlink target: ${LINK_TARGET}"
-            echo "${LINK_TARGET}" | grep -q "bin.cjs" && { echo "ERROR: kprint symlink still points to bin.cjs"; exit 1; }
-            echo "kprint symlink correctly points to native binary"
-          fi
+          for command in kprint dprint; do
+            ACTUAL="$("${command}" -v)"
+            echo "${command}: ${ACTUAL}"
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+            # verify the global bin entry points directly at the native binary, not bin.cjs
+            if [[ "${RUNNER_OS}" = "Windows" ]]; then
+              CMD_FILE="$(npm prefix -g)/${command}.cmd"
+              grep -q "bin.cjs" "${CMD_FILE}" && { echo "ERROR: ${command}.cmd still points to bin.cjs"; exit 1; }
+              echo "${command}.cmd correctly points to native binary"
+            else
+              LINK="$(command -v "${command}")"
+              LINK_TARGET="$(readlink "${LINK}")"
+              echo "${command} symlink target: ${LINK_TARGET}"
+              echo "${LINK_TARGET}" | grep -q "bin.cjs" && { echo "ERROR: ${command} symlink still points to bin.cjs"; exit 1; }
+              echo "${command} symlink correctly points to native binary"
+            fi
+          done
           npm uninstall -g kprint
       - name: Test npm global install kprint (--ignore-scripts)
         run: |
           EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
           npm install -g --ignore-scripts kprint@${{ steps.publish-verdaccio.outputs.version }}
-          ACTUAL="$(kprint -v)"
-          echo "${ACTUAL}"
-          [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+          for command in kprint dprint; do
+            ACTUAL="$("${command}" -v)"
+            echo "${command}: ${ACTUAL}"
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+          done
           npm uninstall -g kprint
   publish-npm:
     name: npm publish

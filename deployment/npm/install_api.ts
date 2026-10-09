@@ -10,6 +10,8 @@ import { gunzipSync } from "node:zlib";
 declare const __dirname: string;
 declare const __filename: string;
 
+const BIN_COMMANDS = ["kprint", "dprint"];
+
 let cachedIsMusl: boolean | undefined;
 
 export function runInstall(): string {
@@ -386,21 +388,24 @@ export function replaceBinEntry(exePath: string): void {
   if (binDir === undefined) return;
 
   const relative = path.relative(binDir, exePath);
-  if (os.platform() === "win32") {
-    // rewrite .cmd and .ps1 wrappers to invoke the native binary directly
-    fs.writeFileSync(
-      path.join(binDir, "kprint.cmd"),
-      `@"%~dp0${relative}" %*\r\n`,
-    );
-    fs.writeFileSync(
-      path.join(binDir, "kprint.ps1"),
-      `& (Join-Path $PSScriptRoot "${relative.replace(/\\/g, "/")}") $args\r\nexit $LASTEXITCODE\r\n`,
-    );
-  } else {
-    // replace symlink to point directly at the native binary
-    const binKprint = path.join(binDir, "kprint");
-    fs.unlinkSync(binKprint);
-    fs.symlinkSync(relative, binKprint);
+  for (const command of BIN_COMMANDS) {
+    if (!isOurBinEntry(binDir, command)) continue;
+    if (os.platform() === "win32") {
+      // rewrite .cmd and .ps1 wrappers to invoke the native binary directly
+      fs.writeFileSync(
+        path.join(binDir, `${command}.cmd`),
+        `@"%~dp0${relative}" %*\r\n`,
+      );
+      fs.writeFileSync(
+        path.join(binDir, `${command}.ps1`),
+        `& (Join-Path $PSScriptRoot "${relative.replace(/\\/g, "/")}") $args\r\nexit $LASTEXITCODE\r\n`,
+      );
+    } else {
+      // replace symlink to point directly at the native binary
+      const link = path.join(binDir, command);
+      fs.unlinkSync(link);
+      fs.symlinkSync(relative, link);
+    }
   }
 }
 
@@ -435,14 +440,18 @@ function findBinDir(): string | undefined {
 }
 
 function isBinDirForThisPackage(binDir: string): boolean {
+  return isOurBinEntry(binDir, "kprint");
+}
+
+function isOurBinEntry(binDir: string, command: string): boolean {
   try {
     if (os.platform() === "win32") {
       // verify the .cmd wrapper references our bin.cjs
-      const content = fs.readFileSync(path.join(binDir, "kprint.cmd"), "utf8");
+      const content = fs.readFileSync(path.join(binDir, `${command}.cmd`), "utf8");
       return content.includes("bin.cjs");
     } else {
       // verify the symlink points into our package directory
-      const linkTarget = fs.readlinkSync(path.join(binDir, "kprint"));
+      const linkTarget = fs.readlinkSync(path.join(binDir, command));
       const resolved = path.resolve(binDir, linkTarget);
       return resolved.endsWith("bin.cjs");
     }
