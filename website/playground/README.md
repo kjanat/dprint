@@ -2,12 +2,10 @@
 
 Code for the playground.
 
-## Developing
-
+```sh
+deno task build   # bundles into dist/
+deno task check
+deno task test
 ```
-# install
-deno install
 
-# run locally
-deno task dev
-```
+`dist/` is static. Serve it from `/playground/` with any file server.

@@ -1,7 +1,7 @@
 import type * as monacoEditorForTypes from "monaco-editor";
-import React from "react";
-import type ReactMonacoEditorForTypes from "react-monaco-editor";
+import { Component, createRef } from "react";
 import { getTheme } from "../../../src/scripts/theme.ts";
+import { MonacoEditor } from "./MonacoEditor.tsx";
 import { Spinner } from "./Spinner.tsx";
 import "../monacoWorkers.ts";
 
@@ -28,44 +28,41 @@ export interface CodeEditorProps {
 }
 
 export interface CodeEditorState {
-  editorComponent: typeof ReactMonacoEditorForTypes | undefined | false;
+  monaco: typeof monacoEditorForTypes | undefined | false;
   theme: "light" | "dark";
 }
 
-export class CodeEditor extends React.Component<
+export class CodeEditor extends Component<
   CodeEditorProps,
   CodeEditorState
 > {
   private editor: monacoEditorForTypes.editor.IStandaloneCodeEditor | undefined;
-  private monacoEditor: typeof monacoEditorForTypes | undefined;
-  private outerContainerRef = React.createRef<HTMLDivElement>();
+  private outerContainerRef = createRef<HTMLDivElement>();
   private disposables: monacoEditorForTypes.IDisposable[] = [];
 
   constructor(props: CodeEditorProps) {
     super(props);
     this.state = {
-      editorComponent: undefined,
+      monaco: undefined,
       theme: getTheme(),
     };
     this.editorDidMount = this.editorDidMount.bind(this);
 
-    const reactMonacoEditorPromise = import("react-monaco-editor");
     import("monaco-editor")
-      .then((monacoEditor) => {
-        this.monacoEditor = monacoEditor;
+      .then((monaco) => {
         if (this.props.language === "typescript") {
-          monacoEditor.typescript.typescriptDefaults.setCompilerOptions({
+          monaco.typescript.typescriptDefaults.setCompilerOptions({
             noLib: true,
-            target: monacoEditor.typescript.ScriptTarget.ESNext,
+            target: monaco.typescript.ScriptTarget.ESNext,
             allowNonTsExtensions: true,
           });
-          monacoEditor.typescript.typescriptDefaults.setDiagnosticsOptions({
+          monaco.typescript.typescriptDefaults.setDiagnosticsOptions({
             noSyntaxValidation: true,
             noSemanticValidation: true,
           });
         }
 
-        monacoEditor.editor.defineTheme("dprint-dark", {
+        monaco.editor.defineTheme("dprint-dark", {
           base: "vs-dark",
           inherit: true,
           rules: [],
@@ -76,7 +73,7 @@ export class CodeEditor extends React.Component<
             "editorRuler.foreground": "#4b5665",
           },
         });
-        monacoEditor.editor.defineTheme("dprint-light", {
+        monaco.editor.defineTheme("dprint-light", {
           base: "vs",
           inherit: true,
           rules: [],
@@ -88,22 +85,15 @@ export class CodeEditor extends React.Component<
           },
         });
 
-        reactMonacoEditorPromise
-          .then((editor) => {
-            this.setState({ editorComponent: editor.default });
-          })
-          .catch((err) => {
-            console.error(err);
-            this.setState({ editorComponent: false });
-          });
+        this.setState({ monaco });
       })
       .catch((err) => {
         console.error(err);
-        this.setState({ editorComponent: false });
+        this.setState({ monaco: false });
       });
   }
 
-  render() {
+  override render() {
     this.updateScrollTop();
     this.updateJsonSchema();
 
@@ -114,14 +104,14 @@ export class CodeEditor extends React.Component<
     );
   }
 
-  componentDidMount() {
+  override componentDidMount() {
     globalThis.addEventListener("dprint:theme-change", this.onThemeChange);
     this.onThemeChange();
   }
 
   private onThemeChange = () => this.setState({ theme: getTheme() });
 
-  componentWillUnmount() {
+  override componentWillUnmount() {
     globalThis.removeEventListener("dprint:theme-change", this.onThemeChange);
     for (const disposable of this.disposables) {
       disposable.dispose();
@@ -130,10 +120,10 @@ export class CodeEditor extends React.Component<
   }
 
   private getEditor() {
-    if (this.state.editorComponent == null) {
+    if (this.state.monaco == null) {
       return <Spinner backgroundColor="var(--code-bg)" />;
     }
-    if (this.state.editorComponent === false) {
+    if (this.state.monaco === false) {
       return (
         <div className="errorMessage">
           Error loading code editor. Please refresh the page to try again.
@@ -142,10 +132,9 @@ export class CodeEditor extends React.Component<
     }
 
     return (
-      <this.state.editorComponent
-        width="100%"
-        height="100%"
-        value={this.props.text}
+      <MonacoEditor
+        monaco={this.state.monaco}
+        value={this.props.text ?? ""}
         theme={`dprint-${this.state.theme}`}
         language={this.props.language}
         onChange={(text) => this.props.onChange?.(text)}
@@ -227,12 +216,13 @@ export class CodeEditor extends React.Component<
   }
 
   private updateJsonSchema() {
-    if (this.monacoEditor != null && this.props.jsonSchemaUrl != null) {
+    const monaco = this.state.monaco;
+    if (monaco && this.props.jsonSchemaUrl != null) {
       if (
-        this.monacoEditor.json.jsonDefaults.diagnosticsOptions.schemas?.[0]
+        monaco.json.jsonDefaults.diagnosticsOptions.schemas?.[0]
           ?.uri !== this.props.jsonSchemaUrl
       ) {
-        this.monacoEditor.json.jsonDefaults.setDiagnosticsOptions({
+        monaco.json.jsonDefaults.setDiagnosticsOptions({
           validate: true,
           allowComments: true,
           enableSchemaRequest: true,

@@ -1,6 +1,7 @@
 import type { FileMatchingInfo, PluginInfo } from "@dprint/formatter";
+// @ts-types="./json5.d.ts"
 import JSON5 from "json5";
-import type React from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject } from "react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setupTheme } from "../../src/scripts/theme.ts";
 import { CodeEditor, Spinner } from "./components/index.ts";
@@ -66,7 +67,7 @@ export function Playground({
     const timeout = setTimeout(() => {
       let config: Record<string, unknown> = {};
       try {
-        config = JSON5.parse(configText);
+        config = parseConfig(configText);
         if (config.lineWidth == null) {
           config.lineWidth = 80;
         }
@@ -81,7 +82,7 @@ export function Playground({
 
   const lineWidth = useMemo(() => {
     try {
-      const lineWidth = parseInt(JSON5.parse(configText).lineWidth, 10);
+      const lineWidth = parseInt(String(parseConfig(configText).lineWidth), 10);
       if (!Number.isNaN(lineWidth)) return lineWidth;
     } catch (_) {
       // ignore
@@ -214,7 +215,7 @@ export function Playground({
           style={{
             "--left-frac": leftFrac,
             "--input-frac": inputFrac,
-          } as React.CSSProperties}
+          } as CSSProperties}
         >
           <div className="leftCol" ref={leftColRef}>
             <section className="pane inputPane">
@@ -297,12 +298,12 @@ export function Playground({
 // updating `setFraction` with the pointer position as a fraction (0.15–0.85)
 // of the container along the given axis.
 function useDividerDrag(
-  containerRef: React.RefObject<HTMLElement | null>,
+  containerRef: RefObject<HTMLElement | null>,
   axis: "x" | "y",
   setFraction: (fraction: number) => void,
 ) {
   return useCallback(
-    (event: React.PointerEvent) => {
+    (event: ReactPointerEvent) => {
       event.preventDefault();
       const container = containerRef.current;
       if (container == null) {
@@ -331,4 +332,10 @@ function useDividerDrag(
     },
     [containerRef, axis, setFraction],
   );
+}
+
+function parseConfig(text: string): Record<string, unknown> {
+  const value = JSON5.parse(text);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("The config must be an object.");
+  return Object.fromEntries(Object.entries(value));
 }
