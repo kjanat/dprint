@@ -27,7 +27,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}"
           PACKAGES: "${{ inputs.packages }}"
-        run: |-
+        run: |
           # Publish libraries before the facade that depends on them.
           read -r -a packages <<< "${PACKAGES}"
           for package in "${packages[@]}"; do

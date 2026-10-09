@@ -20,6 +20,6 @@ jobs:
       - name: Cargo publish
         env:
           CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}"
-        run: |-
+        run: |
           cd crates/dprint-development
           cargo publish
