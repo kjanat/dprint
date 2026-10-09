@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "hyperfine_version": "2.0.0",
+    "start_time": "2026-10-09T11:01:18Z",
+    "platform": {
+      "os": "Linux",
+      "architecture": "x86_64"
+    }
+  },
+  "results": [
+    {
+      "name": "official",
+      "command": "official",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 0.118038058,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 41725952.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 0.09466539800000001,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 43302912.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    },
+    {
+      "name": "master",
+      "command": "master",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 0.011546478,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 15269888.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 0.010140731,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 15634432.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pr",
+      "command": "pr",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 0.024552965000000003,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 16031744.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 0.019361878000000003,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 16265216.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    }
+  ]
+}

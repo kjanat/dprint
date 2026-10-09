@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "hyperfine_version": "2.0.0",
+    "start_time": "2026-10-09T11:00:51Z",
+    "platform": {
+      "os": "Linux",
+      "architecture": "x86_64"
+    }
+  },
+  "results": [
+    {
+      "name": "official",
+      "command": "official",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 4.014406814,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 202932224.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 3.9742749870000003,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 202391552.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    },
+    {
+      "name": "master",
+      "command": "master",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 0.28870304,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 179486720.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 0.35331392300000003,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 183721984.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pr",
+      "command": "pr",
+      "measurements": [
+        {
+          "time_wall_clock": {
+            "value": 0.31917606000000004,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 186015744.0,
+            "unit": "byte"
+          }
+        },
+        {
+          "time_wall_clock": {
+            "value": 0.24614122600000002,
+            "unit": "second"
+          },
+          "memory_peak_resident": {
+            "value": 184586240.0,
+            "unit": "byte"
+          }
+        }
+      ]
+    }
+  ]
+}

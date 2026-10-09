@@ -1,0 +1,89 @@
+name: Benchmark
+on:
+  pull_request:
+    paths-ignore:
+      - deployment/**
+      - website/**
+permissions: { contents: read }
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+jobs:
+  build:
+    name: "Build ${{ matrix.build }}"
+    runs-on: &ubuntu ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - { build: master, ref: "${{ github.event.repository.default_branch }}" }
+          - { build: pr, ref: "${{ github.event.pull_request.head.sha }}" }
+    env: { CARGO_INCREMENTAL: 0, LZMA_API_STATIC: 1 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ matrix.ref }}" }
+      - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with: { key: "bench-${{ matrix.build }}" }
+      - name: Build dprint
+        run: cargo build -p dprint --locked --release;
+          mkdir -p dist; cp target/release/dprint dist/dprint;
+          git rev-parse HEAD > dist/sha;
+      - name: Upload dprint
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: "dprint-${{ matrix.build }}", path: dist, retention-days: 3 }
+  bench:
+    name: Benchmark
+    needs: build
+    runs-on: *ubuntu
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ github.event.pull_request.head.sha }}", path: corpus }
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - name: Typecheck the bench script
+        working-directory: corpus
+        run: deno check --frozen .github/scripts/bench.ts
+      - name: Rehearse the report with the fixture
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
+            await bench({}, ["report", "corpus/.github/bench/fixture", `${process.env.RUNNER_TEMP}/rehearsal.md`]);
+      - name: Download the builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dprint-*
+          path: builds
+      - name: Install the official dprint release and hyperfine
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
+            await bench({ core }, ["setup", "builds"]);
+      - name: Benchmark
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
+            await bench({ core }, ["bench", "corpus", "results", "builds"]);
+      - name: Upload the results
+        if: "!cancelled()"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-results
+          path: results
+          if-no-files-found: ignore
+      - name: Report
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { default: bench } = await import(`${process.env.GITHUB_WORKSPACE}/corpus/.github/scripts/bench.ts`);
+            await bench({ core }, ["report", "results", "comment/comment.md"]);
+      - name: Upload the comment
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-comment
+          path: comment/comment.md
