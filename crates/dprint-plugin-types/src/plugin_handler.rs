@@ -15,8 +15,17 @@ use super::FileMatchingInfo;
 
 pub trait CancellationToken: Send + Sync + std::fmt::Debug {
   fn is_cancelled(&self) -> bool;
+  /// Resolves once the token is cancelled. The default polls `is_cancelled`
+  /// every 10ms; a token that can wake its waiters overrides it.
   #[cfg(feature = "async_runtime")]
-  fn wait_cancellation(&self) -> LocalBoxFuture<'static, ()>;
+  fn wait_cancellation(&self) -> LocalBoxFuture<'_, ()> {
+    async move {
+      while !self.is_cancelled() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+      }
+    }
+    .boxed_local()
+  }
 }
 
 #[cfg(feature = "async_runtime")]
@@ -25,9 +34,8 @@ impl CancellationToken for tokio_util::sync::CancellationToken {
     self.is_cancelled()
   }
 
-  fn wait_cancellation(&self) -> LocalBoxFuture<'static, ()> {
-    let token = self.clone();
-    async move { token.cancelled().await }.boxed_local()
+  fn wait_cancellation(&self) -> LocalBoxFuture<'_, ()> {
+    self.cancelled().boxed_local()
   }
 }
 
@@ -41,9 +49,74 @@ impl CancellationToken for NullCancellationToken {
   }
 
   #[cfg(feature = "async_runtime")]
-  fn wait_cancellation(&self) -> LocalBoxFuture<'static, ()> {
+  fn wait_cancellation(&self) -> LocalBoxFuture<'_, ()> {
     // never resolves
     Box::pin(std::future::pending())
+  }
+}
+
+#[cfg(all(test, feature = "async_runtime"))]
+mod cancellation_test {
+  use std::sync::Arc;
+  use std::sync::atomic::AtomicBool;
+  use std::sync::atomic::Ordering;
+  use std::time::Duration;
+
+  use super::CancellationToken;
+
+  #[derive(Debug, Default)]
+  struct FlagToken(AtomicBool);
+
+  impl CancellationToken for FlagToken {
+    fn is_cancelled(&self) -> bool {
+      self.0.load(Ordering::SeqCst)
+    }
+  }
+
+  #[tokio::test]
+  async fn a_token_with_only_is_cancelled_waits_until_cancelled() {
+    let token = Arc::new(FlagToken::default());
+    let dyn_token: Arc<dyn CancellationToken> = token.clone();
+    let waiting = dyn_token.wait_cancellation();
+    let canceller = std::thread::spawn({
+      let token = token.clone();
+      move || {
+        std::thread::sleep(Duration::from_millis(30));
+        token.0.store(true, Ordering::SeqCst);
+      }
+    });
+    tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap();
+    assert!(dyn_token.is_cancelled());
+    canceller.join().unwrap();
+  }
+
+  #[tokio::test]
+  async fn an_uncancelled_token_keeps_waiting() {
+    let token: Arc<dyn CancellationToken> = Arc::new(FlagToken::default());
+    assert!(tokio::time::timeout(Duration::from_millis(50), token.wait_cancellation()).await.is_err());
+  }
+
+  #[derive(Default)]
+  struct WokenFlag(AtomicBool);
+
+  impl std::task::Wake for WokenFlag {
+    fn wake(self: Arc<Self>) {
+      self.0.store(true, Ordering::SeqCst);
+    }
+  }
+
+  #[tokio::test]
+  async fn a_tokio_token_wakes_its_waiter_when_cancelled() {
+    let token = tokio_util::sync::CancellationToken::new();
+    let dyn_token: Arc<dyn CancellationToken> = Arc::new(token.clone());
+    let mut waiting = dyn_token.wait_cancellation();
+    let woken = Arc::new(WokenFlag::default());
+    let waker = std::task::Waker::from(woken.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    assert!(waiting.as_mut().poll(&mut context).is_pending());
+    token.cancel();
+    assert!(woken.0.load(Ordering::SeqCst));
+    assert!(waiting.as_mut().poll(&mut context).is_ready());
   }
 }
 
