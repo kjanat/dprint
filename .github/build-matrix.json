@@ -1,162 +1,103 @@
 [
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "true",
     "target": "x86_64-unknown-freebsd",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "x86_64-unknown-freebsd"
+    "runner": "ubuntu-22.04",
+    "build": "freebsd-vm",
+    "test": true
   },
   {
-    "os": "macos-15-intel",
-    "run_tests": "true",
     "target": "x86_64-apple-darwin",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "x86_64-apple-darwin"
+    "runner": "macos-15-intel",
+    "build": "cargo",
+    "test": true
   },
   {
-    "os": "macOS-latest",
-    "run_tests": "true",
     "target": "aarch64-apple-darwin",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "aarch64-apple-darwin"
+    "runner": "macOS-latest",
+    "build": "cargo",
+    "test": true
   },
   {
-    "os": "windows-latest",
-    "run_tests": "true",
     "target": "x86_64-pc-windows-msvc",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "x86_64-pc-windows-msvc"
+    "runner": "windows-latest",
+    "build": "cargo",
+    "test": true
   },
   {
-    "os": "windows-11-arm",
-    "run_tests": "true",
     "target": "aarch64-pc-windows-msvc",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "aarch64-pc-windows-msvc"
+    "runner": "windows-11-arm",
+    "build": "cargo",
+    "test": true
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "true",
     "target": "x86_64-unknown-linux-gnu",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "2.17",
-    "cargo": "cargo-zigbuild",
-    "cargo_target": "x86_64-unknown-linux-gnu.2.17"
+    "runner": "ubuntu-22.04",
+    "build": "zigbuild",
+    "test": true,
+    "glibc": "2.17"
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "x86_64-unknown-linux-musl",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "x86_64-unknown-linux-musl"
+    "runner": "ubuntu-22.04",
+    "build": "cargo",
+    "test": false
   },
   {
-    "os": "ubuntu-24.04-arm",
-    "run_tests": "true",
     "target": "aarch64-unknown-linux-gnu",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "2.17",
-    "cargo": "cargo-zigbuild",
-    "cargo_target": "aarch64-unknown-linux-gnu.2.17"
+    "runner": "ubuntu-24.04-arm",
+    "build": "zigbuild",
+    "test": true,
+    "glibc": "2.17",
+    "master_only": true
   },
   {
-    "os": "ubuntu-24.04-arm",
-    "run_tests": "false",
     "target": "aarch64-unknown-linux-musl",
-    "cross": "false",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "aarch64-unknown-linux-musl"
+    "runner": "ubuntu-24.04-arm",
+    "build": "cargo",
+    "test": false,
+    "master_only": true
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "riscv64gc-unknown-linux-gnu",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "riscv64gc-unknown-linux-gnu"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "loongarch64-unknown-linux-gnu",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "loongarch64-unknown-linux-gnu"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "loongarch64-unknown-linux-musl",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "loongarch64-unknown-linux-musl"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "powerpc64le-unknown-linux-gnu",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "powerpc64le-unknown-linux-gnu"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "powerpc64le-unknown-linux-musl",
-    "cross": "false",
-    "musl_image": "ghcr.io/rust-cross/rust-musl-cross:powerpc64le-musl",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "powerpc64le-unknown-linux-musl"
+    "runner": "ubuntu-22.04",
+    "build": "musl-image",
+    "test": false,
+    "image": "ghcr.io/rust-cross/rust-musl-cross:powerpc64le-musl"
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "aarch64-linux-android",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "aarch64-linux-android"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   },
   {
-    "os": "ubuntu-22.04",
-    "run_tests": "false",
     "target": "x86_64-linux-android",
-    "cross": "true",
-    "musl_image": "",
-    "zigbuild_glibc": "",
-    "cargo": "cargo",
-    "cargo_target": "x86_64-linux-android"
+    "runner": "ubuntu-22.04",
+    "build": "cross",
+    "test": false
   }
 ]

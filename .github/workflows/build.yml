@@ -1,0 +1,114 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: JSON array of .github/build-matrix.json entries to build.
+        required: true
+        type: string
+      profile:
+        description: debug or release. A release build is packaged and kept as an artifact.
+        required: true
+        type: string
+      ref:
+        description: Commit to build.
+        required: false
+        type: string
+        default: ""
+
+permissions: { contents: read }
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.build == 'freebsd-vm' && 90 || 60 }}
+    defaults: { run: { shell: bash } }
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.targets) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      BUILD: ${{ matrix.build }}
+      PROFILE: ${{ inputs.profile }}
+      GLIBC: ${{ matrix.glibc }}
+      IMAGE: ${{ matrix.image }}
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: full
+      LZMA_API_STATIC: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+
+      - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
+        if: matrix.build != 'freebsd-vm'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: matrix.build != 'freebsd-vm'
+        with: { key: "${{ matrix.target }}" }
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: matrix.build == 'zigbuild'
+        with: { version: 0.15.1 }
+      - name: Setup
+        if: matrix.build != 'freebsd-vm'
+        run: .github/scripts/build.sh setup
+
+      - name: Build
+        if: matrix.build != 'freebsd-vm'
+        run: .github/scripts/build.sh build
+      - name: Check glibc requirement
+        if: matrix.build == 'zigbuild'
+        run: .github/scripts/build.sh check-glibc
+      - name: Test
+        if: matrix.test && matrix.build != 'freebsd-vm'
+        run: .github/scripts/build.sh test
+
+      - name: Build and test in FreeBSD
+        if: matrix.build == 'freebsd-vm'
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          envs: PROFILE
+          release: "14.4"
+          arch: x86_64
+          mem: 8192
+          cpu: 2
+          prepare: |
+            set -eu
+            pkg install -y curl git pkgconf
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain none
+          run: |
+            set -eu
+            export PATH="${HOME}/.cargo/bin:${PATH}"
+            export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 RUST_BACKTRACE=full LZMA_API_STATIC=1
+            target=x86_64-unknown-freebsd
+            release=''
+            [ "${PROFILE}" = release ] && release=--release
+            rustup show active-toolchain
+            cargo build -p dprint -p test-process-plugin --locked --target "${target}" ${release}
+            cargo test --locked --target "${target}" --all-features ${release}
+            sh .github/scripts/freebsd-smoke.sh "target/${target}/${PROFILE}/dprint"
+
+      - name: Test shell installer
+        if: inputs.profile == 'debug' && matrix.test && matrix.build != 'freebsd-vm'
+        working-directory: website/src/assets
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: ./install.sh
+      - name: Test powershell installer
+        if: inputs.profile == 'debug' && matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        working-directory: website/src/assets
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: ./install.ps1
+
+      - name: Package
+        if: inputs.profile == 'release'
+        run: .github/scripts/build.sh package
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.profile == 'release'
+        with:
+          name: dprint-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/dprint-${{ matrix.target }}.zip
+          if-no-files-found: error
+          overwrite: true
