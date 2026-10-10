@@ -397,6 +397,13 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
       Err(err) => Err(CriticalFormatError(FormatError::new(err)).into()),
     }
   }
+
+  fn release_config(&mut self, config_id: FormatConfigId) -> Result<()> {
+    if self.current_config_id == config_id {
+      self.current_config_id = FormatConfigId::uninitialized();
+    }
+    Ok(())
+  }
 }
 
 struct WasmFunctions<TExports: PluginExports> {

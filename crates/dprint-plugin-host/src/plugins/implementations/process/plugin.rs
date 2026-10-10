@@ -4,6 +4,7 @@ use dprint_configuration::ConfigurationDiagnostic;
 use dprint_plugin_types::CheckConfigUpdatesMessage;
 use dprint_plugin_types::ConfigChange;
 use dprint_plugin_types::FileMatchingInfo;
+use dprint_plugin_types::FormatConfigId;
 use dprint_plugin_types::FormatResult;
 use dprint_plugin_types::PluginInfo;
 use parking_lot::Mutex;
@@ -185,6 +186,10 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedProcessPlugin<T
 
   async fn format_text(&self, request: InitializedPluginFormatRequest) -> FormatResult {
     self.communicator.format_text(request).await
+  }
+
+  async fn release_config(&self, config_id: FormatConfigId) -> Result<()> {
+    self.communicator.release_config(config_id).await
   }
 
   async fn shutdown(&self) -> () {

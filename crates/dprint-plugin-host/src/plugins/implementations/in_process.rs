@@ -146,6 +146,11 @@ impl<THandler: AsyncPluginHandler> InitializedPlugin for InitializedInProcessPlu
       .await
   }
 
+  async fn release_config(&self, config_id: FormatConfigId) -> Result<()> {
+    self.configs.borrow_mut().remove(&config_id);
+    Ok(())
+  }
+
   async fn shutdown(&self) {
     // nothing runs in the background
   }

@@ -29,6 +29,8 @@ pub struct HostSession<TEnvironment: Environment> {
   plugins_scope_by_config: RefCell<HashMap<String, Rc<ScopeCell<TEnvironment>>>>,
   config_override: Option<PathBuf>,
   options_scope: Rc<ScopeCell<TEnvironment>>,
+  /// Replaced scopes whose configurations the plugins still hold.
+  retired_scopes: RefCell<Vec<Rc<PluginsScope<TEnvironment>>>>,
 }
 
 impl<TEnvironment: Environment> HostSession<TEnvironment> {
@@ -39,12 +41,14 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
       plugins_scope_by_config: Default::default(),
       config_override,
       options_scope: Default::default(),
+      retired_scopes: Default::default(),
     }
   }
 
   pub async fn shutdown(&self) {
     self.plugins_scope_by_config.borrow_mut().clear();
     self.options_scope.lock().await.take();
+    self.retired_scopes.borrow_mut().clear();
     self.plugin_resolver.clear_and_shutdown_initialized().await;
   }
 
@@ -101,11 +105,37 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
     if cell.is_some() {
       on_change();
     }
-    *cell = Some(new_scope.clone());
+    if let Some(old_scope) = cell.replace(new_scope.clone()) {
+      self.retired_scopes.borrow_mut().push(old_scope);
+    }
+    self.release_unused_configs().await;
     // Other scopes and outstanding requests retain their wrappers. They must
     // keep running even when a different configuration changes.
     self.plugin_resolver.shutdown_unused().await;
     Ok(new_scope)
+  }
+
+  /// Releases the configurations of the retired scopes nothing holds any
+  /// more from the plugins that registered them.
+  async fn release_unused_configs(&self) {
+    let unused = {
+      let mut retired = self.retired_scopes.borrow_mut();
+      let (unused, held): (Vec<_>, Vec<_>) = retired.drain(..).partition(|scope| scope.owns_configs_alone());
+      *retired = held;
+      unused
+    };
+    for scope in unused {
+      for plugin in scope.plugins.values() {
+        let Some(instance) = plugin.plugin.initialized().await else {
+          continue;
+        };
+        for config_id in plugin.config_ids() {
+          if let Err(err) = instance.release_config(config_id).await {
+            log_debug!(self.environment, "Error releasing config {:?} of {}: {:#}", config_id, plugin.name(), err);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -118,6 +148,7 @@ mod tests {
   use crate::plugins::PluginResolver;
   use dprint_config::options::ConfigArg;
   use dprint_config::options::SessionOptions;
+  use dprint_plugin_types::FormatConfigId;
   use std::cell::Cell;
 
   fn session(environment: &TestEnvironment) -> HostSession<TestEnvironment> {
@@ -126,6 +157,108 @@ mod tests {
       Rc::new(PluginResolver::new(environment.clone(), PluginCache::new(environment.clone()))),
       None,
     )
+  }
+
+  /// A scope with an initialized test plugin, and the configurations the
+  /// plugin released.
+  async fn test_plugin_scope(environment: &TestEnvironment) -> (Rc<PluginsScope<TestEnvironment>>, Rc<RefCell<Vec<FormatConfigId>>>) {
+    use crate::configuration::ConfigOrigin;
+    use crate::configuration::FileRouting;
+    use crate::environment::CanonicalizedPathBuf;
+    use crate::resolution::PluginWithConfig;
+    use crate::resolution::PluginWithConfigOptions;
+    use dprint_plugin_types::FileMatchingInfo;
+
+    let plugin = crate::plugins::TestPlugin::new("test-plugin", "test-plugin", vec!["txt"], vec![]);
+    let released = plugin.released_configs();
+    let wrapper = Rc::new(crate::plugins::PluginWrapper::new(Box::new(plugin)));
+    wrapper.initialize().await.unwrap();
+    let base_path = CanonicalizedPathBuf::new_for_testing("/");
+    let config = Rc::new(ResolvedConfig {
+      origin: ConfigOrigin {
+        source: PathSource::new_local(base_path.join_panic_relative("dprint.json")),
+        base_path,
+        is_global: false,
+      },
+      files: Default::default(),
+      routing: FileRouting { shebangs: None },
+      execution: Default::default(),
+      plugins: Default::default(),
+    });
+    let plugin = Rc::new(PluginWithConfig::new(
+      wrapper,
+      PluginWithConfigOptions {
+        associations: None,
+        format_config: std::sync::Arc::new(crate::plugins::FormatConfig {
+          id: FormatConfigId::from_raw(7),
+          plugin: Default::default(),
+          global: Default::default(),
+        }),
+        file_matching: FileMatchingInfo {
+          file_extensions: vec!["txt".to_string()],
+          file_names: vec![],
+          additive: false,
+        },
+        overrides: Vec::new(),
+        serialized_resolved_config: "{}".to_string(),
+        property_origins: Default::default(),
+      },
+    ));
+    let scope = Rc::new(PluginsScope::new(environment.clone(), vec![plugin], config, Vec::new()).unwrap());
+    (scope, released)
+  }
+
+  #[test]
+  fn a_retired_scope_releases_its_configs_once_nothing_holds_them() {
+    let environment = TestEnvironment::new();
+    environment.clone().run_in_runtime(async move {
+      let session = session(&environment);
+      let (scope, released) = test_plugin_scope(&environment).await;
+      session.retired_scopes.borrow_mut().push(scope.clone());
+
+      session.release_unused_configs().await;
+      assert_eq!(*released.borrow(), Vec::<FormatConfigId>::new());
+      assert_eq!(session.retired_scopes.borrow().len(), 1);
+
+      let plugin = scope.get_plugin("test-plugin");
+      drop(scope);
+      session.release_unused_configs().await;
+      assert_eq!(*released.borrow(), Vec::<FormatConfigId>::new());
+      assert_eq!(session.retired_scopes.borrow().len(), 1);
+      let format_config = plugin.format_config.clone();
+      drop(plugin);
+      session.release_unused_configs().await;
+      assert_eq!(*released.borrow(), Vec::<FormatConfigId>::new());
+      assert_eq!(session.retired_scopes.borrow().len(), 1);
+
+      drop(format_config);
+      session.release_unused_configs().await;
+      assert_eq!(*released.borrow(), vec![FormatConfigId::from_raw(7)]);
+      assert_eq!(session.retired_scopes.borrow().len(), 0);
+    });
+  }
+
+  #[test]
+  fn a_replaced_scope_is_retired() {
+    let environment = TestEnvironment::new();
+    environment.write_file("/dprint.json", "{}").unwrap();
+    environment.clone().run_in_runtime(async move {
+      let session = session(&environment);
+      let mut options = SessionOptions {
+        config: Some(ConfigArg::PathOrUrl("/dprint.json".into())),
+        ..Default::default()
+      };
+      let first = session.resolve_from_options(&options, || {}).await.unwrap();
+      environment.write_file("/other.json", r#"{"lineWidth": 120}"#).unwrap();
+      options.config = Some(ConfigArg::PathOrUrl("/other.json".into()));
+      session.resolve_from_options(&options, || {}).await.unwrap();
+      assert!(session.retired_scopes.borrow().iter().any(|scope| Rc::ptr_eq(scope, &first)));
+      drop(first);
+      environment.write_file("/other.json", r#"{"lineWidth": 100}"#).unwrap();
+      session.resolve_from_options(&options, || {}).await.unwrap();
+      assert_eq!(session.retired_scopes.borrow().len(), 0);
+      session.shutdown().await;
+    });
   }
 
   #[test]

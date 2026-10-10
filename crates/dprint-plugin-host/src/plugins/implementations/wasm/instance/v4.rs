@@ -398,6 +398,13 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
       Err(err) => Err(CriticalFormatError(FormatError::new(err)).into()),
     }
   }
+
+  fn release_config(&mut self, config_id: FormatConfigId) -> Result<()> {
+    if self.registered_config_ids.remove(&config_id) {
+      self.wasm_functions.release_config(config_id)?;
+    }
+    Ok(())
+  }
 }
 
 struct WasmFunctions<TExports: PluginExports> {
@@ -408,6 +415,14 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn register_config(&mut self, config_id: FormatConfigId) -> Result<()> {
     self.exports.call("register_config", &[config_id.as_raw()])
+  }
+
+  #[inline]
+  pub fn release_config(&mut self, config_id: FormatConfigId) -> Result<()> {
+    if !self.exports.has_function("release_config") {
+      return Ok(());
+    }
+    self.exports.call("release_config", &[config_id.as_raw()])
   }
 
   #[inline]

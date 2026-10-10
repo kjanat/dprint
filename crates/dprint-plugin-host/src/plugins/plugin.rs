@@ -154,6 +154,8 @@ pub trait InitializedPlugin {
   async fn check_config_updates(&self, message: CheckConfigUpdatesMessage) -> Result<Vec<ConfigChange>>;
   /// Formats the text in memory based on the file path and file text.
   async fn format_text(&self, format_request: InitializedPluginFormatRequest) -> FormatResult;
+  /// Releases a configuration nothing formats with any more.
+  async fn release_config(&self, config_id: FormatConfigId) -> Result<()>;
   /// Shuts down the plugin. This is used for process plugins.
   async fn shutdown(&self) -> ();
 }
@@ -178,12 +180,20 @@ impl TestPlugin {
         update_url: None,
       },
       built_in: None,
-      initialized_test_plugin: InitializedTestPlugin(FileMatchingInfo {
-        file_extensions: file_extensions.into_iter().map(String::from).collect(),
-        file_names: file_names.into_iter().map(String::from).collect(),
-        additive: false,
-      }),
+      initialized_test_plugin: InitializedTestPlugin {
+        file_matching: FileMatchingInfo {
+          file_extensions: file_extensions.into_iter().map(String::from).collect(),
+          file_names: file_names.into_iter().map(String::from).collect(),
+          additive: false,
+        },
+        released_configs: Default::default(),
+      },
     }
+  }
+
+  /// The configurations the plugin released, shared with its instances.
+  pub fn released_configs(&self) -> Rc<std::cell::RefCell<Vec<FormatConfigId>>> {
+    self.initialized_test_plugin.released_configs.clone()
   }
 
   /// Makes it a built-in formatter.
@@ -221,7 +231,10 @@ impl Plugin for TestPlugin {
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
-pub struct InitializedTestPlugin(FileMatchingInfo);
+pub struct InitializedTestPlugin {
+  file_matching: FileMatchingInfo,
+  released_configs: Rc<std::cell::RefCell<Vec<FormatConfigId>>>,
+}
 
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait(?Send)]
@@ -235,7 +248,7 @@ impl InitializedPlugin for InitializedTestPlugin {
   }
 
   async fn file_matching_info(&self, _config: Arc<FormatConfig>) -> Result<FileMatchingInfo> {
-    Ok(self.0.clone())
+    Ok(self.file_matching.clone())
   }
 
   async fn config_diagnostics(&self, _config: Arc<FormatConfig>) -> Result<Vec<ConfigurationDiagnostic>> {
@@ -248,6 +261,11 @@ impl InitializedPlugin for InitializedTestPlugin {
 
   async fn format_text(&self, format_request: InitializedPluginFormatRequest) -> FormatResult {
     Ok(Some(format!("{}_formatted", String::from_utf8(format_request.file_text)?).into_bytes()))
+  }
+
+  async fn release_config(&self, config_id: FormatConfigId) -> Result<()> {
+    self.released_configs.borrow_mut().push(config_id);
+    Ok(())
   }
 
   async fn shutdown(&self) -> () {

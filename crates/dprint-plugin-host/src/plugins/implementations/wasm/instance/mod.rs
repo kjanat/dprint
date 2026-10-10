@@ -9,6 +9,7 @@ use dprint_plugin_types::CancellationToken;
 use dprint_plugin_types::CheckConfigUpdatesMessage;
 use dprint_plugin_types::ConfigChange;
 use dprint_plugin_types::FileMatchingInfo;
+use dprint_plugin_types::FormatConfigId;
 use dprint_plugin_types::FormatRange;
 use dprint_plugin_types::FormatResult;
 use dprint_plugin_types::HostFormatRequest;
@@ -256,6 +257,7 @@ pub trait InitializedWasmPluginInstance {
     override_config: &ConfigKeyMap,
     token: Arc<dyn CancellationToken>,
   ) -> FormatResult;
+  fn release_config(&mut self, config_id: FormatConfigId) -> Result<()>;
 }
 
 /// A plugin instance's exported functions and memory. The plugin protocol
@@ -449,11 +451,14 @@ mod test {
 
   use super::*;
 
+  type Calls = Arc<std::sync::Mutex<Vec<(String, Vec<u32>)>>>;
+
   /// Exports whose `u32` results are scripted by name; everything else
-  /// returns zero.
+  /// returns zero. Every call is recorded in `calls`.
   struct ScriptedExports {
     results: HashMap<&'static str, u32>,
     memory: Vec<u8>,
+    calls: Calls,
   }
 
   impl ScriptedExports {
@@ -461,7 +466,12 @@ mod test {
       Self {
         results: results.iter().copied().collect(),
         memory: vec![0; 4096],
+        calls: Default::default(),
       }
+    }
+
+    fn record(&self, name: &str, params: &[u32]) {
+      self.calls.lock().unwrap().push((name.to_string(), params.to_vec()));
     }
   }
 
@@ -470,11 +480,13 @@ mod test {
       true
     }
 
-    fn call(&mut self, _name: &str, _params: &[u32]) -> Result<()> {
+    fn call(&mut self, name: &str, params: &[u32]) -> Result<()> {
+      self.record(name, params);
       Ok(())
     }
 
-    fn call_u32(&mut self, name: &str, _params: &[u32]) -> Result<u32> {
+    fn call_u32(&mut self, name: &str, params: &[u32]) -> Result<u32> {
+      self.record(name, params);
       Ok(self.results.get(name).copied().unwrap_or(0))
     }
 
@@ -506,9 +518,12 @@ mod test {
   }
 
   fn format(version: PluginSchemaVersion, results: &[(&'static str, u32)]) -> FormatResult {
-    let mut instance = instance(version, results);
+    format_with(instance(version, results).as_mut(), 1)
+  }
+
+  fn format_with(instance: &mut dyn InitializedWasmPluginInstance, config_id: u32) -> FormatResult {
     let config = FormatConfig {
-      id: FormatConfigId::from_raw(1),
+      id: FormatConfigId::from_raw(config_id),
       plugin: Default::default(),
       global: Default::default(),
     };
@@ -520,6 +535,16 @@ mod test {
       &ConfigKeyMap::default(),
       Arc::new(NullCancellationToken),
     )
+  }
+
+  fn calls_named(calls: &Calls, name: &str) -> Vec<Vec<u32>> {
+    calls
+      .lock()
+      .unwrap()
+      .iter()
+      .filter(|(called, _)| called == name)
+      .map(|(_, params)| params.clone())
+      .collect()
   }
 
   fn instance(version: PluginSchemaVersion, results: &[(&'static str, u32)]) -> Box<dyn InitializedWasmPluginInstance + Send> {
@@ -566,5 +591,37 @@ mod test {
       .unwrap_err();
       assert!(err.to_string().contains("outside the plugin's memory"), "{err:#}");
     }
+  }
+
+  #[test]
+  fn a_released_v4_config_is_released_in_the_plugin_and_registered_again() {
+    let exports = ScriptedExports::new(&[]);
+    let calls = exports.calls.clone();
+    let mut instance = create_plugin_instance(PluginSchemaVersion::V4, exports).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    assert_eq!(calls_named(&calls, "register_config"), vec![vec![1]]);
+    instance.release_config(FormatConfigId::from_raw(2)).unwrap();
+    assert_eq!(calls_named(&calls, "release_config"), Vec::<Vec<u32>>::new());
+    instance.release_config(FormatConfigId::from_raw(1)).unwrap();
+    assert_eq!(calls_named(&calls, "release_config"), vec![vec![1]]);
+    format_with(instance.as_mut(), 1).unwrap();
+    assert_eq!(calls_named(&calls, "register_config"), vec![vec![1], vec![1]]);
+  }
+
+  #[test]
+  fn a_released_v3_config_is_sent_again() {
+    let exports = ScriptedExports::new(&v3(&[]));
+    let calls = exports.calls.clone();
+    let mut instance = create_plugin_instance(PluginSchemaVersion::V3, exports).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    assert_eq!(calls_named(&calls, "set_plugin_config").len(), 1);
+    instance.release_config(FormatConfigId::from_raw(2)).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    assert_eq!(calls_named(&calls, "set_plugin_config").len(), 1);
+    instance.release_config(FormatConfigId::from_raw(1)).unwrap();
+    format_with(instance.as_mut(), 1).unwrap();
+    assert_eq!(calls_named(&calls, "set_plugin_config").len(), 2);
   }
 }

@@ -211,6 +211,17 @@ impl PluginWithConfig {
     &self.info().name
   }
 
+  /// The ids of the configurations the plugin registers for this one: its
+  /// configuration and one per override.
+  pub fn config_ids(&self) -> impl Iterator<Item = FormatConfigId> + '_ {
+    std::iter::once(self.format_config.id).chain(self.overrides.iter().map(|override_config| override_config.config_id))
+  }
+
+  /// Whether this is the only owner of its configurations.
+  fn owns_configs_alone(self: &Rc<Self>) -> bool {
+    Rc::strong_count(self) == 1 && Arc::strong_count(&self.format_config) == 1
+  }
+
   pub fn info(&self) -> &PluginInfo {
     self.plugin.info()
   }
@@ -467,6 +478,12 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 
   pub fn process_plugin_count(&self) -> usize {
     self.plugins.values().filter(|p| p.plugin.is_process_plugin()).count()
+  }
+
+  /// Whether this scope alone owns its plugins' configurations, so
+  /// nothing formats with them any more.
+  pub fn owns_configs_alone(self: &Rc<Self>) -> bool {
+    Rc::strong_count(self) == 1 && self.plugins.values().all(|plugin| plugin.owns_configs_alone())
   }
 
   pub fn get_plugin(&self, name: &str) -> Rc<PluginWithConfig> {
@@ -1740,6 +1757,15 @@ mod test {
       matcher,
       property_origins: Default::default(),
     }])
+  }
+
+  #[test]
+  fn config_ids_are_the_configs_and_the_overrides() {
+    let plugin = create_plugin_with_override(vec!["**/package.txt".to_string()], ConfigKeyMap::default());
+    assert_eq!(
+      plugin.config_ids().collect::<Vec<_>>(),
+      vec![FormatConfigId::from_raw(1), FormatConfigId::from_raw(2)]
+    );
   }
 
   fn create_plugin_with_overrides(overrides: Vec<PluginConfigOverride>) -> PluginWithConfig {

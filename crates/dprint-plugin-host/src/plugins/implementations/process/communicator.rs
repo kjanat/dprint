@@ -151,6 +151,15 @@ impl<TEnvironment: Environment> InitializedProcessPluginCommunicator<TEnvironmen
     }
   }
 
+  pub async fn release_config(&self, config_id: FormatConfigId) -> Result<()> {
+    let inner = self.inner.lock().await;
+    let was_registered = inner.registered_configs.borrow_mut().remove(&config_id);
+    if !was_registered {
+      return Ok(());
+    }
+    inner.communicator.release_config(config_id).await.map_err(anyhow::Error::from)
+  }
+
   pub async fn get_inner(&self) -> Rc<ProcessPluginCommunicator> {
     self.inner.lock().await.communicator.clone()
   }
@@ -331,6 +340,31 @@ mod test {
         // should return Ok(None)
         assert_eq!(result.unwrap(), None);
 
+        communicator.shutdown().await;
+      }
+    })
+  }
+
+  #[test]
+  fn a_released_config_is_registered_again() {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_process_plugin().build();
+    environment.run_in_runtime({
+      let environment = environment.clone();
+      async move {
+        let communicator = InitializedProcessPluginCommunicator::new_test_plugin_communicator(environment.clone()).await;
+        let format_config = Arc::new(FormatConfig {
+          id: FormatConfigId::from_raw(1),
+          plugin: Default::default(),
+          global: Default::default(),
+        });
+        communicator.get_resolved_config(&format_config).await.unwrap();
+        assert!(communicator.inner.lock().await.registered_configs.borrow().contains(&format_config.id));
+        communicator.release_config(FormatConfigId::from_raw(2)).await.unwrap();
+        assert!(communicator.inner.lock().await.registered_configs.borrow().contains(&format_config.id));
+        communicator.release_config(format_config.id).await.unwrap();
+        assert!(!communicator.inner.lock().await.registered_configs.borrow().contains(&format_config.id));
+        communicator.get_resolved_config(&format_config).await.unwrap();
+        assert!(communicator.inner.lock().await.registered_configs.borrow().contains(&format_config.id));
         communicator.shutdown().await;
       }
     })

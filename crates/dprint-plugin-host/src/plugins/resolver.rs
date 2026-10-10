@@ -94,6 +94,11 @@ impl PluginWrapper {
     Ok(plugin)
   }
 
+  /// The initialized plugin, when it has been initialized.
+  pub async fn initialized(&self) -> Option<Rc<dyn InitializedPlugin>> {
+    self.initialized_plugin.lock().await.clone()
+  }
+
   pub async fn shutdown(&self) {
     let mut initialized = self.initialized_plugin.lock().await;
     if let Some(plugin) = initialized.take() {
