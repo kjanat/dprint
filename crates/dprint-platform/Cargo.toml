@@ -10,7 +10,6 @@ dprint-async-runtime = { workspace = true }
 dprint-git           = { workspace = true }
 dprint-host-api      = { workspace = true }
 dprint-owned-child   = { workspace = true }
-dprint-plugin-types  = { workspace = true }
 
 tree-fucker = { workspace = true }
 
@@ -40,7 +39,6 @@ which.workspace     = true
 
 [dev-dependencies]
 dprint-test-support         = { workspace = true }
-path-clean.workspace        = true
 pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }
 tempfile.workspace          = true

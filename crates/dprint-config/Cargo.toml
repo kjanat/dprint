@@ -18,7 +18,6 @@ schema-id = "https://dprint.kjanat.dev/schemas/v0.json"
 dprint-host-api      = { workspace = true }
 dprint-plugin-types  = { workspace = true }
 thiserror            = { workspace = true }
-monch                = { workspace = true }
 toml_edit            = { workspace = true }
 jsonc-parser         = { workspace = true, features = ["cst", "preserve_order"] }
 json-schema-sort     = { workspace = true }

@@ -10,6 +10,9 @@ keywords    = ["code-formatter", "formatter"]
 categories  = ["development-tools"]
 default-run = "dprint"
 
+[package.metadata.cargo-shear]
+ignored = ["libc"]
+
 [dependencies]
 dprint-async-runtime  = { workspace = true }
 dprint-communication  = { workspace = true }
@@ -32,40 +35,30 @@ console_static_text = { workspace = true }
 crossterm           = { workspace = true }
 deno_semver         = { workspace = true }
 deno_terminal       = { workspace = true }
-flate2              = { workspace = true }
 indexmap            = { workspace = true }
 jsonc-parser        = { workspace = true, features = ["cst", "preserve_order"] }
 once_cell           = { workspace = true }
 parking_lot         = { workspace = true }
-# pin this to prevent it changing with `cargo install` because patch version increases
-# of rkyv may cause panics when deserializing data serialized with older versions
 rustls              = { workspace = true, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = { workspace = true }
 rustls-pemfile      = { workspace = true }
 serde               = { workspace = true }
 serde_json          = { workspace = true }
-sys_traits          = { workspace = true, features = ["real"] }
-tar                 = { workspace = true }
 thiserror           = { workspace = true }
 tokio               = { workspace = true, features = ["io-std"] }
 tokio-util          = { workspace = true }
 toml_edit           = { workspace = true }
 ureq                = { workspace = true, features = ["gzip", "socks-proxy", "tls"] }
 url                 = { workspace = true }
-# runs a Wasm plugin's configuration functions (its info, resolving a configuration, the files it formats)
-# without compiling it to native code (see `plugins/implementations/wasm/interpreter.rs`)
 webpki-roots        = { workspace = true }
-zip                 = { workspace = true }
 
 [dev-dependencies]
 dprint-test-support = { workspace = true, features = ["plugins"] }
 pretty_assertions   = { workspace = true }
-sys_traits          = { workspace = true, features = ["memory"] }
-tempfile            = { workspace = true }
 
-[target."cfg(target_os = \"freebsd\")".dependencies]
-# Mio 0.8 (via crossterm) requires NOTE_PCTRLMASK, removed in libc 0.2.190.
-libc = { workspace = true }
+[target.'cfg(target_os = "freebsd")'.dependencies]
+# mio 0.8 (via crossterm 0.27) uses libc::NOTE_PCTRLMASK, which libc 0.2.190 removed for FreeBSD.
+libc = ">=0.2.149, <0.2.190"
 
 [target."cfg(unix)".dependencies]
 signal-hook = { workspace = true }

@@ -11,5 +11,4 @@ dprint-configuration  = { workspace = true }
 dprint-plugin-types   = { workspace = true }
 dprint-process-plugin = { workspace = true }
 serde                 = { workspace = true }
-serde_json            = { workspace = true }
 tokio                 = { workspace = true }

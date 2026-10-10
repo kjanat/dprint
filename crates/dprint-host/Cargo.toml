@@ -26,9 +26,6 @@ tokio       = { workspace = true, features = ["io-std"] }
 tokio-util  = { workspace = true }
 
 [dev-dependencies]
-dprint-plugin-host          = { workspace = true, features = ["test-support"] }
-dprint-test-support         = { workspace = true, features = ["plugins"] }
-path-clean.workspace        = true
-pretty_assertions.workspace = true
-sys_traits                  = { workspace = true, features = ["memory"] }
-tempfile.workspace          = true
+dprint-plugin-host  = { workspace = true, features = ["test-support"] }
+dprint-test-support = { workspace = true, features = ["plugins"] }
+sys_traits          = { workspace = true, features = ["memory"] }

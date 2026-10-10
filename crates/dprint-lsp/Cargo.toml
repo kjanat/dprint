@@ -28,8 +28,4 @@ tower-lsp        = { workspace = true }
 url              = { workspace = true }
 
 [dev-dependencies]
-dprint-test-support         = { workspace = true, features = ["plugins"] }
-path-clean.workspace        = true
-pretty_assertions.workspace = true
-sys_traits                  = { workspace = true, features = ["memory"] }
-tempfile.workspace          = true
+dprint-test-support = { workspace = true, features = ["plugins"] }
