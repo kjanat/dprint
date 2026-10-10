@@ -51,6 +51,7 @@ fn should_support_host_format_cancellation() {
             file_matching,
             overrides: Vec::new(),
             serialized_resolved_config,
+            release_queue: resolver.config_release_queue(),
           },
         )));
       }
@@ -117,6 +118,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
             file_matching,
             overrides: Vec::new(),
             serialized_resolved_config,
+            release_queue: resolver.config_release_queue(),
           },
         )));
       }

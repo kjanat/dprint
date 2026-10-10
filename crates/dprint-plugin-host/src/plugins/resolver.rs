@@ -107,6 +107,26 @@ impl PluginWrapper {
   }
 }
 
+/// Configurations whose last owner dropped, to release from the plugins
+/// that registered them.
+#[derive(Default)]
+pub struct ConfigReleaseQueue {
+  pending: RefCell<Vec<(Rc<PluginWrapper>, FormatConfigId)>>,
+}
+
+impl ConfigReleaseQueue {
+  pub fn push(&self, plugin: Rc<PluginWrapper>, config_ids: impl IntoIterator<Item = FormatConfigId>) {
+    let mut pending = self.pending.borrow_mut();
+    for config_id in config_ids {
+      pending.push((plugin.clone(), config_id));
+    }
+  }
+
+  pub fn take(&self) -> Vec<(Rc<PluginWrapper>, FormatConfigId)> {
+    std::mem::take(&mut *self.pending.borrow_mut())
+  }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum PluginCacheKey {
   Source(PluginSourceReference),
@@ -119,6 +139,7 @@ pub struct PluginResolver<TEnvironment: Environment> {
   memory_cache: RefCell<HashMap<PluginCacheKey, Rc<tokio::sync::OnceCell<Rc<PluginWrapper>>>>>,
   wasm_module_creator: WasmModuleCreator,
   next_config_id: IdGenerator,
+  config_releases: Rc<ConfigReleaseQueue>,
 }
 
 impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
@@ -129,10 +150,30 @@ impl<TEnvironment: Environment> PluginResolver<TEnvironment> {
       memory_cache: Default::default(),
       wasm_module_creator: Default::default(),
       next_config_id: Default::default(),
+      config_releases: Default::default(),
+    }
+  }
+
+  /// The queue a configuration's last owner pushes it on when it drops.
+  pub fn config_release_queue(&self) -> Rc<ConfigReleaseQueue> {
+    self.config_releases.clone()
+  }
+
+  /// Releases the queued configurations from the plugins that registered
+  /// them.
+  pub async fn release_queued_configs(&self) {
+    for (plugin, config_id) in self.config_releases.take() {
+      let Some(instance) = plugin.initialized().await else {
+        continue;
+      };
+      if let Err(err) = instance.release_config(config_id).await {
+        log_debug!(self.environment, "Error releasing config {:?} of {}: {:#}", config_id, plugin.info().name, err);
+      }
     }
   }
 
   pub async fn clear_and_shutdown_initialized(&self) {
+    self.config_releases.take();
     let plugins = self.memory_cache.borrow_mut().drain().collect::<Vec<_>>();
     let futures = plugins.iter().filter_map(|p| p.1.get()).map(|p| p.shutdown());
     future::join_all(futures).await;

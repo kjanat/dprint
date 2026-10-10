@@ -56,6 +56,7 @@ use crate::paths::get_plugin_names_for_file_on_disk;
 use crate::patterns::FileMatcher;
 use crate::patterns::FileMatcherOptions;
 use crate::patterns::get_patterns_as_glob_matcher;
+use crate::plugins::ConfigReleaseQueue;
 use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPlugin;
 use crate::plugins::InitializedPluginFormatRequest;
@@ -103,6 +104,13 @@ pub struct PluginWithConfig {
   serialized_resolved_config: String,
   property_origins: IndexMap<String, PathSource>,
   config_diagnostic_count: tokio::sync::Mutex<Option<usize>>,
+  release_queue: Rc<ConfigReleaseQueue>,
+}
+
+impl Drop for PluginWithConfig {
+  fn drop(&mut self) {
+    self.release_queue.push(self.plugin.clone(), self.config_ids());
+  }
 }
 
 pub struct PluginWithConfigOptions {
@@ -116,6 +124,9 @@ pub struct PluginWithConfigOptions {
   /// global configuration) are from, when that's not the configuration file
   /// being resolved, for diagnostics.
   pub property_origins: IndexMap<String, PathSource>,
+  /// Where the configurations go when this drops, to be released from
+  /// the plugin.
+  pub release_queue: Rc<ConfigReleaseQueue>,
 }
 
 impl PluginWithConfig {
@@ -128,6 +139,7 @@ impl PluginWithConfig {
       config_diagnostic_count: Default::default(),
       file_matching: options.file_matching,
       serialized_resolved_config: options.serialized_resolved_config,
+      release_queue: options.release_queue,
       property_origins: options.property_origins,
     }
   }
@@ -215,11 +227,6 @@ impl PluginWithConfig {
   /// configuration and one per override.
   pub fn config_ids(&self) -> impl Iterator<Item = FormatConfigId> + '_ {
     std::iter::once(self.format_config.id).chain(self.overrides.iter().map(|override_config| override_config.config_id))
-  }
-
-  /// Whether this is the only owner of its configurations.
-  fn owns_configs_alone(self: &Rc<Self>) -> bool {
-    Rc::strong_count(self) == 1 && Arc::strong_count(&self.format_config) == 1
   }
 
   pub fn info(&self) -> &PluginInfo {
@@ -478,12 +485,6 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
 
   pub fn process_plugin_count(&self) -> usize {
     self.plugins.values().filter(|p| p.plugin.is_process_plugin()).count()
-  }
-
-  /// Whether this scope alone owns its plugins' configurations, so
-  /// nothing formats with them any more.
-  pub fn owns_configs_alone(self: &Rc<Self>) -> bool {
-    Rc::strong_count(self) == 1 && self.plugins.values().all(|plugin| plugin.owns_configs_alone())
   }
 
   pub fn get_plugin(&self, name: &str) -> Rc<PluginWithConfig> {
@@ -1441,6 +1442,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
               overrides,
               serialized_resolved_config: resolution.resolved_config,
               property_origins,
+              release_queue: plugin_resolver.config_release_queue(),
             },
           )))
         }
@@ -1554,6 +1556,7 @@ mod test {
       Rc::new(PluginWrapper::new(Box::new(plugin))),
       PluginWithConfigOptions {
         property_origins: Default::default(),
+        release_queue: Default::default(),
         associations: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),
@@ -1643,6 +1646,7 @@ mod test {
         plugin,
         PluginWithConfigOptions {
           property_origins: Default::default(),
+          release_queue: Default::default(),
           associations: None,
           format_config,
           file_matching: FileMatchingInfo {
@@ -1773,6 +1777,7 @@ mod test {
       Rc::new(PluginWrapper::new(Box::new(TestPlugin::new("test-plugin", "test-plugin", vec!["txt"], vec![])))),
       PluginWithConfigOptions {
         property_origins: Default::default(),
+        release_queue: Default::default(),
         associations: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),
