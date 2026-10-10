@@ -13,7 +13,8 @@ makedepends=('cargo' 'git')
 provides=("dprint=${pkgver}")
 conflicts=('dprint' 'dprint-git' 'dprint-kjanat' 'dprint-kjanat-bin')
 options=('!lto')
-source=('dprint::git+https://github.com/kjanat/dprint.git')
+_commit=80e6374cd17282a5cfafadf61cba272920290838
+source=("dprint::git+https://github.com/kjanat/dprint.git#commit=${_commit}")
 sha256sums=('SKIP')
 
 pkgver() {

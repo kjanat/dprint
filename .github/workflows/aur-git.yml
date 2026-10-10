@@ -5,9 +5,6 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [master]
-  push:
-    branches: [master]
-    paths: [deployment/aur/dprint-kjanat-git/PKGBUILD, .github/workflows/aur-git.yml]
   workflow_dispatch:
 
 permissions: { contents: read }
@@ -18,21 +15,41 @@ jobs:
   publish:
     name: Publish dprint-kjanat-git
     if: >-
-      github.repository_id == '1092062077' && (github.event_name != 'workflow_run' ||
+      github.repository_id == '1092062077' && (github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: { name: aur, url: "https://aur.archlinux.org/packages/dprint-kjanat-git" }
+    env:
+      PKGBUILD: deployment/aur/dprint-kjanat-git/PKGBUILD
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
+      - name: Pin the commit CI built
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          commit="${HEAD_SHA}"
+          if [[ -z "${commit}" ]]; then
+            commit="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow ci.yml --branch master \
+              --event push --status success --limit 1 --json headSha --jq '.[0].headSha')"
+          fi
+          if [[ ! "${commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "No commit with a successful CI push run on master" >&2
+            exit 1
+          fi
+          sed -i "s/^_commit=.*/_commit=${commit}/" "${PKGBUILD}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          grep -E '^(_commit|source)=' "${PKGBUILD}"
       - uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         with:
           pkgname: dprint-kjanat-git
-          pkgbuild: deployment/aur/dprint-kjanat-git/PKGBUILD
+          pkgbuild: ${{ env.PKGBUILD }}
           test: true
           test_flags: --clean --cleanbuild --syncdeps --noconfirm
           commit_username: ${{ vars.COMMIT_USER }}
           commit_email: ${{ vars.COMMIT_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update PKGBUILD
+          commit_message: Update to ${{ steps.pin.outputs.commit }}
