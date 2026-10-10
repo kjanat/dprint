@@ -1,0 +1,14 @@
+storage: ./verdaccio-storage
+uplinks: {}
+packages:
+  "@kprint/*":
+    access: $all
+    publish: $all
+  kprint:
+    access: $all
+    publish: $all
+  "**":
+    access: $all
+    publish: $all
+max_body_size: 200mb
+log: { type: stdout, format: pretty, level: warn }

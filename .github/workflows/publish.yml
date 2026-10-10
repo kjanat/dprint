@@ -17,7 +17,7 @@ permissions:
   contents: read
 jobs:
   publish-cargo:
-    if: github.repository_id == '1092062077'
+    if: github.repository_id == '1092062077' && false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -27,11 +27,11 @@ jobs:
       - id: auth
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1
       - name: Cargo publish
+        working-directory: crates/dprint
         env:
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}"
-        run: |
-          cd crates/dprint
-          cargo publish ${{ (inputs.dry_run || false) && '--dry-run' || '' }}
+        run: cargo publish ${DRY_RUN:+--dry-run}
   publish-package-managers:
     name: Homebrew and Scoop
     if: github.repository_id == '1092062077' && !github.event.release.prerelease
@@ -105,13 +105,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - name: Build npm packages
-        run: 'deno run -A deployment/npm/build.ts ${{ inputs.version || '''' }}'
-      - name: Tar npm dist (preserves permissions)
+        env: { VERSION: "${{ inputs.version }}" }
+        run: deno run -A deployment/npm/build.ts ${VERSION:+"${VERSION}"}
+      - name: Tar the npm packages (keeps file modes)
         run: tar cf deployment/npm/dist.tar -C deployment/npm --exclude='node_modules' dist
-      - name: Upload artifact npm-dist
+      - name: Upload the npm packages
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: npm-dist
+          name: npm-packages
           path: deployment/npm/dist.tar
           retention-days: 1
   test-npm:
@@ -131,36 +132,16 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - name: Download artifact npm-dist
+      - name: Download the npm packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: npm-dist
+          name: npm-packages
           path: deployment/npm
-      - name: Extract npm dist
+      - name: Extract the npm packages
         run: tar xf deployment/npm/dist.tar -C deployment/npm
-      - name: Write Verdaccio config
-        run: |
-          mkdir -p "${{ runner.temp }}/verdaccio/storage"
-          cat > "${{ runner.temp }}/verdaccio/config.yaml" << 'HEREDOC'
-          storage: ./storage
-          uplinks: {}
-          packages:
-            '@kprint/*':
-              access: $all
-              publish: $all
-            'kprint':
-              access: $all
-              publish: $all
-            '**':
-              access: $all
-              publish: $all
-          max_body_size: 200mb
-          log: { type: stdout, format: pretty, level: warn }
-          HEREDOC
       - name: Start Verdaccio
         run: |
-          npx verdaccio@6 \
-            --config "${{ runner.temp }}/verdaccio/config.yaml" --listen 4873 &
+          npx verdaccio@6 --config deployment/npm/verdaccio.yaml --listen 4873 &
           for ((attempt = 0; attempt < 30; attempt++)); do
             if curl -s http://localhost:4873/-/ping > /dev/null 2>&1; then
               echo "Verdaccio is ready"
@@ -173,47 +154,39 @@ jobs:
           npm config set registry http://localhost:4873/
           npm config set //localhost:4873/:_authToken dummy-token
       - name: Publish packages to Verdaccio
-        id: publish-verdaccio
         run: |
-          DIST_DIR="deployment/npm/dist"
-          for pkg_dir in "${DIST_DIR}"/@kprint/*/; do
-            echo "Publishing $(basename "${pkg_dir}") to Verdaccio..."
-            (cd "${pkg_dir}" && npm publish --registry http://localhost:4873/)
+          for package in deployment/npm/dist/@kprint/*/ deployment/npm/dist/kprint/; do
+            npm publish "${package}" --registry http://localhost:4873/
           done
-          echo "Publishing kprint to Verdaccio..."
-          (cd "${DIST_DIR}/kprint" && npm publish --registry http://localhost:4873/)
-          VERSION=$(node -p "require('./${DIST_DIR}/kprint/package.json').version")
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          version="$(node -p "require('./deployment/npm/dist/kprint/package.json').version")"
+          echo "KPRINT_VERSION=${version}" >> "${GITHUB_ENV}"
+      - name: Create the test projects
+        run: mkdir -p "${RUNNER_TEMP}/npm-test" "${RUNNER_TEMP}/readonly-test"
       - name: Test npm install kprint
+        working-directory: ${{ runner.temp }}/npm-test
         run: |
-          TEST_DIR="${{ runner.temp }}/npm-test"
-          mkdir -p "${TEST_DIR}"
-          cd "${TEST_DIR}"
           npm init -y
-          EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install kprint@${{ steps.publish-verdaccio.outputs.version }}
+          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          npm install "kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$(npx "${command}" -v)"
             echo "${command}: ${ACTUAL}"
             [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
           done
       - name: Test kprint via bin.cjs fallback
-        run: |
-          cd "${{ runner.temp }}/npm-test"
-          node node_modules/kprint/bin.cjs -v
+        working-directory: ${{ runner.temp }}/npm-test
+        run: node node_modules/kprint/bin.cjs -v
       - name: Test kprint via simulated readonly file system
+        working-directory: ${{ runner.temp }}/readonly-test
         run: |
-          TEST_DIR="${{ runner.temp }}/readonly-test"
-          mkdir -p "${TEST_DIR}"
-          cd "${TEST_DIR}"
           npm init -y
-          npm install kprint@${{ steps.publish-verdaccio.outputs.version }}
+          npm install "kprint@${KPRINT_VERSION}"
           rm -f node_modules/kprint/dprint*
           DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/kprint/bin.cjs -v
       - name: Test npm global install kprint
         run: |
-          EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install -g kprint@${{ steps.publish-verdaccio.outputs.version }}
+          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          npm install -g "kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"
             echo "${command}: ${ACTUAL}"
@@ -234,8 +207,8 @@ jobs:
           npm uninstall -g kprint
       - name: Test npm global install kprint (--ignore-scripts)
         run: |
-          EXPECTED_VERSION="dprint ${{ steps.publish-verdaccio.outputs.version }}"
-          npm install -g --ignore-scripts kprint@${{ steps.publish-verdaccio.outputs.version }}
+          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          npm install -g --ignore-scripts "kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"
             echo "${command}: ${ACTUAL}"
@@ -261,12 +234,13 @@ jobs:
         with:
           node-version: 24.x
           registry-url: "https://registry.npmjs.org"
-      - name: Download artifact npm-dist
+      - name: Download the npm packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: npm-dist
+          name: npm-packages
           path: deployment/npm
-      - name: Extract npm dist
+      - name: Extract the npm packages
         run: tar xf deployment/npm/dist.tar -C deployment/npm
       - name: Publish to npm
-        run: 'deno run -A deployment/npm/build.ts ${{ inputs.version || '''' }} --publish-only'
+        env: { VERSION: "${{ inputs.version }}" }
+        run: deno run -A deployment/npm/build.ts ${VERSION:+"${VERSION}"} --publish-only

@@ -13,5 +13,6 @@ target
 /website/playground/dist
 /crates/test-plugin/Cargo.lock
 /deployment/npm/dist
+/deployment/npm/verdaccio-storage
 /*.fsql
 /crates/*/temp/
