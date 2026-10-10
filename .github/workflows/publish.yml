@@ -32,6 +32,69 @@ jobs:
         run: |
           cd crates/dprint
           cargo publish ${{ (inputs.dry_run || false) && '--dry-run' || '' }}
+  publish-package-managers:
+    name: Homebrew and Scoop
+    if: github.repository_id == '1092062077' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { contents: read }
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.version }}
+      MANIFESTS: manifests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: Render the cask and the Scoop manifest
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern SHASUMS256.txt --dir "${RUNNER_TEMP}"
+          .github/scripts/package-managers.sh render "${TAG}" "${RUNNER_TEMP}/SHASUMS256.txt" "${MANIFESTS}"
+          cat "${MANIFESTS}/dprint.rb" "${MANIFESTS}/dprint.json"
+      - name: Publish to kjanat/homebrew-tap and kjanat/scoop-bucket
+        if: "!(inputs.dry_run || false)"
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: .github/scripts/package-managers.sh publish "${TAG}" "${MANIFESTS}"
+  publish-aur:
+    name: AUR ${{ matrix.package }}
+    if: github.repository_id == '1092062077' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions: { contents: read }
+    environment: { name: aur, url: "https://aur.archlinux.org/packages/${{ matrix.package }}" }
+    strategy:
+      fail-fast: false
+      matrix: { package: [dprint-kjanat-bin, dprint-kjanat] }
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.version }}
+      PKGBUILD: deployment/aur/${{ matrix.package }}/PKGBUILD
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: Set the release version
+        run: |
+          if [[ ! "${TAG}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-kjanat$ ]]; then
+            echo "Expected a MAJOR.MINOR.PATCH-kjanat tag, got ${TAG}" >&2
+            exit 1
+          fi
+          sed -i -e "s/^pkgver=.*/pkgver=${BASH_REMATCH[1]}/" -e 's/^pkgrel=.*/pkgrel=1/' "${PKGBUILD}"
+          cat "${PKGBUILD}"
+      - name: Publish to the AUR
+        if: "!(inputs.dry_run || false)"
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
+        with:
+          pkgname: ${{ matrix.package }}
+          pkgbuild: ${{ env.PKGBUILD }}
+          updpkgsums: true
+          test: true
+          test_flags: --clean --cleanbuild --syncdeps --noconfirm
+          commit_username: ${{ vars.COMMIT_USER }}
+          commit_email: ${{ vars.COMMIT_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ env.TAG }}
   build-npm:
     name: npm build
     if: github.repository_id == '1092062077'

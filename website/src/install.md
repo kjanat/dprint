@@ -4,7 +4,7 @@ description: Documentation on installing dprint.
 layout: layouts/documentation.njk
 ---
 
-# Install dprint
+# Install dprint <!-- rumdl-disable-line single-title -->
 
 Install using one of the methods below.
 
@@ -24,16 +24,29 @@ Install using one of the methods below.
   iwr https://dprint.kjanat.dev/install.ps1 -useb | iex
   ```
 
-- [Scoop](https://scoop.sh/) (Windows):
+- [Scoop](https://scoop.sh/) (Windows), from the [kjanat bucket](https://github.com/kjanat/scoop-bucket):
 
   ```sh
-  scoop install dprint
+  scoop bucket add kjanat https://github.com/kjanat/scoop-bucket
+  scoop install kjanat/dprint
   ```
 
-- [Homebrew](https://brew.sh/) (Mac):
+- [Homebrew](https://brew.sh/) (Mac, Linux), from the [kjanat tap](https://github.com/kjanat/homebrew-tap):
 
   ```sh
-  brew install dprint
+  brew trust kjanat/tap
+  brew install kjanat/tap/dprint
+  ```
+
+- [AUR](https://aur.archlinux.org/packages?K=dprint-kjanat) (Arch Linux):
+
+  ```sh
+  # prebuilt binary
+  yay -S dprint-kjanat-bin
+  # or built from the release source
+  yay -S dprint-kjanat
+  # or built from master
+  yay -S dprint-kjanat-git
   ```
 
 - [Cargo](https://doc.rust-lang.org/cargo/) (builds and installs from the [repository](https://github.com/kjanat/dprint) source):
@@ -62,15 +75,15 @@ Install using one of the methods below.
   uv run dprint help
   ```
 
-  [mise](https://mise.jdx.dev):
+- [mise](https://mise.jdx.dev), from the GitHub releases:
 
   ```sh
   # for your project
-  mise use dprint
-  mise x dprint -- dprint help
+  mise use github:kjanat/dprint
+  mise x github:kjanat/dprint -- dprint help
 
   # or install globally
-  mise use dprint --global
+  mise use --global github:kjanat/dprint
   dprint help
   ```
 
@@ -106,6 +119,6 @@ FreeBSD builds target amd64 on FreeBSD 14.4 or newer. Wasm plugins and built-in
 - [Visual Studio Code](https://marketplace.visualstudio.com/items?itemName=dprint.dprint)
 - [IntelliJ](https://plugins.jetbrains.com/plugin/18192-dprint) - Thanks to the developers at [Canva](https://canva.com)
 - Neovim with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#dprint)
-- The `dprint lsp` subcommand provides code formatting over the language server protocol. This can be used to format in other editors.
+- The `dprint lsp` subcommand provides code formatting over the language server protocol. This can be used to format in other editors. <!-- rumdl-disable-line line-length -->
 
 Next step: [Setup](/setup)

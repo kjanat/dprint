@@ -3,7 +3,7 @@ const commands: Record<string, string> = {
   shell: "curl -fsSL https://dprint.kjanat.dev/install.sh | sh",
   pwsh: "irm https://dprint.kjanat.dev/install.ps1 | iex",
   npm: "NOT AVAILABLE", // npm install -g kprint
-  brew: "NOT AVAILABLE",
+  brew: "brew install kjanat/tap/dprint",
   cargo: "cargo install --locked --git https://github.com/kjanat/dprint dprint --bin dprint",
 };
 

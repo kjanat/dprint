@@ -1,0 +1,45 @@
+# Maintainer: Kaj Kowalski <info@kajkowalski.nl>
+# shellcheck disable=SC2034,SC2154
+
+pkgname=dprint-kjanat
+pkgver=0.59.0
+pkgrel=1
+pkgdesc='Pluggable and configurable code formatting platform (kjanat fork)'
+arch=('x86_64' 'aarch64')
+url='https://dprint.kjanat.dev'
+license=('MIT')
+depends=('bzip2' 'gcc-libs' 'glibc' 'xz')
+makedepends=('cargo')
+provides=("dprint=${pkgver}")
+conflicts=('dprint' 'dprint-git' 'dprint-kjanat-bin' 'dprint-kjanat-git')
+options=('!lto')
+_tag="${pkgver}-kjanat"
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/kjanat/dprint/archive/refs/tags/${_tag}.tar.gz")
+sha256sums=('2ca93c954ffbf410e5428653a7c18288a319d98790c5b2563b7a8174695b4db2')
+
+prepare() {
+	cd "dprint-${_tag}" || exit
+	export RUSTUP_TOOLCHAIN=stable
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+	cd "dprint-${_tag}" || exit
+	RUSTUP_TOOLCHAIN=stable
+	CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+	cargo build --frozen --release -p dprint
+}
+
+package() {
+	cd "dprint-${_tag}" || exit
+	install -Dm0755 target/release/dprint "${pkgdir}/usr/bin/dprint"
+	install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+	install -Dm0644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+	install -dm0755 "${pkgdir}/usr/share/bash-completion/completions" \
+		"${pkgdir}/usr/share/zsh/site-functions" \
+		"${pkgdir}/usr/share/fish/vendor_completions.d"
+	target/release/dprint completions bash >"${pkgdir}/usr/share/bash-completion/completions/dprint"
+	target/release/dprint completions zsh >"${pkgdir}/usr/share/zsh/site-functions/_dprint"
+	target/release/dprint completions fish >"${pkgdir}/usr/share/fish/vendor_completions.d/dprint.fish"
+}
