@@ -39,6 +39,19 @@ enum WasmFormatResult {
   Error,
 }
 
+impl TryFrom<u32> for WasmFormatResult {
+  type Error = anyhow::Error;
+
+  fn try_from(value: u32) -> Result<Self> {
+    match value {
+      0 => Ok(WasmFormatResult::NoChange),
+      1 => Ok(WasmFormatResult::Change),
+      2 => Ok(WasmFormatResult::Error),
+      _ => Err(anyhow!("Plugin returned the format result {}. Expected 0, 1 or 2.", value)),
+    }
+  }
+}
+
 /// A callback that logs plugin stderr output. Kept as a boxed callback rather
 /// than storing the whole `Environment` + plugin name in the host state, which
 /// would make the store data generic over the environment type.
@@ -446,7 +459,7 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn format(&mut self, config_id: FormatConfigId) -> Result<WasmFormatResult> {
     let value = self.exports.call_u32("format", &[config_id.as_raw()])?;
-    Ok(u8_to_format_result(value as u8))
+    WasmFormatResult::try_from(value)
   }
 
   #[inline]
@@ -457,7 +470,7 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
     let value = self
       .exports
       .call_u32("format_range", &[config_id.as_raw(), range.start as u32, range.end as u32])?;
-    Ok(u8_to_format_result(value as u8))
+    WasmFormatResult::try_from(value)
   }
 
   #[inline]
@@ -492,14 +505,5 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
 
   fn call_len(&mut self, name: &str, params: &[u32]) -> Result<usize> {
     Ok(self.exports.call_u32(name, params)? as usize)
-  }
-}
-
-fn u8_to_format_result(orig: u8) -> WasmFormatResult {
-  match orig {
-    0 => WasmFormatResult::NoChange,
-    1 => WasmFormatResult::Change,
-    2 => WasmFormatResult::Error,
-    _ => unreachable!(),
   }
 }

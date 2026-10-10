@@ -418,3 +418,111 @@ fn get_current_exe_display() -> String {
     .map(|p| p.display().to_string())
     .unwrap_or_else(|| "<unknown path>".to_string())
 }
+
+#[cfg(test)]
+mod test {
+  use std::collections::HashMap;
+  use std::path::PathBuf;
+
+  use dprint_plugin_types::CriticalFormatError;
+  use dprint_plugin_types::FormatConfigId;
+  use dprint_plugin_types::NullCancellationToken;
+
+  use super::*;
+
+  /// Exports whose `u32` results are scripted by name; everything else
+  /// returns zero.
+  struct ScriptedExports {
+    results: HashMap<&'static str, u32>,
+    memory: Vec<u8>,
+  }
+
+  impl ScriptedExports {
+    fn new(results: &[(&'static str, u32)]) -> Self {
+      Self {
+        results: results.iter().copied().collect(),
+        memory: vec![0; 4096],
+      }
+    }
+  }
+
+  impl PluginExports for ScriptedExports {
+    fn has_function(&mut self, _name: &str) -> bool {
+      true
+    }
+
+    fn call(&mut self, _name: &str, _params: &[u32]) -> Result<()> {
+      Ok(())
+    }
+
+    fn call_u32(&mut self, name: &str, _params: &[u32]) -> Result<u32> {
+      Ok(self.results.get(name).copied().unwrap_or(0))
+    }
+
+    fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
+      match memory_range(&self.memory, offset, bytes.len()) {
+        Some(range) => {
+          bytes.copy_from_slice(&self.memory[range]);
+          Ok(())
+        }
+        None => bail!("out of bounds memory access"),
+      }
+    }
+
+    fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
+      match memory_range(&self.memory, offset, bytes.len()) {
+        Some(range) => {
+          self.memory[range].copy_from_slice(bytes);
+          Ok(())
+        }
+        None => bail!("out of bounds memory access"),
+      }
+    }
+
+    fn set_token(&mut self, _token: Arc<dyn CancellationToken>) {}
+  }
+
+  fn format(version: PluginSchemaVersion, results: &[(&'static str, u32)]) -> FormatResult {
+    let mut instance = create_plugin_instance(version, ScriptedExports::new(results)).unwrap();
+    let config = FormatConfig {
+      id: FormatConfigId::from_raw(1),
+      plugin: Default::default(),
+      global: Default::default(),
+    };
+    instance.format_text(
+      &PathBuf::from("/file.txt"),
+      b"text",
+      None,
+      &config,
+      &ConfigKeyMap::default(),
+      Arc::new(NullCancellationToken),
+    )
+  }
+
+  fn v3(results: &[(&'static str, u32)]) -> Vec<(&'static str, u32)> {
+    let mut results = results.to_vec();
+    results.push(("get_wasm_memory_buffer_size", 1024));
+    results
+  }
+
+  #[test]
+  fn a_format_result_in_range_is_accepted() {
+    for version in [PluginSchemaVersion::V3, PluginSchemaVersion::V4] {
+      assert_eq!(format(version, &v3(&[("format", 0)])).unwrap(), None);
+      assert_eq!(format(version, &v3(&[("format", 1)])).unwrap(), Some(Vec::new()));
+      let err = format(version, &v3(&[("format", 2)])).unwrap_err();
+      assert!(err.downcast_ref::<CriticalFormatError>().is_none(), "{err:#}");
+    }
+  }
+
+  #[test]
+  fn a_format_result_out_of_range_is_a_protocol_error() {
+    for version in [PluginSchemaVersion::V3, PluginSchemaVersion::V4] {
+      for value in [3, 256, 257, u32::MAX] {
+        let err = format(version, &v3(&[("format", value)])).unwrap_err();
+        assert!(err.downcast_ref::<CriticalFormatError>().is_some(), "{err:#}");
+        assert!(err.to_string().contains(&format!("format result {value}")), "{err:#}");
+      }
+    }
+  }
+}
