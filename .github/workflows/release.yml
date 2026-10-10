@@ -33,7 +33,7 @@ jobs:
           GH_WORKFLOW_ACTOR: "${{ github.actor }}"
           RELEASE_SUFFIX: "${{ github.event.inputs.suffix || (github.repository_owner != 'dprint' && github.repository_owner || '') }}"
           RELEASE_KIND: "${{ github.event.inputs.releaseKind }}"
-          f: crates/dprint/Cargo.toml
+          f: crates/kprint/Cargo.toml
         run: git config user.email "${GITHUB_ACTOR}@users.noreply.github.com";
           git config user.name "${GITHUB_ACTOR}";
           v=$(yq .package.version "${f}");

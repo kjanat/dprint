@@ -46,12 +46,12 @@ setup() {
 
 build() {
 	case "${BUILD}" in
-		cargo) cargo build -p dprint --locked --target "${TARGET}" ${release:+--release} ;;
-		zigbuild) cargo zigbuild -p dprint --locked --target "${cargo_target}" ${release:+--release} ;;
-		cross) cross build -p dprint --locked --target "${TARGET}" ${release:+--release} ;;
+		cargo) cargo build -p kprint --locked --target "${TARGET}" ${release:+--release} ;;
+		zigbuild) cargo zigbuild -p kprint --locked --target "${cargo_target}" ${release:+--release} ;;
+		cross) cross build -p kprint --locked --target "${TARGET}" ${release:+--release} ;;
 		musl-image)
 			docker run --rm --volume "${PWD}:/home/rust/src" --workdir /home/rust/src "${IMAGE:?}" \
-				bash -c "rustup target add ${TARGET} && cargo build -p dprint --locked --target ${TARGET} ${release:+--release}"
+				bash -c "rustup target add ${TARGET} && cargo build -p kprint --locked --target ${TARGET} ${release:+--release}"
 			sudo chown -R "$(id -u):$(id -g)" target
 			;;
 		*)

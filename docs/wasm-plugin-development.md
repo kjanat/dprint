@@ -2,16 +2,16 @@
 
 Wasm plugins are the preferred way of developing plugins (as opposed to process plugins) because they are portable and run sandboxed in a Wasm runtime. They can be written in any language that supports compiling to a WebAssembly file (_.wasm_)—emscripten solutions do not work.
 
-See [the crate layout](crate-layout.md) to use the Wasm API directly through `dprint-wasm-plugin`. The examples below use the compatible `dprint-core` facade.
+See [the crate layout](crate-layout.md) to use the Wasm API directly through `kprint-wasm-plugin`. The examples below use the compatible `kprint-core` facade.
 
-## Rust - Using `dprint-core`
+## Rust - Using `kprint-core`
 
-Implementing a Wasm plugin is easier if you're using Rust as there are several helpers in `dprint-core`.
+Implementing a Wasm plugin is easier if you're using Rust as there are several helpers in `kprint-core`.
 
-1. Use the `wasm` feature from `dprint-core` in _Cargo.toml_:
+1. Use the `wasm` feature from `kprint-core` in _Cargo.toml_:
 
    ```toml
-   dprint-core = { version = "...", features = ["wasm"] }
+   kprint-core = { version = "...", features = ["wasm"] }
    serde       = { version = "1.0", features = ["derive"] }
    serde_json  = { version = "1.0", features = ["preserve_order"] }
    ```
@@ -40,15 +40,15 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
 
    ```rust
    use anyhow::Result;
-   use dprint_core::configuration::ConfigKeyMap;
-   use dprint_core::configuration::GlobalConfiguration;
-   use dprint_core::configuration::get_unknown_property_diagnostics;
-   use dprint_core::configuration::get_value;
-   use dprint_core::generate_plugin_code;
-   use dprint_core::plugins::FileMatchingInfo;
-   use dprint_core::plugins::PluginInfo;
-   use dprint_core::plugins::PluginResolveConfigurationResult;
-   use dprint_core::plugins::SyncPluginHandler;
+   use kprint_core::configuration::ConfigKeyMap;
+   use kprint_core::configuration::GlobalConfiguration;
+   use kprint_core::configuration::get_unknown_property_diagnostics;
+   use kprint_core::configuration::get_value;
+   use kprint_core::generate_plugin_code;
+   use kprint_core::plugins::FileMatchingInfo;
+   use kprint_core::plugins::PluginInfo;
+   use kprint_core::plugins::PluginResolveConfigurationResult;
+   use kprint_core::plugins::SyncPluginHandler;
 
    use crate::configuration::Configuration; // import the Configuration from above
 
@@ -93,15 +93,15 @@ Implementing a Wasm plugin is easier if you're using Rust as there are several h
        }
      }
 
-     fn check_config_updates(&self, message: dprint_core::plugins::CheckConfigUpdatesMessage) -> Result<Vec<dprint_core::plugins::ConfigChange>> {
+     fn check_config_updates(&self, message: kprint_core::plugins::CheckConfigUpdatesMessage) -> Result<Vec<kprint_core::plugins::ConfigChange>> {
        // check config updates here
      }
 
      fn format(
        &mut self,
-       request: dprint_core::plugins::SyncFormatRequest<Configuration>,
-       format_with_host: impl FnMut(dprint_core::plugins::SyncHostFormatRequest) -> dprint_core::plugins::FormatResult,
-     ) -> dprint_core::plugins::FormatResult {
+       request: kprint_core::plugins::SyncFormatRequest<Configuration>,
+       format_with_host: impl FnMut(kprint_core::plugins::SyncHostFormatRequest) -> kprint_core::plugins::FormatResult,
+     ) -> kprint_core::plugins::FormatResult {
        // format here
      }
    }
@@ -192,4 +192,4 @@ High level functions:
 - `host_get_error_text() -> u32` - Tell the host to store the error text in its local byte array and return back the byte length of that error message.
 - `host_has_cancelled() -> u32` - Check if the host has cancelled the formatting request (`1`) or not (`0`).
 
-I recommend looking in the [`dprint-wasm-plugin` crate](https://github.com/kjanat/dprint/blob/HEAD/crates/dprint-wasm-plugin/src/lib.rs) for how to use these.
+I recommend looking in the [`kprint-wasm-plugin` crate](https://github.com/kjanat/dprint/blob/HEAD/crates/kprint-wasm-plugin/src/lib.rs) for how to use these.

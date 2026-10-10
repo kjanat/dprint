@@ -1,7 +1,7 @@
 # :schema https://www.schemastore.org/cargo-config.json
 
 [alias]
-build-dprint = "build -p dprint --release --bin dprint"
+build-dprint = "build -p kprint --release --bin dprint"
 lint         = "clippy --workspace --all-features --all-targets"
 run-dprint   = "run -qp dprint --bin dprint --"
 

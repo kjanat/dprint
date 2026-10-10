@@ -814,389 +814,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dprint"
-version = "0.59.0-kjanat"
-dependencies = [
- "anyhow",
- "clap",
- "clap_complete",
- "console_static_text",
- "crossterm",
- "deno_semver",
- "deno_terminal",
- "dprint-async-runtime",
- "dprint-communication",
- "dprint-config",
- "dprint-configuration",
- "dprint-discovery",
- "dprint-host",
- "dprint-lsp",
- "dprint-owned-child",
- "dprint-platform",
- "dprint-plugin-host",
- "dprint-plugin-types",
- "dprint-process-plugin",
- "dprint-test-support",
- "dprint-wasm-plugin",
- "indexmap",
- "jsonc-parser",
- "libc",
- "once_cell",
- "parking_lot",
- "pretty_assertions",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "signal-hook 0.4.5",
- "thiserror",
- "tokio",
- "tokio-util",
- "toml_edit",
- "ureq",
- "url",
- "webpki-roots 1.0.9",
-]
-
-[[package]]
-name = "dprint-async-runtime"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "tokio",
-]
-
-[[package]]
-name = "dprint-communication"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "dprint-async-runtime",
-]
-
-[[package]]
-name = "dprint-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "boon",
- "deno_terminal",
- "dprint-configuration",
- "dprint-discovery",
- "dprint-host-api",
- "dprint-platform",
- "dprint-plugin-types",
- "dprint-test-support",
- "indexmap",
- "json-schema-sort",
- "jsonc-parser",
- "percent-encoding",
- "pretty_assertions",
- "schemars",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "tempfile",
- "thiserror",
- "toml_edit",
- "url",
-]
-
-[[package]]
-name = "dprint-configuration"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "serde",
-]
-
-[[package]]
-name = "dprint-core"
-version = "0.70.0"
-dependencies = [
- "dprint-async-runtime",
- "dprint-communication",
- "dprint-configuration",
- "dprint-core-macros",
- "dprint-formatting",
- "dprint-owned-child",
- "dprint-plugin-types",
- "dprint-process-plugin",
- "dprint-wasm-plugin",
-]
-
-[[package]]
-name = "dprint-core-macros"
-version = "0.1.0"
-dependencies = [
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "dprint-development"
-version = "0.11.0"
-dependencies = [
- "console",
- "file_test_runner",
- "serde_json",
- "similar",
-]
-
-[[package]]
-name = "dprint-discovery"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dprint-git",
- "dprint-host-api",
- "dprint-platform",
- "dprint-test-support",
- "parking_lot",
- "pretty_assertions",
- "tempfile",
- "tokio",
- "tree-fucker",
-]
-
-[[package]]
-name = "dprint-formatting"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "hashbrown 0.17.1",
- "rustc-hash",
- "serde",
- "unicode-width 0.2.2",
-]
-
-[[package]]
-name = "dprint-git"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "sha1",
- "sha2",
- "tempfile",
-]
-
-[[package]]
-name = "dprint-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dprint-async-runtime",
- "dprint-config",
- "dprint-configuration",
- "dprint-discovery",
- "dprint-host-api",
- "dprint-platform",
- "dprint-plugin-host",
- "dprint-plugin-types",
- "dprint-test-support",
- "indexmap",
- "parking_lot",
- "serde",
- "serde_json",
- "sys_traits",
- "thiserror",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "dprint-host-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dprint-async-runtime",
- "dprint-plugin-types",
- "sys_traits",
- "tree-fucker",
- "url",
-]
-
-[[package]]
-name = "dprint-lsp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dprint-async-runtime",
- "dprint-config",
- "dprint-host",
- "dprint-host-api",
- "dprint-platform",
- "dprint-plugin-host",
- "dprint-plugin-types",
- "dprint-process-plugin",
- "dprint-test-support",
- "jsonc-parser",
- "parking_lot",
- "percent-encoding",
- "serde_json",
- "similar",
- "text-size",
- "tokio",
- "tokio-util",
- "tower-lsp",
- "url",
-]
-
-[[package]]
-name = "dprint-owned-child"
-version = "0.1.0"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
-name = "dprint-platform"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "deno_terminal",
- "dirs",
- "dprint-async-runtime",
- "dprint-git",
- "dprint-host-api",
- "dprint-owned-child",
- "dprint-test-support",
- "dunce",
- "fs3",
- "ipnet",
- "once_cell",
- "parking_lot",
- "pretty_assertions",
- "rand 0.9.3",
- "serde",
- "serde_json",
- "sha2",
- "similar",
- "sys_traits",
- "sysinfo",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tree-fucker",
- "twox-hash",
- "url",
- "which",
- "winreg",
- "zip",
-]
-
-[[package]]
-name = "dprint-plugin-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "deno_npmrc",
- "deno_semver",
- "dprint-async-runtime",
- "dprint-communication",
- "dprint-config",
- "dprint-configuration",
- "dprint-owned-child",
- "dprint-platform",
- "dprint-plugin-types",
- "dprint-process-plugin",
- "dprint-test-support",
- "dprint-wasm-plugin",
- "flate2",
- "globset",
- "indexmap",
- "jsonc-parser",
- "once_cell",
- "parking_lot",
- "pretty_assertions",
- "serde",
- "serde_json",
- "sha2",
- "sys_traits",
- "sysinfo",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "url",
- "wasmi",
- "wasmtime",
-]
-
-[[package]]
-name = "dprint-plugin-types"
-version = "0.1.0"
-dependencies = [
- "dprint-async-runtime",
- "dprint-configuration",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "dprint-process-plugin"
-version = "0.1.0"
-dependencies = [
- "dprint-async-runtime",
- "dprint-communication",
- "dprint-configuration",
- "dprint-owned-child",
- "dprint-plugin-types",
- "libc",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "winapi",
-]
-
-[[package]]
-name = "dprint-test-support"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "boon",
- "dprint-async-runtime",
- "dprint-config",
- "dprint-host-api",
- "dprint-platform",
- "dprint-plugin-host",
- "flate2",
- "indexmap",
- "once_cell",
- "parking_lot",
- "path-clean",
- "serde",
- "serde_json",
- "sys_traits",
- "tar",
- "tokio",
- "tree-fucker",
- "url",
- "zip",
-]
-
-[[package]]
-name = "dprint-wasm-plugin"
-version = "0.1.0"
-dependencies = [
- "dprint-configuration",
- "dprint-plugin-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "dunce"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1412,389 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "840785e1a8b4fdb27be18440a35a81af64820dc185c3973ff8b012d4c6282512"
 dependencies = [
  "indexmap",
+]
+
+[[package]]
+name = "kprint"
+version = "0.59.0-kjanat"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "console_static_text",
+ "crossterm",
+ "deno_semver",
+ "deno_terminal",
+ "indexmap",
+ "jsonc-parser",
+ "kprint-async-runtime",
+ "kprint-communication",
+ "kprint-config",
+ "kprint-configuration",
+ "kprint-discovery",
+ "kprint-host",
+ "kprint-lsp",
+ "kprint-owned-child",
+ "kprint-platform",
+ "kprint-plugin-host",
+ "kprint-plugin-types",
+ "kprint-process-plugin",
+ "kprint-test-support",
+ "kprint-wasm-plugin",
+ "libc",
+ "once_cell",
+ "parking_lot",
+ "pretty_assertions",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "signal-hook 0.4.5",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml_edit",
+ "ureq",
+ "url",
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "kprint-async-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "kprint-communication"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "kprint-async-runtime",
+]
+
+[[package]]
+name = "kprint-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "boon",
+ "deno_terminal",
+ "indexmap",
+ "json-schema-sort",
+ "jsonc-parser",
+ "kprint-configuration",
+ "kprint-discovery",
+ "kprint-host-api",
+ "kprint-platform",
+ "kprint-plugin-types",
+ "kprint-test-support",
+ "percent-encoding",
+ "pretty_assertions",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "thiserror",
+ "toml_edit",
+ "url",
+]
+
+[[package]]
+name = "kprint-configuration"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "serde",
+]
+
+[[package]]
+name = "kprint-core"
+version = "0.70.0"
+dependencies = [
+ "kprint-async-runtime",
+ "kprint-communication",
+ "kprint-configuration",
+ "kprint-core-macros",
+ "kprint-formatting",
+ "kprint-owned-child",
+ "kprint-plugin-types",
+ "kprint-process-plugin",
+ "kprint-wasm-plugin",
+]
+
+[[package]]
+name = "kprint-core-macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "kprint-development"
+version = "0.11.0"
+dependencies = [
+ "console",
+ "file_test_runner",
+ "serde_json",
+ "similar",
+]
+
+[[package]]
+name = "kprint-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kprint-git",
+ "kprint-host-api",
+ "kprint-platform",
+ "kprint-test-support",
+ "parking_lot",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
+ "tree-fucker",
+]
+
+[[package]]
+name = "kprint-formatting"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "hashbrown 0.17.1",
+ "rustc-hash",
+ "serde",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "kprint-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sha1",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "kprint-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "kprint-async-runtime",
+ "kprint-config",
+ "kprint-configuration",
+ "kprint-discovery",
+ "kprint-host-api",
+ "kprint-platform",
+ "kprint-plugin-host",
+ "kprint-plugin-types",
+ "kprint-test-support",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sys_traits",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "kprint-host-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kprint-async-runtime",
+ "kprint-plugin-types",
+ "sys_traits",
+ "tree-fucker",
+ "url",
+]
+
+[[package]]
+name = "kprint-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jsonc-parser",
+ "kprint-async-runtime",
+ "kprint-config",
+ "kprint-host",
+ "kprint-host-api",
+ "kprint-platform",
+ "kprint-plugin-host",
+ "kprint-plugin-types",
+ "kprint-process-plugin",
+ "kprint-test-support",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
+ "similar",
+ "text-size",
+ "tokio",
+ "tokio-util",
+ "tower-lsp",
+ "url",
+]
+
+[[package]]
+name = "kprint-owned-child"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
+name = "kprint-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "deno_terminal",
+ "dirs",
+ "dunce",
+ "fs3",
+ "ipnet",
+ "kprint-async-runtime",
+ "kprint-git",
+ "kprint-host-api",
+ "kprint-owned-child",
+ "kprint-test-support",
+ "once_cell",
+ "parking_lot",
+ "pretty_assertions",
+ "rand 0.9.3",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "sys_traits",
+ "sysinfo",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tree-fucker",
+ "twox-hash",
+ "url",
+ "which",
+ "winreg",
+ "zip",
+]
+
+[[package]]
+name = "kprint-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "deno_npmrc",
+ "deno_semver",
+ "flate2",
+ "globset",
+ "indexmap",
+ "jsonc-parser",
+ "kprint-async-runtime",
+ "kprint-communication",
+ "kprint-config",
+ "kprint-configuration",
+ "kprint-owned-child",
+ "kprint-platform",
+ "kprint-plugin-types",
+ "kprint-process-plugin",
+ "kprint-test-support",
+ "kprint-wasm-plugin",
+ "once_cell",
+ "parking_lot",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sys_traits",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "url",
+ "wasmi",
+ "wasmtime",
+]
+
+[[package]]
+name = "kprint-plugin-types"
+version = "0.1.0"
+dependencies = [
+ "kprint-async-runtime",
+ "kprint-configuration",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "kprint-process-plugin"
+version = "0.1.0"
+dependencies = [
+ "kprint-async-runtime",
+ "kprint-communication",
+ "kprint-configuration",
+ "kprint-owned-child",
+ "kprint-plugin-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "winapi",
+]
+
+[[package]]
+name = "kprint-test-support"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "boon",
+ "flate2",
+ "indexmap",
+ "kprint-async-runtime",
+ "kprint-config",
+ "kprint-host-api",
+ "kprint-platform",
+ "kprint-plugin-host",
+ "once_cell",
+ "parking_lot",
+ "path-clean",
+ "serde",
+ "serde_json",
+ "sys_traits",
+ "tar",
+ "tokio",
+ "tree-fucker",
+ "url",
+ "zip",
+]
+
+[[package]]
+name = "kprint-wasm-plugin"
+version = "0.1.0"
+dependencies = [
+ "kprint-configuration",
+ "kprint-plugin-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2915,10 +2915,10 @@ dependencies = [
 name = "test-process-plugin"
 version = "0.1.0"
 dependencies = [
- "dprint-async-runtime",
- "dprint-configuration",
- "dprint-plugin-types",
- "dprint-process-plugin",
+ "kprint-async-runtime",
+ "kprint-configuration",
+ "kprint-plugin-types",
+ "kprint-process-plugin",
  "serde",
  "tokio",
 ]

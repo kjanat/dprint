@@ -1538,7 +1538,7 @@
           "npm:@types/node@24.19.1"
         ]
       },
-      "crates/dprint-development/trace_analyzer": {
+      "crates/kprint-development/trace_analyzer": {
         "dependencies": [
           "npm:@types/d3@6.7.8"
         ]

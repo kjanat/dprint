@@ -4,16 +4,16 @@ Process plugins are created (as opposed to the recommended Wasm plugins), when t
 
 dprint version: 0.40+
 
-See [the crate layout](crate-layout.md) to use the process API directly through `dprint-process-plugin`. The examples below use the compatible `dprint-core` facade.
+See [the crate layout](crate-layout.md) to use the process API directly through `kprint-process-plugin`. The examples below use the compatible `kprint-core` facade.
 
-## Rust - Using `dprint-core`
+## Rust - Using `kprint-core`
 
-Implementing a Process plugin is easy if you're using Rust as there are several helpers in `dprint-core`.
+Implementing a Process plugin is easy if you're using Rust as there are several helpers in `kprint-core`.
 
-1. Use the `process` feature from `dprint-core` in _Cargo.toml_:
+1. Use the `process` feature from `kprint-core` in _Cargo.toml_:
 
    ```toml
-   dprint-core = { version = "...", features = ["process"] }
+   kprint-core = { version = "...", features = ["process"] }
    tokio       = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
    tokio-util  = { version = "0.7.0" }
    serde       = { version = "1.0.117", features = ["derive"] }
@@ -41,19 +41,19 @@ Implementing a Process plugin is easy if you're using Rust as there are several 
    use std::path::PathBuf;
 
    use anyhow::Result;
-   use dprint_core::async_runtime::LocalBoxFuture;
-   use dprint_core::async_runtime::async_trait;
-   use dprint_core::configuration::ConfigKeyMap;
-   use dprint_core::configuration::GlobalConfiguration;
-   use dprint_core::configuration::ResolveConfigurationResult;
-   use dprint_core::configuration::get_unknown_property_diagnostics;
-   use dprint_core::configuration::get_value;
-   use dprint_core::plugins::AsyncPluginHandler;
-   use dprint_core::plugins::FileMatchingInfo;
-   use dprint_core::plugins::FormatRequest;
-   use dprint_core::plugins::FormatResult;
-   use dprint_core::plugins::Host;
-   use dprint_core::plugins::PluginInfo;
+   use kprint_core::async_runtime::LocalBoxFuture;
+   use kprint_core::async_runtime::async_trait;
+   use kprint_core::configuration::ConfigKeyMap;
+   use kprint_core::configuration::GlobalConfiguration;
+   use kprint_core::configuration::ResolveConfigurationResult;
+   use kprint_core::configuration::get_unknown_property_diagnostics;
+   use kprint_core::configuration::get_value;
+   use kprint_core::plugins::AsyncPluginHandler;
+   use kprint_core::plugins::FileMatchingInfo;
+   use kprint_core::plugins::FormatRequest;
+   use kprint_core::plugins::FormatResult;
+   use kprint_core::plugins::Host;
+   use kprint_core::plugins::PluginInfo;
 
    use super::configuration::Configuration; // import the Configuration from above somehow
 
@@ -113,20 +113,20 @@ Implementing a Process plugin is easy if you're using Rust as there are several 
        // - if you are doing a lot of synchronous work, you should format with
        //   a blocking task like so or else you will block the main thread:
        //
-       //   dprint_core::async_runtime::spawn_blocking(move || {
+       //   kprint_core::async_runtime::spawn_blocking(move || {
        //     // format in here
        //   }).await.unwrap()
      }
    }
    ```
 
-4. In your plugin's `main` function, parse out the `--parent-pid` argument and using that argument, start a thread that periodically checks for the existence of that process. When the process no longer exists, then it should exit the current process. This helps prevent a process from running without ever closing. Implementing this is easy with `dprint-core` as you just need to run the `start_parent_process_checker_task` function:
+4. In your plugin's `main` function, parse out the `--parent-pid` argument and using that argument, start a thread that periodically checks for the existence of that process. When the process no longer exists, then it should exit the current process. This helps prevent a process from running without ever closing. Implementing this is easy with `kprint-core` as you just need to run the `start_parent_process_checker_task` function:
 
    <!-- dprint-ignore -->
    ```rust
-   use dprint_core::plugins::process::get_parent_process_id_from_cli_args;
-   use dprint_core::plugins::process::handle_process_stdio_messages;
-   use dprint_core::plugins::process::start_parent_process_checker_task;
+   use kprint_core::plugins::process::get_parent_process_id_from_cli_args;
+   use kprint_core::plugins::process::handle_process_stdio_messages;
+   use kprint_core::plugins::process::start_parent_process_checker_task;
 
    fn main() -> Result<()> {
      // NOTE: You MUST use a current thread runtime or else this will not work

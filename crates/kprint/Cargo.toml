@@ -1,0 +1,68 @@
+[package]
+name        = "kprint"
+version     = "0.59.0-kjanat"
+authors     = ["Kaj Kowalski <info@kajkowalski.nl>", "dprint code formatting <david@dprint.dev>"]
+edition     = { workspace = true }
+description = "Binary for dprint code formatter—a pluggable and configurable code formatting platform."
+repository  = { workspace = true }
+license     = { workspace = true }
+keywords    = ["code-formatter", "formatter"]
+categories  = ["development-tools"]
+default-run = "dprint"
+
+[package.metadata.cargo-shear]
+ignored = ["libc"]
+
+[[bin]]
+name = "dprint"
+path = "src/main.rs"
+
+[dependencies]
+kprint-async-runtime  = { workspace = true }
+kprint-communication  = { workspace = true }
+kprint-config         = { workspace = true, features = ["schema"] }
+kprint-configuration  = { workspace = true }
+kprint-discovery      = { workspace = true }
+kprint-host           = { workspace = true }
+kprint-lsp            = { workspace = true }
+kprint-owned-child    = { workspace = true }
+kprint-platform       = { workspace = true }
+kprint-plugin-host    = { workspace = true }
+kprint-plugin-types   = { workspace = true }
+kprint-process-plugin = { workspace = true }
+kprint-wasm-plugin    = { workspace = true }
+
+anyhow              = { workspace = true }
+clap                = { workspace = true }
+clap_complete       = { workspace = true }
+console_static_text = { workspace = true }
+crossterm           = { workspace = true }
+deno_semver         = { workspace = true }
+deno_terminal       = { workspace = true }
+indexmap            = { workspace = true }
+jsonc-parser        = { workspace = true, features = ["cst", "preserve_order"] }
+once_cell           = { workspace = true }
+parking_lot         = { workspace = true }
+rustls              = { workspace = true, features = ["logging", "ring", "std", "tls12"] }
+rustls-native-certs = { workspace = true }
+rustls-pemfile      = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+thiserror           = { workspace = true }
+tokio               = { workspace = true, features = ["io-std"] }
+tokio-util          = { workspace = true }
+toml_edit           = { workspace = true }
+ureq                = { workspace = true, features = ["gzip", "socks-proxy", "tls"] }
+url                 = { workspace = true }
+webpki-roots        = { workspace = true }
+
+[dev-dependencies]
+kprint-test-support = { workspace = true, features = ["plugins"] }
+pretty_assertions   = { workspace = true }
+
+[target.'cfg(target_os = "freebsd")'.dependencies]
+# mio 0.8 (via crossterm 0.27) uses libc::NOTE_PCTRLMASK, which libc 0.2.190 removed for FreeBSD.
+libc = ">=0.2.149, <0.2.190"
+
+[target."cfg(unix)".dependencies]
+signal-hook = { workspace = true }

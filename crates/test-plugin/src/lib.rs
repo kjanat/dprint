@@ -1,22 +1,22 @@
-use dprint_core::configuration::ConfigKeyMap;
-use dprint_core::configuration::ConfigKeyValue;
-use dprint_core::configuration::ConfigurationDiagnostic;
-use dprint_core::configuration::GlobalConfiguration;
-use dprint_core::configuration::get_nullable_vec;
-use dprint_core::configuration::get_unknown_property_diagnostics;
-use dprint_core::configuration::get_value;
-use dprint_core::generate_plugin_code;
-use dprint_core::plugins::CheckConfigUpdatesMessage;
-use dprint_core::plugins::ConfigChange;
-use dprint_core::plugins::ConfigChangeKind;
-use dprint_core::plugins::FileMatchingInfo;
-use dprint_core::plugins::FormatError;
-use dprint_core::plugins::FormatResult;
-use dprint_core::plugins::PluginInfo;
-use dprint_core::plugins::PluginResolveConfigurationResult;
-use dprint_core::plugins::SyncFormatRequest;
-use dprint_core::plugins::SyncHostFormatRequest;
-use dprint_core::plugins::SyncPluginHandler;
+use kprint_core::configuration::ConfigKeyMap;
+use kprint_core::configuration::ConfigKeyValue;
+use kprint_core::configuration::ConfigurationDiagnostic;
+use kprint_core::configuration::GlobalConfiguration;
+use kprint_core::configuration::get_nullable_vec;
+use kprint_core::configuration::get_unknown_property_diagnostics;
+use kprint_core::configuration::get_value;
+use kprint_core::generate_plugin_code;
+use kprint_core::plugins::CheckConfigUpdatesMessage;
+use kprint_core::plugins::ConfigChange;
+use kprint_core::plugins::ConfigChangeKind;
+use kprint_core::plugins::FileMatchingInfo;
+use kprint_core::plugins::FormatError;
+use kprint_core::plugins::FormatResult;
+use kprint_core::plugins::PluginInfo;
+use kprint_core::plugins::PluginResolveConfigurationResult;
+use kprint_core::plugins::SyncFormatRequest;
+use kprint_core::plugins::SyncHostFormatRequest;
+use kprint_core::plugins::SyncPluginHandler;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Write;
@@ -157,10 +157,10 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
     }
 
     if let Some(output) = file_text.strip_prefix("stderr:") {
-      let mut stderr = dprint_core::plugins::wasm::WasiPrintFd(2);
+      let mut stderr = kprint_core::plugins::wasm::WasiPrintFd(2);
       stderr.write_all(output.as_bytes()).unwrap();
     } else if let Some(output) = file_text.strip_prefix("stdout:") {
-      let mut stderr = dprint_core::plugins::wasm::WasiPrintFd(1);
+      let mut stderr = kprint_core::plugins::wasm::WasiPrintFd(1);
       stderr.write_all(output.as_bytes()).unwrap();
     }
 

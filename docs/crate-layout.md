@@ -1,17 +1,17 @@
 # Crate layout
 
-`dprint-core` is a compatibility facade. Implementations live in crates with distinct responsibilities, and the CLI depends on them directly.
+`kprint-core` is a compatibility facade. Implementations live in crates with distinct responsibilities, and the CLI depends on them directly.
 
 | Crate                   | Responsibility                                                                    | Internal dependencies                                                  |
 | ----------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `dprint-configuration`  | Format-neutral configuration values, diagnostics, global settings, and resolution | None                                                                   |
-| `dprint-formatting`     | Formatting IR, printing engine, tokens, and optional tracing                      | None                                                                   |
-| `dprint-plugin-types`   | Plugin metadata, shared configuration payloads, cancellation, and format errors   | Configuration; async runtime with `async_runtime`                      |
-| `dprint-wasm-plugin`    | Synchronous plugin handlers and Wasm ABI code generation                          | Configuration, plugin types                                            |
-| `dprint-process-plugin` | Process stdio protocol and child communication                                    | Configuration, plugin types, communication, async runtime, owned child |
-| `dprint-communication`  | Framed message readers/writers and message tracking                               | Async runtime                                                          |
-| `dprint-async-runtime`  | Current-thread task spawning and future helpers                                   | None                                                                   |
-| `dprint-owned-child`    | OS process groups, job objects, and child cleanup                                 | None                                                                   |
+| `kprint-configuration`  | Format-neutral configuration values, diagnostics, global settings, and resolution | None                                                                   |
+| `kprint-formatting`     | Formatting IR, printing engine, tokens, and optional tracing                      | None                                                                   |
+| `kprint-plugin-types`   | Plugin metadata, shared configuration payloads, cancellation, and format errors   | Configuration; async runtime with `async_runtime`                      |
+| `kprint-wasm-plugin`    | Synchronous plugin handlers and Wasm ABI code generation                          | Configuration, plugin types                                            |
+| `kprint-process-plugin` | Process stdio protocol and child communication                                    | Configuration, plugin types, communication, async runtime, owned child |
+| `kprint-communication`  | Framed message readers/writers and message tracking                               | Async runtime                                                          |
+| `kprint-async-runtime`  | Current-thread task spawning and future helpers                                   | None                                                                   |
+| `kprint-owned-child`    | OS process groups, job objects, and child cleanup                                 | None                                                                   |
 
 The formatting engine has no plugin or async dependencies. Configuration has no dependency on the formatting engine, plugin APIs, or transports. Wasm plugins have no process or async dependencies by default. Process ownership depends only on platform libraries.
 
@@ -19,19 +19,19 @@ The formatting engine has no plugin or async dependencies. Configuration has no 
 
 | Crate                 | Responsibility                                                                                 |
 | --------------------- | ---------------------------------------------------------------------------------------------- |
-| `dprint-host-api`     | Capability traits, frontend options, compiler control and UI contracts; no host implementation |
-| `dprint-platform`     | IO utilities, HTTP cache storage, and reusable `NativeEnvironment<S>`                          |
-| `dprint-discovery`    | File traversal, globs, gitignore and selection patterns                                        |
-| `dprint-config`       | Config syntax and schema, layered resolution, plugin references and remote execution policy    |
-| `dprint-plugin-host`  | Plugin acquisition, caches and Wasm, process and in-process execution                          |
-| `dprint-host`         | Configured formatting scopes, routing, batching, incremental state and `HostSession`           |
-| `dprint-lsp`          | LSP protocol, documents, ranges and config completion                                          |
+| `kprint-host-api`     | Capability traits, frontend options, compiler control and UI contracts; no host implementation |
+| `kprint-platform`     | IO utilities, HTTP cache storage, and reusable `NativeEnvironment<S>`                          |
+| `kprint-discovery`    | File traversal, globs, gitignore and selection patterns                                        |
+| `kprint-config`       | Config syntax and schema, layered resolution, plugin references and remote execution policy    |
+| `kprint-plugin-host`  | Plugin acquisition, caches and Wasm, process and in-process execution                          |
+| `kprint-host`         | Configured formatting scopes, routing, batching, incremental state and `HostSession`           |
+| `kprint-lsp`          | LSP protocol, documents, ranges and config completion                                          |
 | `dprint`              | Command parsing, CLI commands, terminal UI and HTTP/TLS policy                                 |
-| `dprint-test-support` | In-memory environment, config builders and binary/archive fixtures                             |
+| `kprint-test-support` | In-memory environment, config builders and binary/archive fixtures                             |
 
 Dependencies point from frontends toward host services and capability contracts. Libraries never depend on the CLI, including through their test support. The test-support `plugins` feature enables engine-backed fixtures; filesystem, discovery and configuration tests use the lightweight default. Tests of command parsing and CLI behavior live in `dprint`.
 
-Configuration values and `GlobalConfiguration` remain available through `dprint-core::configuration`. Their implementation is in `dprint-configuration`; document syntax, includes, remote policy and schema composition belong to `dprint-config`.
+Configuration values and `GlobalConfiguration` remain available through `kprint-core::configuration`. Their implementation is in `kprint-configuration`; document syntax, includes, remote policy and schema composition belong to `kprint-config`.
 
 ### Scopes and plugin lifetime
 
@@ -43,7 +43,7 @@ Configuration values and `GlobalConfiguration` remain available through `dprint-
 
 `ConfigEnvironment` combines file access, caching, platform identity, clocks, downloads and consent. It requires neither process management nor executable discovery, CPU measurements, terminal streams, selections or a compiler. `DiscoveryEnvironment` needs file access, environment variables, VCS metadata and output. `PluginEnvironment` adds the compiler and native sys interfaces; `HostEnvironment` combines those with config and discovery policy and formatting concurrency. The full `Environment` is reserved for CLI orchestration.
 
-`NativeEnvironment<S>` supplies native filesystem, directories, git and runtime behavior from `dprint-platform`. Services `S` supply output, interaction, downloads and optional compilation. `HeadlessServices` provides silent local embedding with errors for operations that require unavailable services. The CLI injects its terminal, TLS and supervised compiler adapter. Its application version is passed explicitly, so library versions cannot leak into cache or update checks.
+`NativeEnvironment<S>` supplies native filesystem, directories, git and runtime behavior from `kprint-platform`. Services `S` supply output, interaction, downloads and optional compilation. `HeadlessServices` provides silent local embedding with errors for operations that require unavailable services. The CLI injects its terminal, TLS and supervised compiler adapter. Its application version is passed explicitly, so library versions cannot leak into cache or update checks.
 
 ## Using the crates directly
 
@@ -51,25 +51,25 @@ Replace imports as follows, and declare the corresponding crates in `Cargo.toml`
 
 | Existing path                                                     | Direct path                                 |
 | ----------------------------------------------------------------- | ------------------------------------------- |
-| `dprint_core::configuration`                                      | `dprint_configuration`                      |
-| `dprint_core::formatting`                                         | `dprint_formatting`                         |
-| `dprint_core::async_runtime`                                      | `dprint_async_runtime`                      |
-| `dprint_core::communication`                                      | `dprint_communication`                      |
-| `dprint_core::owned_child`                                        | `dprint_owned_child`                        |
-| Shared types in `dprint_core::plugins`                            | `dprint_plugin_types`                       |
-| `AsyncPluginHandler`, `FormatRequest`, `HostFormatRequest`        | `dprint_plugin_types`                       |
-| `SyncPluginHandler`, `SyncFormatRequest`, `SyncHostFormatRequest` | `dprint_wasm_plugin`                        |
-| `dprint_core::plugins::process`                                   | `dprint_process_plugin`                     |
-| `dprint_core::plugins::wasm`                                      | `dprint_wasm_plugin`                        |
-| `dprint_core::generate_plugin_code!`                              | `dprint_wasm_plugin::generate_plugin_code!` |
+| `kprint_core::configuration`                                      | `kprint_configuration`                      |
+| `kprint_core::formatting`                                         | `kprint_formatting`                         |
+| `kprint_core::async_runtime`                                      | `kprint_async_runtime`                      |
+| `kprint_core::communication`                                      | `kprint_communication`                      |
+| `kprint_core::owned_child`                                        | `kprint_owned_child`                        |
+| Shared types in `kprint_core::plugins`                            | `kprint_plugin_types`                       |
+| `AsyncPluginHandler`, `FormatRequest`, `HostFormatRequest`        | `kprint_plugin_types`                       |
+| `SyncPluginHandler`, `SyncFormatRequest`, `SyncHostFormatRequest` | `kprint_wasm_plugin`                        |
+| `kprint_core::plugins::process`                                   | `kprint_process_plugin`                     |
+| `kprint_core::plugins::wasm`                                      | `kprint_wasm_plugin`                        |
+| `kprint_core::generate_plugin_code!`                              | `kprint_wasm_plugin::generate_plugin_code!` |
 
-`dprint-formatting` exposes its printing API at the crate root and has an optional `tracing` feature. `dprint-plugin-types` provides an optional `async_runtime` feature for asynchronous handlers, nested host callbacks, cancellation and error conversions; process plugins enable it automatically.
+`kprint-formatting` exposes its printing API at the crate root and has an optional `tracing` feature. `kprint-plugin-types` provides an optional `async_runtime` feature for asynchronous handlers, nested host callbacks, cancellation and error conversions; process plugins enable it automatically.
 
 The Wasm macro resolves its dependencies through its defining crate, so it works with renamed dependencies and through the facade. Plugins do not need a direct `serde_json` dependency just to expand the macro.
 
 ## Compatibility
 
-Existing `dprint-core` module paths and the `formatting`, `tracing`, `wasm`, `process`, `communication`, and `async_runtime` features remain available. Re-exports preserve type identity, allowing consumers of the facade and the direct crates to exchange configuration and plugin values. `dprint-core-macros` continues to generate formatting paths through the facade.
+Existing `kprint-core` module paths and the `formatting`, `tracing`, `wasm`, `process`, `communication`, and `async_runtime` features remain available. Re-exports preserve type identity, allowing consumers of the facade and the direct crates to exchange configuration and plugin values. `kprint-core-macros` continues to generate formatting paths through the facade.
 
 ## Publishing
 

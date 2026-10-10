@@ -28,7 +28,7 @@ build() {
 	RUSTUP_TOOLCHAIN=stable
 	CARGO_TARGET_DIR=target
 	export RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
-	cargo build --frozen --release -p dprint
+	cargo build --frozen --release -p kprint
 }
 
 package() {

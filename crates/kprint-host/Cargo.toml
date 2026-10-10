@@ -1,0 +1,31 @@
+[package]
+name                 = "kprint-host"
+version              = "0.1.0"
+edition.workspace    = true
+repository.workspace = true
+license.workspace    = true
+
+[dependencies]
+kprint-async-runtime      = { workspace = true }
+kprint-config             = { workspace = true }
+kprint-configuration      = { workspace = true }
+kprint-discovery          = { workspace = true }
+kprint-host-api.workspace = true
+kprint-platform           = { workspace = true }
+kprint-plugin-host        = { workspace = true }
+kprint-plugin-types       = { workspace = true }
+
+anyhow      = { workspace = true }
+indexmap    = { workspace = true }
+parking_lot = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sys_traits  = { workspace = true, features = ["real"] }
+thiserror   = { workspace = true }
+tokio       = { workspace = true, features = ["io-std"] }
+tokio-util  = { workspace = true }
+
+[dev-dependencies]
+kprint-plugin-host  = { workspace = true, features = ["test-support"] }
+kprint-test-support = { workspace = true, features = ["plugins"] }
+sys_traits          = { workspace = true, features = ["memory"] }

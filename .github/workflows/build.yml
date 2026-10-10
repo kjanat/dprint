@@ -86,7 +86,7 @@ jobs:
             release=''
             [ "${PROFILE}" = release ] && release=--release
             rustup show active-toolchain
-            cargo build -p dprint -p test-process-plugin --locked --target "${target}" ${release}
+            cargo build -p kprint -p test-process-plugin --locked --target "${target}" ${release}
             cargo test --locked --target "${target}" --all-features ${release}
             sh .github/scripts/freebsd-smoke.sh "target/${target}/${PROFILE}/dprint"
 

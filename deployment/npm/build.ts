@@ -318,7 +318,7 @@ function resolveVersion() {
     return firstArg;
   }
   const version = rootDir
-    .join("crates/dprint/Cargo.toml")
+    .join("crates/kprint/Cargo.toml")
     .readTextSync()
     .match(/version = "(.*?)"/)?.[1];
   if (version == null) {

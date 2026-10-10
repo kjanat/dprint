@@ -1,0 +1,31 @@
+[package]
+name              = "kprint-test-support"
+version           = "0.1.0"
+edition.workspace = true
+publish           = false
+
+[dependencies]
+anyhow.workspace               = true
+boon.workspace                 = true
+flate2.workspace               = true
+indexmap.workspace             = true
+kprint-async-runtime.workspace = true
+kprint-config                  = { workspace = true, optional = true }
+kprint-host-api.workspace      = true
+kprint-platform.workspace      = true
+kprint-plugin-host             = { workspace = true, optional = true }
+once_cell.workspace            = true
+parking_lot.workspace          = true
+path-clean.workspace           = true
+serde.workspace                = true
+serde_json.workspace           = true
+sys_traits                     = { workspace = true, features = ["memory", "real"] }
+tar.workspace                  = true
+tokio.workspace                = true
+tree-fucker.workspace          = true
+url.workspace                  = true
+zip.workspace                  = true
+
+[features]
+default = []
+plugins = ["dep:kprint-config", "dep:kprint-plugin-host"]

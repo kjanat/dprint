@@ -1,0 +1,27 @@
+[package]
+name        = "kprint-owned-child"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Child process group ownership and cleanup for dprint."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[target."cfg(unix)".dependencies]
+libc = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+winapi = { workspace = true, features = [
+  "handleapi",
+  "jobapi",
+  "jobapi2",
+  "processthreadsapi",
+  "synchapi",
+  "tlhelp32",
+  "winbase",
+  "winerror",
+  "winnt"
+] }

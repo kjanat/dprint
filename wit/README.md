@@ -29,4 +29,4 @@ A component that implements the `plugin` world of a version would need an adapte
 
 ## Sources
 
-Current: `crates/dprint-wasm-plugin/src/lib.rs` (the plugin side, `generate_plugin_code!`), `crates/dprint/src/plugins/implementations/wasm/instance/{mod,v3,v4}.rs` (the host side), `crates/dprint-plugin-types/src/{plugin_info,plugin_handler}.rs` and `crates/dprint-configuration/src/lib.rs` (the payloads), `docs/wasm-plugin-development.md`. Historical: the same files at the commits that introduced each version (d3f4866 for 1, 209c386 for 2, 100b0a8 for 3, 3b0c101 for 4).
+Current: `crates/kprint-wasm-plugin/src/lib.rs` (the plugin side, `generate_plugin_code!`), `crates/kprint/src/plugins/implementations/wasm/instance/{mod,v3,v4}.rs` (the host side), `crates/kprint-plugin-types/src/{plugin_info,plugin_handler}.rs` and `crates/kprint-configuration/src/lib.rs` (the payloads), `docs/wasm-plugin-development.md`. Historical: the same files at the commits that introduced each version (d3f4866 for 1, 209c386 for 2, 100b0a8 for 3, 3b0c101 for 4).

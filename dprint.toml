@@ -2,7 +2,7 @@
 
 indentWidth = 2
 lineWidth   = 160
-excludes    = ["**/_site", "**/node_modules", "**/dist", "**/target", "**/*-lock.json", "crates/dprint-development/trace_analyzer/app.js"]
+excludes    = ["**/_site", "**/node_modules", "**/dist", "**/target", "**/*-lock.json", "crates/kprint-development/trace_analyzer/app.js"]
 plugins     = [
   "https://plugins.dprint.dev/kjanat/json-schema-sort-0.1.2.wasm",
   "https://plugins.dprint.dev/kjanat/svg-v0.4.1.wasm",

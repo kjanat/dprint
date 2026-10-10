@@ -6,9 +6,9 @@ edition    = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-dprint-async-runtime  = { workspace = true }
-dprint-configuration  = { workspace = true }
-dprint-plugin-types   = { workspace = true }
-dprint-process-plugin = { workspace = true }
+kprint-async-runtime  = { workspace = true }
+kprint-configuration  = { workspace = true }
+kprint-plugin-types   = { workspace = true }
+kprint-process-plugin = { workspace = true }
 serde                 = { workspace = true }
 tokio                 = { workspace = true }

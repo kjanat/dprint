@@ -11,23 +11,23 @@ repository = "https://github.com/kjanat/dprint"
 license    = "MIT"
 
 [workspace.dependencies]
-dprint-async-runtime  = { path = "crates/dprint-async-runtime", version = "=0.1.0" }
-dprint-communication  = { path = "crates/dprint-communication", version = "=0.1.0" }
-dprint-config         = { path = "crates/dprint-config" }
-dprint-configuration  = { path = "crates/dprint-configuration", version = "=0.1.0" }
-dprint-discovery      = { path = "crates/dprint-discovery", version = "=0.1.0" }
-dprint-formatting     = { path = "crates/dprint-formatting", version = "=0.1.0" }
-dprint-git            = { path = "crates/dprint-git", version = "=0.1.0" }
-dprint-host           = { path = "crates/dprint-host", version = "=0.1.0" }
-dprint-host-api       = { path = "crates/dprint-host-api", version = "=0.1.0" }
-dprint-lsp            = { path = "crates/dprint-lsp", version = "=0.1.0" }
-dprint-owned-child    = { path = "crates/dprint-owned-child", version = "=0.1.0" }
-dprint-platform       = { path = "crates/dprint-platform", version = "=0.1.0" }
-dprint-plugin-host    = { path = "crates/dprint-plugin-host", version = "=0.1.0" }
-dprint-plugin-types   = { path = "crates/dprint-plugin-types", version = "=0.1.0" }
-dprint-process-plugin = { path = "crates/dprint-process-plugin", version = "=0.1.0" }
-dprint-test-support   = { path = "crates/dprint-test-support", version = "=0.1.0" }
-dprint-wasm-plugin    = { path = "crates/dprint-wasm-plugin", version = "=0.1.0" }
+kprint-async-runtime  = { path = "crates/kprint-async-runtime", version = "=0.1.0" }
+kprint-communication  = { path = "crates/kprint-communication", version = "=0.1.0" }
+kprint-config         = { path = "crates/kprint-config" }
+kprint-configuration  = { path = "crates/kprint-configuration", version = "=0.1.0" }
+kprint-discovery      = { path = "crates/kprint-discovery", version = "=0.1.0" }
+kprint-formatting     = { path = "crates/kprint-formatting", version = "=0.1.0" }
+kprint-git            = { path = "crates/kprint-git", version = "=0.1.0" }
+kprint-host           = { path = "crates/kprint-host", version = "=0.1.0" }
+kprint-host-api       = { path = "crates/kprint-host-api", version = "=0.1.0" }
+kprint-lsp            = { path = "crates/kprint-lsp", version = "=0.1.0" }
+kprint-owned-child    = { path = "crates/kprint-owned-child", version = "=0.1.0" }
+kprint-platform       = { path = "crates/kprint-platform", version = "=0.1.0" }
+kprint-plugin-host    = { path = "crates/kprint-plugin-host", version = "=0.1.0" }
+kprint-plugin-types   = { path = "crates/kprint-plugin-types", version = "=0.1.0" }
+kprint-process-plugin = { path = "crates/kprint-process-plugin", version = "=0.1.0" }
+kprint-test-support   = { path = "crates/kprint-test-support", version = "=0.1.0" }
+kprint-wasm-plugin    = { path = "crates/kprint-wasm-plugin", version = "=0.1.0" }
 
 json-schema-sort.version          = "0.1"
 json-schema-sort.default-features = false

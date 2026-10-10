@@ -185,10 +185,10 @@ Here's some example IR generation:
 ```rust
 use std::rc::Rc;
 
-use dprint_core::formatting::*;
+use kprint_core::formatting::*;
 
 pub fn format(expr: &ArrayLiteralExpression) -> String {
-  dprint_core::formatting::format(
+  kprint_core::formatting::format(
     || gen_node(Node::ArrayLiteralExpression(expr)),
     PrintOptions {
       indent_width: 4,

@@ -1,0 +1,15 @@
+[package]
+name                 = "kprint-host-api"
+version              = "0.1.0"
+edition.workspace    = true
+description          = "Runtime capabilities and requests for embedding the dprint formatting host."
+repository.workspace = true
+license.workspace    = true
+
+[dependencies]
+anyhow.workspace               = true
+kprint-async-runtime.workspace = true
+kprint-plugin-types.workspace  = true
+sys_traits.workspace           = true
+tree-fucker.workspace          = true
+url.workspace                  = true

@@ -60,7 +60,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with: { key: lint }
       - name: Check formatting with the current source
-        run: cargo run -p dprint --locked -- check
+        run: cargo run -p kprint --locked -- check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -80,20 +80,20 @@ jobs:
         run: python3 .github/scripts/check-crate-boundaries.py
       - name: Check independent libraries
         run: |
-          for package in dprint-configuration dprint-formatting dprint-async-runtime dprint-communication dprint-owned-child dprint-plugin-types dprint-process-plugin dprint-wasm-plugin; do
+          for package in kprint-configuration kprint-formatting kprint-async-runtime kprint-communication kprint-owned-child kprint-plugin-types kprint-process-plugin kprint-wasm-plugin; do
             cargo check --locked -p "${package}"
           done
       - name: Check host libraries and lightweight test fixtures
         run: |
-          for package in dprint-host-api dprint-platform dprint-discovery dprint-config; do
+          for package in kprint-host-api kprint-platform kprint-discovery kprint-config; do
             cargo check --locked -p "${package}" --all-targets
           done
-          cargo check --locked -p dprint-config --no-default-features
-          cargo check --locked -p dprint-plugin-host -p dprint-host -p dprint-lsp --all-targets
+          cargo check --locked -p kprint-config --no-default-features
+          cargo check --locked -p kprint-plugin-host -p kprint-host -p kprint-lsp --all-targets
       - name: Check facade feature combinations
         run: |
           for features in '' formatting tracing wasm process communication async_runtime process,wasm,tracing; do
-            cargo test --locked -p dprint-core --no-default-features --features "${features}"
+            cargo test --locked -p kprint-core --no-default-features --features "${features}"
           done
       - name: Install Wasm target
         run: rustup target add wasm32-unknown-unknown
@@ -101,7 +101,7 @@ jobs:
         env: { RUSTFLAGS: "-C link-arg=--allow-undefined" }
         run: |
           for feature in direct facade; do
-            cargo build --manifest-path crates/dprint-core/tests/fixtures/wasm-plugin/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features "${feature}"
+            cargo build --manifest-path crates/kprint-core/tests/fixtures/wasm-plugin/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features "${feature}"
           done
 
   trace-analyzer:
@@ -117,8 +117,8 @@ jobs:
         with: { deno-version: canary }
       - name: Check the generated trace analyzer script
         run: |
-          deno task --cwd crates/dprint-development/trace_analyzer build
-          git diff --exit-code -- crates/dprint-development/trace_analyzer/app.js
+          deno task --cwd crates/kprint-development/trace_analyzer build
+          git diff --exit-code -- crates/kprint-development/trace_analyzer/app.js
 
   build:
     needs: changes

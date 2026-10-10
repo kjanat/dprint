@@ -53,7 +53,7 @@ Install using one of the methods below.
 
   ```sh
   # this will be slower since it builds from the source
-  cargo install --locked --git https://github.com/kjanat/dprint dprint --bin dprint
+  cargo install --locked --git https://github.com/kjanat/dprint kprint --bin dprint
   ```
 
 - [npm](https://www.npmjs.com/):

@@ -27,7 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with: { key: "bench-${{ matrix.build }}" }
       - name: Build dprint
-        run: cargo build -p dprint --locked --release;
+        run: cargo build -p kprint --locked --release;
           mkdir -p dist; cp target/release/dprint dist/dprint;
           git rev-parse HEAD > dist/sha;
       - name: Upload dprint
