@@ -36,11 +36,11 @@ Install using one of the methods below.
   brew install dprint
   ```
 
-- [Cargo](https://crates.io/) (builds and installs the [cargo package](https://crates.io/crates/dprint) from source):
+- [Cargo](https://doc.rust-lang.org/cargo/) (builds and installs from the [repository](https://github.com/kjanat/dprint) source):
 
   ```sh
   # this will be slower since it builds from the source
-  cargo install --locked dprint
+  cargo install --locked --git https://github.com/kjanat/dprint dprint --bin dprint
   ```
 
 - [npm](https://www.npmjs.com/):
