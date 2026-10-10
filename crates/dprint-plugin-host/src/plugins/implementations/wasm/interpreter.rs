@@ -293,6 +293,10 @@ impl<T: InterpretedHostData> PluginExports for InterpretedExports<T> {
     Ok(self.memory.write(&mut self.store, offset, bytes)?)
   }
 
+  fn memory_size(&mut self) -> usize {
+    self.memory.data_size(&self.store)
+  }
+
   fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
     self.store.data_mut().set_token(token);
   }

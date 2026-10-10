@@ -31,6 +31,7 @@ use super::InitializedWasmPluginInstance;
 use super::Linker;
 use super::PluginExports;
 use super::checked_range;
+use super::ensure_in_memory;
 use super::memory_range;
 
 enum WasmFormatResult {
@@ -320,17 +321,13 @@ impl<TExports: PluginExports> InitializedWasmPluginInstanceV4<TExports> {
   }
 
   fn receive_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
+    let wasm_buffer_pointer = self.wasm_functions.get_shared_bytes_ptr()? as usize;
+    ensure_in_memory(self.wasm_functions.memory_size(), wasm_buffer_pointer, len)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(len)?;
     bytes.resize(len, 0);
-    self.read_bytes_from_shared_bytes(&mut bytes)?;
+    self.wasm_functions.read_memory(wasm_buffer_pointer, &mut bytes)?;
     Ok(bytes)
-  }
-
-  fn read_bytes_from_shared_bytes(&mut self, bytes: &mut [u8]) -> Result<()> {
-    let wasm_buffer_pointer = self.wasm_functions.get_shared_bytes_ptr()?;
-    self.wasm_functions.read_memory(wasm_buffer_pointer as usize, bytes)?;
-    Ok(())
   }
 }
 
@@ -501,6 +498,11 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()> {
     self.exports.read_memory(offset, bytes)
+  }
+
+  #[inline]
+  fn memory_size(&mut self) -> usize {
+    self.exports.memory_size()
   }
 
   fn call_len(&mut self, name: &str, params: &[u32]) -> Result<usize> {

@@ -59,8 +59,21 @@ pub fn create_host_state(version: PluginSchemaVersion, log: LogFn, host_format_s
 
 /// The range of `len` bytes at `offset`, if it's in the memory.
 fn memory_range(memory: &[u8], offset: usize, len: usize) -> Option<std::ops::Range<usize>> {
+  range_in(memory.len(), offset, len)
+}
+
+/// The range of `len` bytes at `offset`, if it's in a memory of `size` bytes.
+fn range_in(size: usize, offset: usize, len: usize) -> Option<std::ops::Range<usize>> {
   let end = offset.checked_add(len)?;
-  (end <= memory.len()).then_some(offset..end)
+  (end <= size).then_some(offset..end)
+}
+
+/// An error for `len` bytes at `offset` outside a memory of `size` bytes.
+fn ensure_in_memory(size: usize, offset: usize, len: usize) -> Result<()> {
+  match range_in(size, offset, len) {
+    Some(_) => Ok(()),
+    None => bail!("{} bytes at {} are outside the plugin's memory.", len, offset),
+  }
 }
 
 /// Like `memory_range`, with an error for a range outside the memory.
@@ -259,6 +272,8 @@ pub trait PluginExports {
   fn call_u32(&mut self, name: &str, params: &[u32]) -> Result<u32>;
   fn read_memory(&mut self, offset: usize, bytes: &mut [u8]) -> Result<()>;
   fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()>;
+  /// The size of the instance's memory in bytes.
+  fn memory_size(&mut self) -> usize;
   /// The token the host functions check while the plugin formats.
   fn set_token(&mut self, token: Arc<dyn CancellationToken>);
 }
@@ -326,6 +341,10 @@ impl PluginExports for NativeExports {
 
   fn write_memory(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
     Ok(self.memory.write(&mut self.store, offset, bytes)?)
+  }
+
+  fn memory_size(&mut self) -> usize {
+    self.memory.data_size(&self.store)
   }
 
   fn set_token(&mut self, token: Arc<dyn CancellationToken>) {
@@ -479,11 +498,15 @@ mod test {
       }
     }
 
+    fn memory_size(&mut self) -> usize {
+      self.memory.len()
+    }
+
     fn set_token(&mut self, _token: Arc<dyn CancellationToken>) {}
   }
 
   fn format(version: PluginSchemaVersion, results: &[(&'static str, u32)]) -> FormatResult {
-    let mut instance = create_plugin_instance(version, ScriptedExports::new(results)).unwrap();
+    let mut instance = instance(version, results);
     let config = FormatConfig {
       id: FormatConfigId::from_raw(1),
       plugin: Default::default(),
@@ -497,6 +520,10 @@ mod test {
       &ConfigKeyMap::default(),
       Arc::new(NullCancellationToken),
     )
+  }
+
+  fn instance(version: PluginSchemaVersion, results: &[(&'static str, u32)]) -> Box<dyn InitializedWasmPluginInstance + Send> {
+    create_plugin_instance(version, ScriptedExports::new(results)).unwrap()
   }
 
   fn v3(results: &[(&'static str, u32)]) -> Vec<(&'static str, u32)> {
@@ -523,6 +550,21 @@ mod test {
         assert!(err.downcast_ref::<CriticalFormatError>().is_some(), "{err:#}");
         assert!(err.to_string().contains(&format!("format result {value}")), "{err:#}");
       }
+    }
+  }
+
+  #[test]
+  fn a_length_past_the_memory_is_rejected_before_reading() {
+    for version in [PluginSchemaVersion::V3, PluginSchemaVersion::V4] {
+      let err = instance(version, &v3(&[("get_license_text", u32::MAX)])).license_text().unwrap_err();
+      assert_eq!(err.to_string(), "4294967295 bytes at 0 are outside the plugin's memory.");
+      let err = instance(
+        version,
+        &v3(&[("get_license_text", 4096), ("get_shared_bytes_ptr", 1), ("get_wasm_memory_buffer", 4096)]),
+      )
+      .license_text()
+      .unwrap_err();
+      assert!(err.to_string().contains("outside the plugin's memory"), "{err:#}");
     }
   }
 }
