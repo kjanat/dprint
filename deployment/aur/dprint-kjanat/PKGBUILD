@@ -20,7 +20,8 @@ sha256sums=('2ca93c954ffbf410e5428653a7c18288a319d98790c5b2563b7a8174695b4db2')
 prepare() {
 	cd "dprint-${_tag}" || exit
 	export RUSTUP_TOOLCHAIN=stable
-	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+	_host="$(rustc --print host-tuple)"
+	cargo fetch --locked --target "${_host}"
 }
 
 build() {
