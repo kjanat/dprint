@@ -9,7 +9,7 @@ arch=('x86_64' 'aarch64')
 url='https://dprint.kjanat.dev'
 license=('MIT')
 depends=('bzip2' 'gcc-libs' 'glibc' 'xz')
-makedepends=('cargo')
+makedepends=('cargo' 'jq')
 provides=("dprint=${pkgver}")
 conflicts=('dprint' 'dprint-git' 'dprint-kjanat-bin' 'dprint-kjanat-git')
 options=('!lto')
@@ -28,7 +28,9 @@ build() {
 	RUSTUP_TOOLCHAIN=stable
 	CARGO_TARGET_DIR=target
 	export RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
-	cargo build --frozen --release -p kprint
+	_metadata="$(cargo metadata --frozen --no-deps --format-version 1)"
+	_package="$(jq --raw-output '.packages[] | select(any(.targets[]; .kind == ["bin"] and .name == "dprint")) | .name' <<<"${_metadata}")"
+	cargo build --frozen --release -p "${_package}"
 }
 
 package() {
