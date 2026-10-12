@@ -358,13 +358,7 @@ impl RealUrlDownloader {
     self.download_with_retries(url, deadline, max_len, &agent)
   }
 
-  fn download_with_retries(
-    &self,
-    url: &Url,
-    deadline: Option<Instant>,
-    max_len: Option<usize>,
-    agent: &ureq::Agent,
-  ) -> Result<Option<DownloadedFile>> {
+  fn download_with_retries(&self, url: &Url, deadline: Option<Instant>, max_len: Option<usize>, agent: &ureq::Agent) -> Result<Option<DownloadedFile>> {
     let mut last_error = None;
     for retry_count in 0..(MAX_RETRIES + 1) {
       match self.inner_download(url, retry_count, deadline, max_len, agent) {

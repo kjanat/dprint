@@ -69,23 +69,9 @@ mod test {
       let downloader = CachedDownloader::new(environment.clone());
 
       // should cache when not exists
-      assert!(
-        downloader
-          .download_file_no_redirects(&not_exists_url, None)
-          .await
-          .as_ref()
-          .unwrap()
-          .is_none()
-      );
+      assert!(downloader.download_file_no_redirects(&not_exists_url, None).await.as_ref().unwrap().is_none());
       environment.add_remote_file_bytes(not_exists_url.as_str(), Vec::new());
-      assert!(
-        downloader
-          .download_file_no_redirects(&not_exists_url, None)
-          .await
-          .as_ref()
-          .unwrap()
-          .is_none()
-      );
+      assert!(downloader.download_file_no_redirects(&not_exists_url, None).await.as_ref().unwrap().is_none());
 
       // should get data and have it cached
       assert_eq!(
@@ -113,5 +99,4 @@ mod test {
       );
     });
   }
-
 }
