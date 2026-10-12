@@ -5957,12 +5957,6 @@ text_formatted"
       .build();
 
     // mock the npm registry: packument + tarball
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/test-plugin/-/test-plugin-1.0.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/test-plugin", packument.to_string().into_bytes());
     environment.add_remote_file_bytes(
       "https://registry.npmjs.org/test-plugin/-/test-plugin-1.0.0.tgz",
       create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]),
@@ -6083,12 +6077,6 @@ text_formatted"
       .write_file("/file.txt_ps", "text")
       .build();
 
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/test-process", packument.to_string().into_bytes());
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz", tarball);
 
     run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).unwrap();
@@ -6139,19 +6127,7 @@ text_formatted"
       .write_file("/file.txt_ps", "text")
       .build();
 
-    let top_packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz" } }
-      }
-    });
-    let per_platform_packument = serde_json::json!({
-      "versions": {
-        "0.1.0": { "dist": { "tarball": "https://registry.npmjs.org/test-process-bin/-/test-process-bin-0.1.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/test-process", top_packument.to_string().into_bytes());
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz", top_tarball);
-    environment.add_remote_file_bytes("https://registry.npmjs.org/test-process-bin", per_platform_packument.to_string().into_bytes());
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process-bin/-/test-process-bin-0.1.0.tgz", per_platform_tarball);
 
     run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).unwrap();
@@ -6180,12 +6156,6 @@ text_formatted"
       .write_file("/file.txt_ps", "text")
       .build();
 
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/test-process", packument.to_string().into_bytes());
     environment.add_remote_file_bytes("https://registry.npmjs.org/test-process/-/test-process-1.0.0.tgz", tarball);
 
     let err = run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).expect_err("expected an error");

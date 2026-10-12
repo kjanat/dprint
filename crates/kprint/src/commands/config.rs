@@ -2630,10 +2630,6 @@ mod test {
   fn config_add_to_package_json_updates_the_config_schema_file_before_the_plugin_is_installed() {
     let mut builder = TestEnvironmentBuilder::new();
     let environment = add_aged_test_plugin_tarballs(&mut builder)
-      .add_remote_file_bytes(
-        "https://registry.npmjs.org/@dprint/test-plugin",
-        aged_test_plugin_packument("2000-01-01T00:00:00Z").to_string().into_bytes(),
-      )
       .add_remote_file("https://plugins.dprint.dev/test/schema.json", TEST_PLUGIN_SCHEMA)
       .write_file("/dprint.json", "{}")
       .write_file("/package.json", "{}")
@@ -2814,10 +2810,6 @@ mod test {
   fn config_add_finishes_with_a_config_schema_that_doesnt_download() {
     let mut builder = TestEnvironmentBuilder::new();
     let environment = add_aged_test_plugin_tarballs(&mut builder)
-      .add_remote_file_bytes(
-        "https://registry.npmjs.org/@dprint/test-plugin",
-        aged_test_plugin_packument("2000-01-01T00:00:00Z").to_string().into_bytes(),
-      )
       .write_file("/dprint.json", "{}")
       .write_file("/package.json", "{}")
       .write_file("/dprint.schema.json", PREVIOUS_SCHEMA_FILE)
@@ -4980,11 +4972,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "0.95.15" },
-      "versions": { "0.95.15": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.95.15.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/typescript", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("@dprint/typescript", "0.95.15");
     environment.add_remote_file_bytes(
       "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.95.15.tgz",
       create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]),
@@ -5017,11 +5005,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.2.3");
     let tarball_bytes = create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -5039,11 +5023,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "9.9.9" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "9.9.9");
     let tarball_bytes = create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -5062,11 +5042,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.0.0" },
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.0.0");
     // tarball ships the plugin in a subdirectory, with no root plugin file
     let tarball_bytes = create_test_npm_tarball(&[("package/sub/foo.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
@@ -5085,11 +5061,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.0.0" },
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/plugins/-/plugins-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/plugins", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("plugins", "1.0.0");
     // the package ships a wasm plugin AND a (sibling) plugin.json
     let tarball_bytes = create_test_npm_tarball(&[
       ("package/typescript.wasm", crate::test_helpers::WASM_PLUGIN_BYTES),
@@ -5114,11 +5086,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.0.0" },
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/plugins/-/plugins-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/plugins", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("plugins", "1.0.0");
     let tarball_bytes = create_test_npm_tarball(&[
       ("package/typescript.wasm", crate::test_helpers::WASM_PLUGIN_BYTES),
       ("package/config.json", b"{}"),
@@ -5148,11 +5116,7 @@ text",
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
     environment.write_file("/package.json", r#"{"devDependencies": {"foo": "^1.0.0"}}"#).unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.2.3");
     let tarball_bytes = create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -5251,11 +5215,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.2.3");
     // detection downloads the tarball to learn the plugin kind — ship a wasm one
     let tarball_bytes = create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -5270,11 +5230,7 @@ text",
   async fn npm_add_resolves_latest_with_checksum_for_process_plugin() {
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "2.0.0" },
-      "versions": { "2.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-2.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "2.0.0");
     let tarball_bytes = process_plugin_npm_tarball();
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-2.0.0.tgz", tarball_bytes);
@@ -5291,11 +5247,7 @@ text",
     // ships a plugin.json, and write the pinned process form with a checksum.
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "2.0.0" },
-      "versions": { "2.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-2.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "2.0.0");
     let tarball_bytes = process_plugin_npm_tarball();
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-2.0.0.tgz", tarball_bytes);
@@ -5313,11 +5265,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "2.0.0" },
-      "versions": { "2.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-2.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "2.0.0");
     let tarball_bytes = create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-2.0.0.tgz", tarball_bytes);
     let config_path = environment.canonicalize("/dprint.json").unwrap();
@@ -5333,11 +5281,7 @@ text",
     // rather than passing through verbatim as wasm.
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "9.9.9" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "9.9.9");
     let tarball_bytes = process_plugin_npm_tarball();
     let expected = crate::utils::get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -5417,11 +5361,7 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.write_file("/dprint.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "0.99.0" },
-      "versions": { "0.99.0": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.99.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/typescript", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("@dprint/typescript", "0.99.0");
     environment.add_remote_file_bytes(
       "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.99.0.tgz",
       create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]),
@@ -5446,11 +5386,7 @@ text",
     environment.write_file("/dprint.json", "{}").unwrap();
     environment.mk_dir_all("/node_modules/foo").unwrap();
     environment.write_file("/node_modules/foo/plugin.json", "{}").unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.0.0" },
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.0.0");
 
     let config_path = environment.canonicalize("/dprint.json").unwrap();
     let result = call_resolve_npm_plugin_to_add("npm:foo", &config_path, true, true, &environment).await.unwrap();
@@ -5594,16 +5530,12 @@ text",
     // without a path inspects the package to detect its kind, so mock the
     // registry with a wasm tarball.
     use crate::test_helpers::create_test_npm_tarball;
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "2.0.0" },
-      "versions": { "2.0.0": { "dist": { "tarball": "https://registry.npmjs.org/test-plugin/-/test-plugin-2.0.0.tgz" } } }
-    });
     let environment = TestEnvironmentBuilder::new()
       .with_local_config("/dprint.json", |c| {
         c.add_plugin("npm:test-plugin@1.0.0");
         c.add_plugin("npm:other@1.0.0");
       })
-      .add_remote_file_bytes("https://registry.npmjs.org/test-plugin", packument.to_string().into_bytes())
+      .add_npm_latest_version("test-plugin", "2.0.0")
       .add_remote_file_bytes(
         "https://registry.npmjs.org/test-plugin/-/test-plugin-2.0.0.tgz",
         create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]),
@@ -5663,14 +5595,10 @@ text",
     use crate::test_helpers::WASM_PLUGIN_BYTES;
     use crate::test_helpers::create_test_npm_tarball;
 
-    let tarball_url = format!("https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-{}.tgz", npm_version);
-    let packument = json!({
-      "dist-tags": { "latest": npm_version },
-      "versions": { npm_version: { "dist": { "tarball": tarball_url } } }
-    });
-    builder
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
-      .add_remote_file_bytes(&tarball_url, create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]))
+    builder.add_npm_latest_version("@dprint/test-plugin", npm_version).add_remote_file_bytes(
+      &crate::test_helpers::npm_tarball_url("@dprint/test-plugin", npm_version),
+      create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]),
+    )
   }
 
   /// The checksum of the npm package `add_npm_test_plugin_package` serves.
@@ -5784,7 +5712,7 @@ text",
     environment.set_selection_result(0);
 
     let err = run_test_cli(vec!["config", "add"], &environment).err().unwrap();
-    assert_contains!(err.to_string(), "Failed to fetch npm packument for @dprint/test-plugin");
+    assert_contains!(err.to_string(), "Failed to resolve the latest version of @dprint/test-plugin");
     let _ = environment.take_stderr_messages();
   }
 
@@ -6090,15 +6018,8 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
 
     let tarball_url = |version: &str| format!("https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-{version}.tgz");
-    let packument = json!({
-      "dist-tags": { "latest": "0.1.0" },
-      "versions": {
-        "0.1.0": { "dist": { "tarball": tarball_url("0.1.0") } },
-        "0.2.0": { "dist": { "tarball": tarball_url("0.2.0") } },
-      }
-    });
     let environment = TestEnvironmentBuilder::new()
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-plugin", "0.1.0")
       .add_remote_file_bytes(&tarball_url("0.2.0"), create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]))
       .with_info_file(|_| {})
       .with_local_config("/dprint.json", |config| {
@@ -6139,7 +6060,8 @@ text",
     })
   }
 
-  /// Serves the tarball for each version of the aged test plugin package.
+  /// Serves the tarball for each version of the aged test plugin package, and
+  /// 0.3.0 as its latest version.
   fn add_aged_test_plugin_tarballs(builder: &mut TestEnvironmentBuilder) -> &mut TestEnvironmentBuilder {
     use crate::test_helpers::WASM_PLUGIN_BYTES;
     use crate::test_helpers::create_test_npm_tarball;
@@ -6149,7 +6071,7 @@ text",
         create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]),
       );
     }
-    builder
+    builder.add_npm_latest_version("@dprint/test-plugin", "0.3.0")
   }
 
   #[test]
@@ -6234,6 +6156,8 @@ text",
       "got: {}",
       environment.read_file("/dprint.json").unwrap()
     );
+    // without an age the version comes from jsDelivr, not the packument
+    assert_eq!(environment.remote_file_download_count("https://registry.npmjs.org/@dprint/test-plugin"), 0);
     environment.take_stderr_messages();
   }
 
@@ -6483,16 +6407,9 @@ text",
 
     let tarball_url = |version: &str| format!("https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-{version}.tgz");
     // both are below the 0.2.0 the wasm reports for itself
-    let packument = json!({
-      "dist-tags": { "latest": "0.1.5" },
-      "versions": {
-        "0.1.0": { "dist": { "tarball": tarball_url("0.1.0") } },
-        "0.1.5": { "dist": { "tarball": tarball_url("0.1.5") } },
-      }
-    });
     let tarball = create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]);
     let environment = TestEnvironmentBuilder::new()
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-plugin", "0.1.5")
       .add_remote_file_bytes(&tarball_url("0.1.0"), tarball.clone())
       .add_remote_file_bytes(&tarball_url("0.1.5"), tarball)
       .with_info_file(|_| {})
@@ -6519,12 +6436,8 @@ text",
     use crate::test_helpers::create_test_npm_tarball;
 
     let tarball_url = "https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-evil.tgz";
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0/plugin.json" },
-      "versions": { "0.3.0/plugin.json": { "dist": { "tarball": tarball_url } } }
-    });
     let environment = TestEnvironmentBuilder::new()
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-plugin", "0.3.0/plugin.json")
       .add_remote_file_bytes(tarball_url, create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]))
       .add_remote_wasm_plugin()
       .add_remote_wasm_0_1_0_plugin()
@@ -6592,16 +6505,9 @@ text",
 
     let tarball_url = |version: &str| format!("https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-{version}.tgz");
     // the package is at 0.3.0 while the wasm inside reports 0.2.0
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0" },
-      "versions": {
-        "0.1.0": { "dist": { "tarball": tarball_url("0.1.0") } },
-        "0.3.0": { "dist": { "tarball": tarball_url("0.3.0") } },
-      }
-    });
     let tarball = create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]);
     let environment = TestEnvironmentBuilder::new()
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-plugin", "0.3.0")
       .add_remote_file_bytes(&tarball_url("0.1.0"), tarball.clone())
       .add_remote_file_bytes(&tarball_url("0.3.0"), tarball)
       .with_info_file(|_| {})
@@ -6674,10 +6580,6 @@ text",
     );
     let tarball = create_test_npm_tarball(&[("package/plugin.json", plugin_json.as_bytes()), ("package/bin.zip", zip_bytes)]);
     let tarball_checksum = get_sha256_checksum(&tarball);
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0" },
-      "versions": { "0.3.0": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/test-process/-/test-process-0.3.0.tgz" } } }
-    });
 
     let environment = TestEnvironmentBuilder::new()
       .add_remote_process_plugin()
@@ -6697,7 +6599,7 @@ text",
       .with_default_config(|config| {
         config.add_remote_process_plugin();
       })
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-process", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-process", "0.3.0")
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-process/-/test-process-0.3.0.tgz", tarball)
       .initialize()
       .build();
@@ -6717,10 +6619,6 @@ text",
 
   #[test]
   fn config_update_keeps_a_process_plugin_on_its_url_when_the_move_is_declined() {
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0" },
-      "versions": { "0.3.0": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/test-process/-/test-process-0.3.0.tgz" } } }
-    });
     let environment = TestEnvironmentBuilder::new()
       .add_remote_process_plugin()
       .with_info_file(|info| {
@@ -6739,7 +6637,7 @@ text",
       .with_default_config(|config| {
         config.add_remote_process_plugin();
       })
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-process", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/test-process", "0.3.0")
       .add_remote_file_bytes(
         "https://registry.npmjs.org/@dprint/test-process/-/test-process-0.3.0.tgz",
         crate::test_helpers::create_test_npm_tarball(&[("package/plugin.json", b"{}")]),
@@ -6763,10 +6661,6 @@ text",
     use crate::test_helpers::WASM_PLUGIN_BYTES;
     use crate::test_helpers::create_test_npm_tarball;
 
-    let packument = json!({
-      "dist-tags": { "latest": "1.0.0" },
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/example/-/example-1.0.0.tgz" } } }
-    });
     let environment = TestEnvironmentBuilder::new()
       .add_remote_wasm_plugin()
       .add_remote_wasm_0_1_0_plugin()
@@ -6784,7 +6678,7 @@ text",
       .with_local_config("/dprint.json", |config| {
         config.add_plugin("https://plugins.dprint.dev/test-plugin-0.1.0.wasm");
       })
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/example", packument.to_string().into_bytes())
+      .add_npm_latest_version("@dprint/example", "1.0.0")
       .add_remote_file_bytes(
         "https://registry.npmjs.org/@dprint/example/-/example-1.0.0.tgz",
         create_test_npm_tarball(&[("package/test-plugin/plugin.wasm", WASM_PLUGIN_BYTES)]),

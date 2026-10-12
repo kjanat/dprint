@@ -22,6 +22,8 @@ use crate::utils::parse_rfc3339;
 use crate::utils::verify_sha256_checksum;
 
 const NPM_REGISTRY_HOST: &str = "registry.npmjs.org";
+const NPM_CDN_URL: &str = "https://cdn.jsdelivr.net/npm/";
+const NPM_VERSIONS_URL: &str = "https://data.jsdelivr.com/v1/packages/npm";
 
 /// The result of resolving an npm plugin specifier.
 pub struct NpmResolvedPlugin {
@@ -90,33 +92,48 @@ pub async fn fetch_npm_latest_info(args: FetchNpmLatestInfo<'_>, environment: &i
     want_tarball_sha,
     minimum_dependency_age,
   } = args;
-  let packument = fetch_packument(&specifier.name, environment).await?;
-  let latest_version = select_version_from_packument(&packument, &specifier.name, minimum_dependency_age, environment)?;
-
-  let need_tarball_sha = want_tarball_sha || specifier.plugin_kind() != PluginKind::Wasm;
-  let tarball_sha256 = if need_tarball_sha {
-    let tarball_url_str = get_tarball_url_from_packument(&packument, &latest_version, &specifier.name)?;
-    let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
-    let (_, tarball_file) = environment
-      .download_file_err_404(&tarball_url, None)
-      .await
-      .with_context(|| format!("Failed to download npm tarball for {}@{}", specifier.name, latest_version))?;
-    Some(get_sha256_checksum(&tarball_file.content))
+  let version = resolve_npm_latest_version(&specifier.name, minimum_dependency_age, environment).await?;
+  let tarball_sha256 = if want_tarball_sha || specifier.plugin_kind() != PluginKind::Wasm {
+    Some(get_sha256_checksum(&download_npm_tarball(&specifier.name, &version, environment).await?))
   } else {
     None
   };
-
-  Ok(NpmLatestInfo {
-    version: latest_version,
-    tarball_sha256,
-  })
+  Ok(NpmLatestInfo { version, tarball_sha256 })
 }
 
-/// Resolves the latest published version of a package from its packument.
-/// Used by `dprint add` to pin an unversioned specifier before setup.
+/// Resolves the version of a package to pin: its latest release, or with a
+/// minimum dependency age the newest release old enough, which needs the
+/// publish times only the registry's packument has.
 pub async fn resolve_npm_latest_version(name: &str, minimum_dependency_age: Option<&DependencyAgeCutoff>, environment: &impl Environment) -> Result<String> {
-  let packument = fetch_packument(name, environment).await?;
-  select_version_from_packument(&packument, name, minimum_dependency_age, environment)
+  match minimum_dependency_age {
+    Some(cutoff) => select_version_from_packument(&fetch_packument(name, environment).await?, name, cutoff, environment),
+    None => fetch_latest_version(name, environment).await,
+  }
+}
+
+async fn fetch_latest_version(name: &str, environment: &impl Environment) -> Result<String> {
+  let url = url::Url::parse(&format!("{}/{}/resolved?specifier=latest", NPM_VERSIONS_URL, name))?;
+  log_debug!(environment, "Fetching latest npm version: {}", url);
+  let (_, file) = environment
+    .download_file_err_404(&url, None)
+    .await
+    .with_context(|| format!("Failed to resolve the latest version of {}", name))?;
+  let response: serde_json::Value = serde_json::from_slice(&file.content).with_context(|| format!("Failed to parse the latest version of {}", name))?;
+  match response.get("version").and_then(|version| version.as_str()) {
+    Some(version) => Ok(version.to_string()),
+    None => bail!("{} has no published version.", name),
+  }
+}
+
+async fn download_npm_tarball(name: &str, version: &str, environment: &impl Environment) -> Result<Vec<u8>> {
+  let file_name = name.rsplit('/').next().unwrap_or(name);
+  let url = url::Url::parse(&format!("https://{}/{}/-/{}-{}.tgz", NPM_REGISTRY_HOST, name, file_name, version))?;
+  log_debug!(environment, "Downloading npm tarball: {}", url);
+  let (_, file) = environment
+    .download_file_err_404(&url, None)
+    .await
+    .with_context(|| format!("Failed to download npm tarball for {}@{}", name, version))?;
+  Ok(file.content)
 }
 
 /// Reads the cached tarball checksum for `name@version`, if a prior setup
@@ -212,16 +229,8 @@ async fn fetch_packument(name: &str, environment: &impl Environment) -> Result<s
 /// A version the registry reports no publish date for can't be shown to be
 /// too new, so it stays eligible and the caller is warned. Failing against a
 /// registry that doesn't serve `time` would be worse than saying so.
-fn select_version_from_packument(
-  packument: &serde_json::Value,
-  name: &str,
-  cutoff: Option<&DependencyAgeCutoff>,
-  environment: &impl Environment,
-) -> Result<String> {
+fn select_version_from_packument(packument: &serde_json::Value, name: &str, cutoff: &DependencyAgeCutoff, environment: &impl Environment) -> Result<String> {
   let latest = latest_version_from_packument(packument, name)?;
-  let Some(cutoff) = cutoff else {
-    return Ok(latest);
-  };
   let times = packument.get("time").and_then(|time| time.as_object());
   let Some(times) = times else {
     log_warn!(
@@ -388,7 +397,7 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
     .ok_or_else(|| anyhow::anyhow!("Cannot resolve npm plugin without a version from the registry"))?;
   // A checksum on an npm reference covers the tarball.
   if !detect_path && !establish_checksum && checksum.is_none() && specifier.plugin_kind() == PluginKind::Wasm {
-    let mut url = url::Url::parse("https://cdn.jsdelivr.net/npm/")?;
+    let mut url = url::Url::parse(NPM_CDN_URL)?;
     {
       let mut path = url.path_segments_mut().expect("CDN URL has a path");
       path.pop_if_empty();
@@ -410,15 +419,7 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
     // A version missing from the CDN may already be available on npm.
   }
 
-  let packument = fetch_packument(&specifier.name, environment).await?;
-  let tarball_url_str = get_tarball_url_from_packument(&packument, version, &specifier.name)?;
-  let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
-  log_debug!(environment, "Downloading npm tarball: {}", tarball_url);
-  let (_, tarball_file) = environment
-    .download_file_err_404(&tarball_url, None)
-    .await
-    .with_context(|| format!("Failed to download npm tarball for {}@{}", specifier.name, version))?;
-  let tarball_bytes = tarball_file.content;
+  let tarball_bytes = download_npm_tarball(&specifier.name, version, environment).await?;
 
   let tarball_sha256 = get_sha256_checksum(&tarball_bytes);
 
@@ -673,15 +674,7 @@ async fn try_resolve_process_plugin_per_platform_tarball(
 /// on every call so a registry that silently swaps the tarball's contents
 /// is detected immediately.
 async fn fetch_and_verify_npm_tarball(name: &str, version: &str, expected_checksum: &str, environment: &impl Environment) -> Result<Vec<u8>> {
-  let packument = fetch_packument(name, environment).await?;
-  let tarball_url_str = get_tarball_url_from_packument(&packument, version, name)?;
-  let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
-  let (_, tarball_file) = environment
-    .download_file_err_404(&tarball_url, None)
-    .await
-    .with_context(|| format!("Failed to download npm tarball for {}@{}", name, version))?;
-  let tarball_bytes = tarball_file.content;
-
+  let tarball_bytes = download_npm_tarball(name, version, environment).await?;
   if let Err(err) = verify_sha256_checksum(&tarball_bytes, expected_checksum) {
     bail!(
       "Invalid checksum for npm package {}@{}. The tarball's contents don't match the expected SHA-256.\n\n{:#}",
@@ -1023,26 +1016,6 @@ fn get_packument_url(package_name: &str) -> String {
   format!("https://{}/{}", NPM_REGISTRY_HOST, package_name)
 }
 
-fn get_tarball_url_from_packument(packument: &serde_json::Value, version: &str, package_name: &str) -> Result<String> {
-  let versions = packument
-    .get("versions")
-    .and_then(|v| v.as_object())
-    .ok_or_else(|| anyhow::anyhow!("Invalid packument for {}: missing 'versions' object", package_name))?;
-
-  let version_obj = versions
-    .get(version)
-    .and_then(|v| v.as_object())
-    .ok_or_else(|| anyhow::anyhow!("Version {} not found for package {}", version, package_name))?;
-
-  let tarball_url = version_obj
-    .get("dist")
-    .and_then(|d| d.get("tarball"))
-    .and_then(|t| t.as_str())
-    .ok_or_else(|| anyhow::anyhow!("Missing tarball URL for {}@{}", package_name, version))?;
-
-  Ok(tarball_url.to_string())
-}
-
 /// Walks up from `start_dir` looking for `node_modules/{package_name}/`.
 /// Returns `None` if not installed anywhere along the ancestor chain.
 fn find_package_in_node_modules(package_name: &str, start_dir: &Path, environment: &impl Environment) -> Option<std::path::PathBuf> {
@@ -1057,13 +1030,13 @@ fn find_package_in_node_modules(package_name: &str, start_dir: &Path, environmen
 
 /// Builds the user-facing "package not in node_modules" error. When the
 /// caller has async context (the user-facing resolve path), it also
-/// suggests a concrete `npm:<name>@<version>` specifier built from the npm
-/// registry's `dist-tags.latest`; when that lookup fails we fall back to
+/// suggests a concrete `npm:<name>@<version>` specifier built from the
+/// package's latest version; when that lookup fails we fall back to
 /// the bare `npm install` hint. We deliberately don't append the tarball
 /// checksum here — for non-wasm plugins the next resolve step bails with a
 /// "must have a checksum" error that quotes the exact value to use.
 async fn node_modules_missing_message(specifier: &NpmSpecifier, environment: &impl Environment) -> String {
-  match fetch_npm_latest_version(&specifier.name, environment).await {
+  match fetch_latest_version(&specifier.name, environment).await.ok() {
     Some(version) => {
       // hide the default `plugin.wasm` path so the suggestion matches what
       // a user would actually type. Non-default paths (e.g. `plugin.json`)
@@ -1088,22 +1061,6 @@ async fn node_modules_missing_message(specifier: &NpmSpecifier, environment: &im
       specifier.name, specifier.name,
     ),
   }
-}
-
-/// Reads `dist-tags.latest` from the registry's packument for a single
-/// package. Returns `None` on any network/parse failure — callers use this
-/// as a best-effort hint, not a hard requirement, so we don't bubble the
-/// error up. Unlike [`fetch_npm_latest_info`] this never downloads the
-/// tarball, so it's cheap enough to call inside an error path.
-async fn fetch_npm_latest_version(package_name: &str, environment: &impl Environment) -> Option<String> {
-  let packument_url = url::Url::parse(&get_packument_url(package_name)).ok()?;
-  let (_, packument_file) = environment.download_file_err_404(&packument_url, None).await.ok()?;
-  let packument: serde_json::Value = serde_json::from_slice(&packument_file.content).ok()?;
-  packument
-    .get("dist-tags")
-    .and_then(|d| d.get("latest"))
-    .and_then(|v| v.as_str())
-    .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -1370,40 +1327,11 @@ mod tests {
     assert_eq!(get_packument_url("dprint-plugin-foo"), "https://registry.npmjs.org/dprint-plugin-foo");
   }
 
-  #[test]
-  fn test_get_tarball_url_from_packument() {
-    let packument = serde_json::json!({
-      "versions": {
-        "0.23.0": {
-          "dist": {
-            "tarball": "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.23.0.tgz"
-          }
-        }
-      }
-    });
-    let result = get_tarball_url_from_packument(&packument, "0.23.0", "@dprint/typescript").unwrap();
-    assert_eq!(result, "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.23.0.tgz");
-  }
-
-  #[test]
-  fn test_get_tarball_url_version_not_found() {
-    let packument = serde_json::json!({
-      "versions": {}
-    });
-    let result = get_tarball_url_from_packument(&packument, "0.23.0", "@dprint/typescript");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Version 0.23.0 not found"));
-  }
-
   #[tokio::test]
   async fn fetch_npm_latest_info_wasm_skips_tarball_download() {
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.2.3");
     // intentionally NOT adding the tarball — wasm should not fetch it
 
     let specifier = NpmSpecifier {
@@ -1431,11 +1359,7 @@ mod tests {
     // tarball sha rather than reusing the stale one from the old specifier.
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "1.2.3");
     let tarball_bytes = vec![1u8, 2, 3, 4];
     let expected = get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.2.3.tgz", tarball_bytes);
@@ -1463,11 +1387,7 @@ mod tests {
   async fn fetch_npm_latest_info_process_downloads_tarball_for_checksum() {
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "2.0.0" },
-      "versions": { "2.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-2.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("foo", "2.0.0");
     let tarball_bytes = vec![0u8, 1, 2, 3, 4, 5];
     let expected_checksum = get_sha256_checksum(&tarball_bytes);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-2.0.0.tgz", tarball_bytes);
@@ -1489,6 +1409,18 @@ mod tests {
     .unwrap();
     assert_eq!(info.version, "2.0.0");
     assert_eq!(info.tarball_sha256.as_deref(), Some(expected_checksum.as_str()));
+  }
+
+  #[tokio::test]
+  async fn resolve_npm_latest_version_errors_when_the_package_has_no_version() {
+    use crate::environment::TestEnvironment;
+    let environment = TestEnvironment::new();
+    environment.add_remote_file_bytes(
+      &crate::test_helpers::npm_latest_version_url("foo"),
+      br#"{ "type": "npm", "name": "foo", "version": null }"#.to_vec(),
+    );
+    let err = resolve_npm_latest_version("foo", None, &environment).await.unwrap_err();
+    assert_eq!(err.to_string(), "foo has no published version.");
   }
 
   #[test]
@@ -1524,10 +1456,6 @@ mod tests {
     use crate::test_helpers::create_test_npm_tarball;
 
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
     let tarball = create_test_npm_tarball(&[("package/plugin.wasm", b"\0asm")]);
     let expected = get_sha256_checksum(&tarball);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.0.0.tgz", tarball);
@@ -2050,10 +1978,6 @@ mod tests {
     // reference plugin.json, not just "Is the package a dprint plugin?".
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "versions": { "0.6.2": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/exec/-/exec-0.6.2.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/exec", packument.to_string().into_bytes());
     let tarball = create_test_tarball(&[("package/plugin.json", br#"{"schemaVersion":2,"name":"exec","version":"0.6.2"}"#)]);
     let tarball_checksum = get_sha256_checksum(&tarball);
     environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/exec/-/exec-0.6.2.tgz", tarball);
@@ -2134,11 +2058,7 @@ mod tests {
     // skip the checksum (it's optional and would be noise).
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "0.99.0" },
-      "versions": { "0.99.0": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/typescript/-/typescript-0.99.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/typescript", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("@dprint/typescript", "0.99.0");
 
     let specifier = NpmSpecifier {
       name: "@dprint/typescript".to_string(),
@@ -2165,11 +2085,7 @@ mod tests {
     // into this message.
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "0.6.2" },
-      "versions": { "0.6.2": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/exec/-/exec-0.6.2.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/exec", packument.to_string().into_bytes());
+    environment.add_npm_latest_version("@dprint/exec", "0.6.2");
     // intentionally no tarball mock — confirms we don't fetch it for the suggestion
 
     let specifier = NpmSpecifier {

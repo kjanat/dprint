@@ -224,15 +224,7 @@ mod test {
     let environment = TestEnvironment::new();
     let tarball = crate::test_helpers::create_test_npm_tarball(&[("package/plugin.wasm", crate::test_helpers::WASM_PLUGIN_BYTES)]);
     let tarball_checksum = crate::utils::get_sha256_checksum(&tarball);
-    environment.add_remote_file_bytes(
-      "https://registry.npmjs.org/@dprint/json",
-      serde_json::json!({
-        "dist-tags": { "latest": "1.2.3" },
-        "versions": { "1.2.3": { "dist": { "tarball": "https://registry.npmjs.org/@dprint/json/-/json-1.2.3.tgz" } } }
-      })
-      .to_string()
-      .into_bytes(),
-    );
+    environment.add_npm_latest_version("@dprint/json", "1.2.3");
     environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/json/-/json-1.2.3.tgz", tarball);
     let npm = PluginNpmInfo {
       name: "@dprint/json".to_string(),

@@ -405,6 +405,11 @@ impl TestEnvironmentBuilder {
     self
   }
 
+  pub fn add_npm_latest_version(&mut self, name: &str, version: &str) -> &mut Self {
+    self.environment.add_npm_latest_version(name, version);
+    self
+  }
+
   pub fn set_cwd(&mut self, dir_path: &str) -> &mut Self {
     self.environment.set_cwd(dir_path);
     self

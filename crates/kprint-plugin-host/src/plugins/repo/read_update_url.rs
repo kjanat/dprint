@@ -167,12 +167,7 @@ mod test {
   "npm": { "name": "@dprint/json" }
 }"#,
       )
-      .add_remote_file_bytes(
-        "https://registry.npmjs.org/@dprint/json",
-        serde_json::json!({ "dist-tags": { "latest": "1.1.0" }, "versions": { "1.1.0": {} } })
-          .to_string()
-          .into_bytes(),
-      );
+      .add_npm_latest_version("@dprint/json", "1.1.0");
     let environment = builder.build();
     environment.clone().run_in_runtime(async move {
       let plugin = read_update_url(&environment, &Url::parse("https://plugins.dprint.dev/plugin/latest.json").unwrap())

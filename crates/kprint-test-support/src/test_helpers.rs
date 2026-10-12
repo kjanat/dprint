@@ -116,6 +116,15 @@ pub fn validate_with_schema(schema: &serde_json::Value, instance: &serde_json::V
 
 /// Builds a gzipped tar with the given (path, contents) entries. Paths must
 /// share a single top-level directory (npm tarballs always wrap under `package/`).
+pub fn npm_latest_version_url(name: &str) -> String {
+  format!("https://data.jsdelivr.com/v1/packages/npm/{}/resolved?specifier=latest", name)
+}
+
+pub fn npm_tarball_url(name: &str, version: &str) -> String {
+  let file_name = name.rsplit('/').next().unwrap_or(name);
+  format!("https://registry.npmjs.org/{}/-/{}-{}.tgz", name, file_name, version)
+}
+
 pub fn create_test_npm_tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
   let with_mode: Vec<_> = files.iter().map(|(p, c)| (*p, *c, 0o644u32)).collect();
   create_test_npm_tarball_with_modes(&with_mode)

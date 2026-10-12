@@ -301,6 +301,12 @@ impl TestEnvironment {
     self.remote_files.lock().insert(String::from(path), Ok(bytes));
   }
 
+  /// Answers jsDelivr's lookup of a package's latest version.
+  pub fn add_npm_latest_version(&self, name: &str, version: &str) {
+    let body = serde_json::json!({ "type": "npm", "name": name, "version": version });
+    self.add_remote_file_bytes(&crate::test_helpers::npm_latest_version_url(name), body.to_string().into_bytes());
+  }
+
   pub fn add_remote_file_error(&self, path: &str, err: &str) {
     self.remote_files.lock().insert(String::from(path), Err(anyhow!("{}", err)));
   }

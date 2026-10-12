@@ -1437,16 +1437,8 @@ mod test {
     let tarball = crate::test_helpers::create_test_npm_tarball(&[(&format!("package/{}", file_name), b"")]);
     let checksum = crate::utils::get_sha256_checksum(&tarball);
     builder
-      .add_remote_file_bytes(
-        &format!("https://registry.npmjs.org/{}", name),
-        serde_json::json!({
-          "dist-tags": { "latest": "1.1.0" },
-          "versions": { "1.1.0": { "dist": { "tarball": format!("https://registry.npmjs.org/{}/-/pkg-1.1.0.tgz", name) } } }
-        })
-        .to_string()
-        .into_bytes(),
-      )
-      .add_remote_file_bytes(&format!("https://registry.npmjs.org/{}/-/pkg-1.1.0.tgz", name), tarball);
+      .add_npm_latest_version(name, "1.1.0")
+      .add_remote_file_bytes(&crate::test_helpers::npm_tarball_url(name, "1.1.0"), tarball);
     checksum
   }
 
@@ -1537,7 +1529,7 @@ mod test {
       let text = get_init_config_file_text(&environment, Default::default()).await.unwrap();
       assert!(text.contains("\"https://plugins.dprint.dev/a-1.0.0.wasm\""), "{text}");
       let mut expected_messages = get_standard_logged_messages();
-      expected_messages.push("Failed resolving the npm package for a. Using its url instead. Failed to fetch npm packument for @dprint/a: Error downloading https://registry.npmjs.org/@dprint/a - 404 Not Found");
+      expected_messages.push("Failed resolving the npm package for a. Using its url instead. Failed to resolve the latest version of @dprint/a: Error downloading https://data.jsdelivr.com/v1/packages/npm/@dprint/a/resolved?specifier=latest - 404 Not Found");
       assert_eq!(environment.take_stderr_messages(), expected_messages);
     });
   }
@@ -1614,7 +1606,7 @@ mod test {
   /// An environment with a single npm distributed plugin whose package has an
   /// old 1.0.0 and a 1.1.0 published at `latest_time`.
   fn age_test_builder(latest_time: &str) -> TestEnvironmentBuilder {
-    let tarball_url = |version: &str| format!("https://registry.npmjs.org/@dprint/a/-/pkg-{}.tgz", version);
+    let tarball_url = |version: &str| crate::test_helpers::npm_tarball_url("@dprint/a", version);
     let mut builder = TestEnvironmentBuilder::new();
     builder
       .add_remote_file_bytes(

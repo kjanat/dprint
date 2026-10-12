@@ -879,10 +879,6 @@ mod test {
     use crate::test_helpers::create_test_npm_tarball;
     let environment = TestEnvironment::new();
     environment.set_cpu_arch("aarch64");
-    let packument = serde_json::json!({
-      "versions": { "1.0.0": { "dist": { "tarball": "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
     let tarball = create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]);
     let expected = crate::utils::get_sha256_checksum(&tarball);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.0.0.tgz", tarball);
@@ -1342,14 +1338,6 @@ mod test {
 
     let environment = TestEnvironment::new();
 
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": {
-          "dist": { "tarball": "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz" }
-        }
-      }
-    });
-    environment.add_remote_file_bytes("https://registry.npmjs.org/evil", packument.to_string().into_bytes());
     let tarball = create_test_npm_tarball_raw_paths(&[("package/plugin.wasm", b"good"), ("package/../../../etc/passwd", b"pwned")]);
     environment.add_remote_file_bytes("https://registry.npmjs.org/evil/-/evil-1.0.0.tgz", tarball);
 
