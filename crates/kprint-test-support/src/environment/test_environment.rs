@@ -152,8 +152,6 @@ pub struct TestEnvironment {
   stderr_messages: Arc<Mutex<Vec<String>>>,
   remote_files: Arc<Mutex<HashMap<String, Result<Vec<u8>>>>>,
   remote_file_redirects: Arc<Mutex<HashMap<String, String>>>,
-  /// Last auth header seen for each URL.
-  remote_file_auth: Arc<Mutex<HashMap<String, Option<String>>>>,
   /// How long each URL takes to respond, or `None` when it never does.
   remote_file_delays: Arc<Mutex<HashMap<String, Option<std::time::Duration>>>>,
   /// How many times each URL was downloaded.
@@ -213,7 +211,6 @@ impl TestEnvironment {
       stderr_messages: Default::default(),
       remote_files: Default::default(),
       remote_file_redirects: Default::default(),
-      remote_file_auth: Default::default(),
       remote_file_delays: Default::default(),
       remote_file_downloads: Default::default(),
       failing_rename_targets: Default::default(),
@@ -361,10 +358,6 @@ impl TestEnvironment {
 
   pub fn add_remote_file_redirect(&self, from: &str, to: &str) {
     self.remote_file_redirects.lock().insert(from.to_string(), to.to_string());
-  }
-
-  pub fn take_remote_file_auth(&self, url: &str) -> Option<String> {
-    self.remote_file_auth.lock().remove(url).flatten()
   }
 
   pub fn set_env_var(&self, name: &str, value: Option<&str>) {
@@ -631,8 +624,7 @@ impl SystemTimeNow for TestEnvironment {
 
 #[async_trait(?Send)]
 impl UrlDownloader for TestEnvironment {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
-    self.remote_file_auth.lock().insert(url.to_string(), auth.map(|s| s.to_string()));
+  async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     *self.remote_file_downloads.lock().entry(url.to_string()).or_default() += 1;
 
     let delay = self.remote_file_delays.lock().get(url.as_str()).copied();

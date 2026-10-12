@@ -791,8 +791,8 @@ impl<S: NativeServices> InteractionEnvironment for NativeEnvironment<S> {
 
 #[async_trait(?Send)]
 impl<S: NativeServices> UrlDownloader for NativeEnvironment<S> {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
-    self.services.download_file_no_redirects(url, auth, max_len).await
+  async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
+    self.services.download_file_no_redirects(url, max_len).await
   }
 }
 
@@ -853,7 +853,7 @@ impl InteractionEnvironment for HeadlessServices {
 }
 #[async_trait(?Send)]
 impl UrlDownloader for HeadlessServices {
-  async fn download_file_no_redirects(&self, url: &Url, _auth: Option<&str>, _max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
+  async fn download_file_no_redirects(&self, url: &Url, _max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     bail!("No downloader configured for {}", url)
   }
 }

@@ -7,11 +7,10 @@ use url::Url;
 
 use crate::environment::DownloadedFile;
 use crate::environment::UrlDownloader;
-use crate::utils::get_bytes_hash;
 
 type CachedDownloadResult = Result<Option<Vec<u8>>, String>;
-/// The url, the hash of the auth and the length limit.
-type CachedDownloadKey = (String, Option<u64>, Option<usize>);
+/// The url and the length limit.
+type CachedDownloadKey = (String, Option<usize>);
 
 pub struct CachedDownloader<TInner: UrlDownloader> {
   inner: TInner,
@@ -29,8 +28,8 @@ impl<TInner: UrlDownloader> CachedDownloader<TInner> {
 
 #[async_trait(?Send)]
 impl<TInner: UrlDownloader> UrlDownloader for CachedDownloader<TInner> {
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
-    let key = (url.to_string(), auth.map(|s| get_bytes_hash(s.as_bytes())), max_len);
+  async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
+    let key = (url.to_string(), max_len);
     {
       if let Some(result) = self.results.borrow().get(&key) {
         return match result {
@@ -42,7 +41,7 @@ impl<TInner: UrlDownloader> UrlDownloader for CachedDownloader<TInner> {
         };
       }
     }
-    let result = self.inner.download_file_no_redirects(url, auth, max_len).await;
+    let result = self.inner.download_file_no_redirects(url, max_len).await;
     self.results.borrow_mut().insert(
       key,
       match &result {
@@ -72,7 +71,7 @@ mod test {
       // should cache when not exists
       assert!(
         downloader
-          .download_file_no_redirects(&not_exists_url, None, None)
+          .download_file_no_redirects(&not_exists_url, None)
           .await
           .as_ref()
           .unwrap()
@@ -81,7 +80,7 @@ mod test {
       environment.add_remote_file_bytes(not_exists_url.as_str(), Vec::new());
       assert!(
         downloader
-          .download_file_no_redirects(&not_exists_url, None, None)
+          .download_file_no_redirects(&not_exists_url, None)
           .await
           .as_ref()
           .unwrap()
@@ -91,7 +90,7 @@ mod test {
       // should get data and have it cached
       assert_eq!(
         downloader
-          .download_file_no_redirects(&exists_url, None, None)
+          .download_file_no_redirects(&exists_url, None)
           .await
           .as_ref()
           .unwrap()
@@ -103,7 +102,7 @@ mod test {
       environment.add_remote_file_bytes(exists_url.as_str(), Vec::new());
       assert_eq!(
         downloader
-          .download_file_no_redirects(&exists_url, None, None)
+          .download_file_no_redirects(&exists_url, None)
           .await
           .as_ref()
           .unwrap()
@@ -115,27 +114,4 @@ mod test {
     });
   }
 
-  #[test]
-  fn should_cache_per_auth() {
-    // entries for the same URL with different auth must not collide:
-    // a no-auth lookup mustn't return the auth'd response (or vice versa).
-    let mut builder = TestEnvironmentBuilder::new();
-    let url = Url::parse("http://localhost/test.txt").unwrap();
-    let environment = builder.add_remote_file(url.as_str(), "1").build();
-    environment.clone().run_in_runtime(async move {
-      let downloader = CachedDownloader::new(environment.clone());
-
-      let with_auth = downloader.download_file_no_redirects(&url, Some("Bearer T"), None).await.unwrap().unwrap();
-      assert_eq!(with_auth.content, "1".as_bytes());
-
-      let no_auth = downloader.download_file_no_redirects(&url, None, None).await.unwrap().unwrap();
-      assert_eq!(no_auth.content, "1".as_bytes());
-
-      // second auth'd call should be served from cache — swap the underlying
-      // file and assert the cached body is still returned
-      environment.add_remote_file_bytes(url.as_str(), b"changed".to_vec());
-      let with_auth_again = downloader.download_file_no_redirects(&url, Some("Bearer T"), None).await.unwrap().unwrap();
-      assert_eq!(with_auth_again.content, "1".as_bytes());
-    });
-  }
 }

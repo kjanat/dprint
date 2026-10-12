@@ -353,22 +353,21 @@ impl RealUrlDownloader {
   /// Downloads the file, giving up at the deadline when there's one, and on a
   /// response over `max_len` bytes when that's given (see
   /// `UrlDownloader::download_file_no_redirects`).
-  pub fn download_with_auth(&self, url: &Url, auth: Option<&str>, deadline: Option<Instant>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
+  pub fn download(&self, url: &Url, deadline: Option<Instant>, max_len: Option<usize>) -> Result<Option<DownloadedFile>> {
     let agent = self.get_agent(url)?;
-    self.download_with_retries(url, auth, deadline, max_len, &agent)
+    self.download_with_retries(url, deadline, max_len, &agent)
   }
 
   fn download_with_retries(
     &self,
     url: &Url,
-    auth: Option<&str>,
     deadline: Option<Instant>,
     max_len: Option<usize>,
     agent: &ureq::Agent,
   ) -> Result<Option<DownloadedFile>> {
     let mut last_error = None;
     for retry_count in 0..(MAX_RETRIES + 1) {
-      match self.inner_download(url, auth, retry_count, deadline, max_len, agent) {
+      match self.inner_download(url, retry_count, deadline, max_len, agent) {
         Ok(result) => return Ok(result),
         Err(attempt) => {
           if retry_count < MAX_RETRIES {
@@ -394,7 +393,7 @@ impl RealUrlDownloader {
     let agent = self.get_agent(&url)?;
     Ok(
       self
-        .inner_download(&url, None, 0, None, None, &agent)
+        .inner_download(&url, 0, None, None, &agent)
         .map_err(|attempt| attempt.error)?
         .map(|r| r.content),
     )
@@ -413,7 +412,6 @@ impl RealUrlDownloader {
   fn inner_download(
     &self,
     url: &Url,
-    auth: Option<&str>,
     retry_count: u8,
     deadline: Option<Instant>,
     max_len: Option<usize>,
@@ -427,9 +425,6 @@ impl RealUrlDownloader {
         Some(remaining) if !remaining.is_zero() => request = request.timeout(remaining),
         _ => return Err(AttemptError::timed_out(anyhow::anyhow!("Error downloading {} - Timed out.", url))),
       }
-    }
-    if let Some(auth) = auth {
-      request = request.set("Authorization", auth);
     }
     let resp = match BoundedResolver::with_request_deadline(deadline, || request.call().map_err(Box::new)) {
       Ok(resp) => resp,
@@ -738,7 +733,7 @@ mod test {
     let url = url::Url::parse(url).unwrap();
     std::thread::spawn(move || {
       let start = Instant::now();
-      let result = downloader.download_with_auth(&url, None, Some(start + deadline), None);
+      let result = downloader.download(&url, Some(start + deadline), None);
       sender.send((result.map(|file| file.map(|file| file.content)), start.elapsed())).unwrap();
     });
     receiver.recv_timeout(deadline + Duration::from_secs(10)).expect("the download didn't give up")
@@ -749,7 +744,7 @@ mod test {
   fn download_at_most(url: &str, max_len: usize) -> Result<Option<Vec<u8>>, String> {
     let url = url::Url::parse(url).unwrap();
     create_silent_downloader()
-      .download_with_auth(&url, None, None, Some(max_len))
+      .download(&url, None, Some(max_len))
       .map(|file| file.map(|file| file.content))
       .map_err(|err| err.to_string())
   }
@@ -913,7 +908,7 @@ mod test {
       })
     });
     let url = super::Url::parse("http://timing-out.invalid/schema.json").unwrap();
-    assert!(downloader.download_with_auth(&url, None, None, None).is_err());
+    assert!(downloader.download(&url, None, None).is_err());
     assert_eq!(lookups.load(Ordering::SeqCst), usize::from(super::MAX_RETRIES) + 1);
   }
 

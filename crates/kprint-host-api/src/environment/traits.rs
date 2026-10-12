@@ -97,36 +97,25 @@ pub trait UrlDownloader {
   /// is an error (see [`response_too_large_error`]) rather than read: what it
   /// says its length is is checked before any of it is read, and otherwise
   /// at most that many bytes and one are.
-  async fn download_file_no_redirects(&self, url: &Url, auth: Option<&str>, max_len: Option<usize>) -> Result<Option<DownloadedFile>>;
+  async fn download_file_no_redirects(&self, url: &Url, max_len: Option<usize>) -> Result<Option<DownloadedFile>>;
 
   /// Downloads a file, following redirects, and returns `None` on 404.
-  async fn download_file<'a>(&self, url: &'a Url, auth: Option<&str>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
-    self.download_file_with_limit(url, auth, None).await
+  async fn download_file<'a>(&self, url: &'a Url) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
+    self.download_file_with_limit(url, None).await
   }
 
   /// Downloads a file of at most `max_len` bytes (see
   /// [`UrlDownloader::download_file_no_redirects`]), following redirects,
   /// and returns `None` on 404.
-  async fn download_file_with_limit<'a>(&self, url: &'a Url, auth: Option<&str>, max_len: Option<usize>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
-    let original_origin = (url.scheme().to_string(), url.host_str().map(|h| h.to_string()), url.port_or_known_default());
+  async fn download_file_with_limit<'a>(&self, url: &'a Url, max_len: Option<usize>) -> Result<(Cow<'a, Url>, Option<DownloadedFile>)> {
     let mut current_url = Cow::Borrowed(url);
-    let mut current_auth = auth;
     for _ in 0..=10 {
-      let result = match self.download_file_no_redirects(&current_url, current_auth, max_len).await? {
+      let result = match self.download_file_no_redirects(&current_url, max_len).await? {
         Some(r) => r,
         None => return Ok((current_url, None)),
       };
       if let Some(location) = result.headers.get("location") {
         current_url = Cow::Owned(current_url.join(location)?);
-        // drop the auth on a cross-origin redirect
-        let new_origin = (
-          current_url.scheme().to_string(),
-          current_url.host_str().map(|h| h.to_string()),
-          current_url.port_or_known_default(),
-        );
-        if new_origin != original_origin {
-          current_auth = None;
-        }
         continue;
       }
       return Ok((current_url, Some(result)));
@@ -135,8 +124,8 @@ pub trait UrlDownloader {
   }
 
   /// Downloads a file, following redirects, and errors when not found.
-  async fn download_file_err_404<'a>(&self, url: &'a Url, auth: Option<&str>) -> Result<(Cow<'a, Url>, DownloadedFile)> {
-    match self.download_file(url, auth).await {
+  async fn download_file_err_404<'a>(&self, url: &'a Url) -> Result<(Cow<'a, Url>, DownloadedFile)> {
+    match self.download_file(url).await {
       Ok((url, Some(value))) => Ok((url, value)),
       Ok((url, None)) => bail!("Error downloading {} - 404 Not Found", url),
       Err(err) => Err(err),

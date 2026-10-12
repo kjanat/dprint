@@ -115,7 +115,7 @@ async fn fetch_latest_version(name: &str, environment: &impl Environment) -> Res
   let url = url::Url::parse(&format!("{}/{}/resolved?specifier=latest", NPM_VERSIONS_URL, name))?;
   log_debug!(environment, "Fetching latest npm version: {}", url);
   let (_, file) = environment
-    .download_file_err_404(&url, None)
+    .download_file_err_404(&url)
     .await
     .with_context(|| format!("Failed to resolve the latest version of {}", name))?;
   let response: serde_json::Value = serde_json::from_slice(&file.content).with_context(|| format!("Failed to parse the latest version of {}", name))?;
@@ -130,7 +130,7 @@ async fn download_npm_tarball(name: &str, version: &str, environment: &impl Envi
   let url = url::Url::parse(&format!("https://{}/{}/-/{}-{}.tgz", NPM_REGISTRY_HOST, name, file_name, version))?;
   log_debug!(environment, "Downloading npm tarball: {}", url);
   let (_, file) = environment
-    .download_file_err_404(&url, None)
+    .download_file_err_404(&url)
     .await
     .with_context(|| format!("Failed to download npm tarball for {}@{}", name, version))?;
   Ok(file.content)
@@ -208,7 +208,7 @@ async fn fetch_packument(name: &str, environment: &impl Environment) -> Result<s
   let packument_url = url::Url::parse(&packument_url_str).with_context(|| format!("Failed to parse npm packument URL: {}", packument_url_str))?;
   log_debug!(environment, "Fetching npm packument: {}", packument_url);
   let (_, packument_file) = environment
-    .download_file_err_404(&packument_url, None)
+    .download_file_err_404(&packument_url)
     .await
     .with_context(|| format!("Failed to fetch npm packument for {}", name))?;
   serde_json::from_slice(&packument_file.content).with_context(|| format!("Failed to parse npm packument for {}", name))
@@ -405,7 +405,7 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
       path.extend(package.split('/'));
       path.extend(specifier.path.split('/'));
     }
-    let (resolved_url, file) = environment.download_file(&url, None).await?;
+    let (resolved_url, file) = environment.download_file(&url).await?;
     if let Some(file) = file {
       return Ok(NpmResolvedPlugin {
         plugin_bytes: file.content,
@@ -1741,41 +1741,6 @@ mod tests {
         assert!(leftover.is_empty(), "expected no .tmp leftover, got {leftover:?}");
       })
     });
-  }
-
-  #[tokio::test]
-  async fn download_with_auth_keeps_header_on_same_origin_redirect() {
-    use crate::environment::TestEnvironment;
-    use crate::environment::UrlDownloader;
-    let environment = TestEnvironment::new();
-    let start = "https://registry.example.com/foo";
-    let redirected = "https://registry.example.com/foo/latest";
-    environment.add_remote_file_redirect(start, redirected);
-    environment.add_remote_file_bytes(redirected, b"ok".to_vec());
-
-    let url = url::Url::parse(start).unwrap();
-    let _ = environment.download_file_err_404(&url, Some("Bearer T")).await.unwrap();
-
-    assert_eq!(environment.take_remote_file_auth(start).as_deref(), Some("Bearer T"));
-    assert_eq!(environment.take_remote_file_auth(redirected).as_deref(), Some("Bearer T"));
-  }
-
-  #[tokio::test]
-  async fn download_with_auth_drops_header_on_cross_origin_redirect() {
-    use crate::environment::TestEnvironment;
-    use crate::environment::UrlDownloader;
-    let environment = TestEnvironment::new();
-    let start = "https://registry.example.com/foo";
-    let cdn = "https://cdn.example.net/foo.tgz";
-    environment.add_remote_file_redirect(start, cdn);
-    environment.add_remote_file_bytes(cdn, b"tarball".to_vec());
-
-    let url = url::Url::parse(start).unwrap();
-    let _ = environment.download_file_err_404(&url, Some("Bearer T")).await.unwrap();
-
-    // initial registry request gets the token; CDN does not
-    assert_eq!(environment.take_remote_file_auth(start).as_deref(), Some("Bearer T"));
-    assert_eq!(environment.take_remote_file_auth(cdn), None);
   }
 
   /// Stages an npm registry tarball at the default registry so

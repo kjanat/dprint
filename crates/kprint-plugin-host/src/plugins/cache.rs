@@ -335,7 +335,7 @@ where
     let plugin_kind = source_reference
       .plugin_kind()
       .ok_or_else(|| anyhow::anyhow!("Could not determine plugin kind for {}", source_reference.display()))?;
-    let (resolved_url, file) = self.environment.download_file_err_404(&remote.url, None).await?;
+    let (resolved_url, file) = self.environment.download_file_err_404(&remote.url).await?;
     let file_bytes = file.content;
     let checksum = get_sha256_checksum(&file_bytes);
 
@@ -423,7 +423,7 @@ where
     // get bytes (resolved_source may differ from the original due to redirects)
     let (file_bytes, resolved_source) = match &source_reference.path_source {
       PathSource::Remote(remote) => {
-        let (url, file) = self.environment.download_file_err_404(&remote.url, None).await?;
+        let (url, file) = self.environment.download_file_err_404(&remote.url).await?;
         (file.content, PathSource::new_remote(url.into_owned()))
       }
       PathSource::Local(local) => {

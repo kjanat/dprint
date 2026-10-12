@@ -33,7 +33,7 @@ struct ReleaseAsset {
 
 pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> Result<()> {
   let (_, release_file) = environment
-    .download_file_err_404(&Url::parse(LATEST_RELEASE_URL)?, None)
+    .download_file_err_404(&Url::parse(LATEST_RELEASE_URL)?)
     .await
     .context("Error fetching latest CLI release.")?;
   let release: Release = serde_json::from_slice(&release_file.content).context("Error reading latest CLI release.")?;
@@ -84,7 +84,7 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
     .with_context(|| format!("Release {} does not contain {}", latest_version, zip_filename))?;
   let zip_url = Url::parse(&asset.browser_download_url)?;
 
-  let (_, zip_file) = environment.download_file_err_404(&zip_url, None).await?;
+  let (_, zip_file) = environment.download_file_err_404(&zip_url).await?;
   let old_executable = exe_path.with_extension("old.exe");
 
   if !environment.is_real() {

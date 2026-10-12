@@ -110,7 +110,7 @@ impl<TEnvironment: Environment> ConfigCompletions<TEnvironment> {
 
   async fn download_schema(&self, url: &str) -> Option<Rc<Value>> {
     let parsed_url = Url::parse(url).ok()?;
-    match self.environment.download_file_err_404(&parsed_url, None).await {
+    match self.environment.download_file_err_404(&parsed_url).await {
       Ok((_, file)) => match serde_json::from_slice::<Value>(&file.content) {
         Ok(value) => Some(Rc::new(value)),
         Err(err) => {

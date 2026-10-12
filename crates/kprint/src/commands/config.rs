@@ -1937,7 +1937,7 @@ const MAX_PLUGIN_SCHEMA_LEN: usize = 8 * 1024 * 1024;
 /// bytes, and gives where it ended up being downloaded from.
 async fn download_json(environment: &impl Environment, url: &str) -> Result<(Url, serde_json::Value)> {
   let url = Url::parse(url)?;
-  let (url, file) = environment.download_file_with_limit(&url, None, Some(MAX_PLUGIN_SCHEMA_LEN)).await?;
+  let (url, file) = environment.download_file_with_limit(&url, Some(MAX_PLUGIN_SCHEMA_LEN)).await?;
   let Some(file) = file else {
     bail!("Not found.");
   };
