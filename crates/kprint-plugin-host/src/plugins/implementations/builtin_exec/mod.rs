@@ -16,6 +16,7 @@ mod executable;
 #[cfg(windows)]
 pub use executable::find_with_path_ext;
 mod handler;
+mod served;
 pub use kprint_config::exec::input;
 use kprint_config::exec::legacy;
 mod template;
@@ -135,6 +136,8 @@ mod test {
         "cwd": ".",
         "cacheKeyFiles": ["./src/plugins/implementations/builtin_exec/testdata/one-line.txt"],
         "setupCommand": "true",
+        "serve": true,
+        "workers": 2,
       }],
     });
     assert_eq!(validate_with_schema(&schema, &config), Ok(()));
@@ -200,7 +203,7 @@ mod test {
         }
       }
     }
-    assert_eq!((nulls_accepted, nulls_rejected), (16, 1));
+    assert_eq!((nulls_accepted, nulls_rejected), (18, 1));
 
     // what the schema rejects, the configuration does too, saying where
     for (config, property, message) in [
@@ -218,7 +221,12 @@ mod test {
       (
         serde_json::json!({ "commands": [{ "command": "fmt", "exts": ["txt"], "unknown": true }] }),
         "commands[0].unknown",
-        "unknown field `unknown`, expected one of `command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`",
+        "unknown field `unknown`, expected one of `command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`, `serve`, `workers`",
+      ),
+      (
+        serde_json::json!({ "commands": [{ "command": "fmt", "exts": ["txt"], "serve": true, "workers": 0 }] }),
+        "commands[0].workers",
+        "Expected at least 1.",
       ),
       (
         serde_json::json!({ "commands": [5] }),

@@ -24,6 +24,15 @@ pub fn validate_template(argument: &str) -> Result<(), String> {
   substitute(argument, |_| String::new()).map(|_| ())
 }
 
+pub fn uses_variable(argument: &str, variable: &str) -> bool {
+  let mut used = false;
+  let _ = substitute(argument, |name| {
+    used |= name == variable;
+    String::new()
+  });
+  used
+}
+
 /// The argument with its variables replaced by their values.
 pub fn render_template(argument: &str, values: &TemplateValues) -> Result<String, String> {
   substitute(argument, |name| match name {
@@ -137,5 +146,15 @@ mod test {
       assert_eq!(render(argument, "/file.ts"), Err(error), "{}", argument);
     }
     assert_eq!(validate_template("{{file_path}}"), Ok(()));
+  }
+
+  #[test]
+  fn tells_whether_an_argument_uses_a_variable() {
+    assert!(uses_variable("{{file_path}}", "file_path"));
+    assert!(uses_variable("--path={{ file_path }}", "file_path"));
+    assert!(uses_variable("{{{file_path}}}", "file_path"));
+    assert!(!uses_variable(r"\{{file_path}}", "file_path"));
+    assert!(!uses_variable("{{line_width}}", "file_path"));
+    assert!(!uses_variable("file_path", "file_path"));
   }
 }

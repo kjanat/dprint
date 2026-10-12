@@ -38,13 +38,17 @@ use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
 use super::executable::resolve_executable;
+use super::served::Served;
+use super::served::ServedCommands;
+use super::served::ServedKey;
+use super::served::ServedRequest;
 use super::template::TemplateValues;
 use super::template::render_template;
 
 /// How much of what a command writes to stderr is kept for its error: the
 /// end, where a command that fails usually says why. The rest is read and
 /// dropped, so a command can write any amount without using that much memory.
-const MAX_STDERR_LEN: usize = 64 * 1024;
+pub(super) const MAX_STDERR_LEN: usize = 64 * 1024;
 /// How much a command may write as the formatted file: this many times the
 /// file, plus [`MAX_OUTPUT_HEADROOM`]. Formatting never makes that much of a
 /// file, so more is a runaway, which fails the file rather than using any
@@ -53,7 +57,7 @@ const MAX_OUTPUT_FACTOR: usize = 10;
 const MAX_OUTPUT_HEADROOM: usize = 1024 * 1024;
 
 /// The most a command formatting `file_len` bytes may write.
-fn max_output_len(file_len: usize) -> usize {
+pub(super) fn max_output_len(file_len: usize) -> usize {
   file_len.saturating_mul(MAX_OUTPUT_FACTOR).saturating_add(MAX_OUTPUT_HEADROOM)
 }
 
@@ -62,6 +66,7 @@ pub struct ExecHandler {
   /// Tracks setup commands that have already run so they only run once
   /// for the lifetime of the process, even while formatting in parallel.
   setup_state: SetupState,
+  served: ServedCommands,
 }
 
 #[async_trait(?Send)]
@@ -115,7 +120,15 @@ impl AsyncPluginHandler for ExecHandler {
       return Ok(None);
     }
 
-    format_bytes(request.file_path, request.file_bytes, request.config, request.token.clone(), &self.setup_state).await
+    format_bytes(
+      request.file_path,
+      request.file_bytes,
+      request.config,
+      request.token.clone(),
+      &self.setup_state,
+      &self.served,
+    )
+    .await
   }
 }
 
@@ -125,6 +138,7 @@ pub async fn format_bytes(
   config: Arc<Configuration>,
   token: Arc<dyn CancellationToken>,
   setup_state: &SetupState,
+  served: &ServedCommands,
 ) -> FormatResult {
   fn trim_bytes_len(bytes: &[u8]) -> usize {
     let mut start = 0;
@@ -162,8 +176,30 @@ pub async fn format_bytes(
       return Ok(None);
     }
 
-    // format here
     let args = maybe_substitute_variables(&file_path, &config, command)?;
+
+    if let Some(serve) = command.serve {
+      let key = ServedKey {
+        executable: setup_state.resolve_executable(&command.executable, &command.cwd),
+        args,
+        cwd: command.cwd.clone(),
+        serve,
+      };
+      let request = ServedRequest {
+        file_path: &file_path,
+        text: &file_bytes,
+        line_width: config.line_width,
+        indent_width: config.indent_width,
+        use_tabs: config.use_tabs,
+        timeout: Duration::from_secs(config.timeout as u64),
+        token: &token,
+      };
+      match served.format(key, request).await? {
+        Served::Formatted(bytes) => file_bytes = Cow::Owned(bytes),
+        Served::Cancelled => return Ok(None),
+      }
+      continue;
+    }
 
     // killed with whatever it started (ex. the `node` process of an npm
     // installed command) once this returns, including on a timeout or
@@ -297,7 +333,7 @@ async fn handle_child_exit_status(ok_text: Vec<u8>, err_rx: Receiver<Vec<u8>>, e
 
 /// How a process that didn't succeed ended. A process killed by a signal has
 /// no exit code.
-fn exit_status_text(exit_status: ExitStatus) -> String {
+pub(super) fn exit_status_text(exit_status: ExitStatus) -> String {
   if let Some(code) = exit_status.code() {
     return format!("code {}", code);
   }
@@ -751,6 +787,7 @@ mod test {
   use super::SetupState;
   use super::format_bytes;
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
+  use crate::plugins::implementations::builtin_exec::served::ServedCommands;
 
   fn resolve(config: serde_json::Value) -> Arc<Configuration> {
     let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
@@ -770,10 +807,17 @@ mod test {
     setup_state: &SetupState,
     token: Arc<dyn CancellationToken>,
   ) -> Result<Option<String>, String> {
-    format_bytes(PathBuf::from("file.txt"), text.as_bytes().to_vec(), config.clone(), token, setup_state)
-      .await
-      .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
-      .map_err(|err| err.to_string())
+    format_bytes(
+      PathBuf::from("file.txt"),
+      text.as_bytes().to_vec(),
+      config.clone(),
+      token,
+      setup_state,
+      &ServedCommands::default(),
+    )
+    .await
+    .map(|bytes| bytes.map(|bytes| String::from_utf8(bytes).unwrap()))
+    .map_err(|err| err.to_string())
   }
 
   /// A formatter that right away starts a process that keeps the formatter's
@@ -919,6 +963,7 @@ mod test {
         config.clone(),
         Arc::new(NullCancellationToken),
         &SetupState::default(),
+        &ServedCommands::default(),
       )
       .await;
       made.push(match result {
@@ -982,6 +1027,7 @@ mod test {
       config,
       Arc::new(NullCancellationToken),
       &SetupState::default(),
+      &ServedCommands::default(),
     )
     .await
     .unwrap();
@@ -1519,6 +1565,7 @@ mod relative_program_test {
   use super::SetupState;
   use super::format_bytes;
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
+  use crate::plugins::implementations::builtin_exec::served::ServedCommands;
 
   #[test]
   fn runs_a_relative_program_from_the_commands_cwd() {
@@ -1551,6 +1598,7 @@ mod relative_program_test {
         Arc::new(result.config),
         Arc::new(NullCancellationToken),
         &SetupState::default(),
+        &ServedCommands::default(),
       ))
       .unwrap()
       .unwrap();

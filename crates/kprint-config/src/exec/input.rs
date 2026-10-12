@@ -139,6 +139,30 @@ pub struct ExecCommandInput {
   /// A command to run once before this command formats its first file, ex. to install it. It's killed after "setupTimeout" seconds.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub setup_command: Option<String>,
+  /// Keeps the command running and sends it every file on stdin, one JSON line each: {"path", "text", "lineWidth", "indentWidth", "useTabs"}. It answers each with one line on stdout: {"text"} with the formatted text, or {"error"} with why the file can't be formatted. Its arguments can't use {{file_path}}.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[schemars(default = "schema_default_serve")]
+  pub serve: Option<bool>,
+  /// How many processes of a served command format files at once.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[schemars(default = "schema_default_workers", range(min = 1))]
+  pub workers: Option<u32>,
+}
+
+pub fn default_serve() -> bool {
+  false
+}
+
+fn schema_default_serve() -> Option<bool> {
+  Some(default_serve())
+}
+
+pub fn default_workers() -> u32 {
+  1
+}
+
+fn schema_default_workers() -> Option<u32> {
+  Some(default_workers())
 }
 
 /// Whether a command gets the file text on stdin when the configuration
@@ -249,6 +273,8 @@ pub struct ExecCommandPropertyNames {
   pub associations: String,
   pub cwd: String,
   pub cache_key_files: String,
+  pub serve: String,
+  pub workers: String,
 }
 
 impl ExecCommandInput {
@@ -263,6 +289,8 @@ impl ExecCommandInput {
         associations: name(|command| command.associations = Some(Associations::Many(Vec::new()))),
         cwd: name(|command| command.cwd = Some(String::new())),
         cache_key_files: name(|command| command.cache_key_files = Some(Vec::new())),
+        serve: name(|command| command.serve = Some(true)),
+        workers: name(|command| command.workers = Some(1)),
       }
     });
     &NAMES
@@ -325,11 +353,14 @@ mod test {
       names.associations.clone(),
       names.cwd.clone(),
       names.cache_key_files.clone(),
+      names.serve.clone(),
+      names.workers.clone(),
     ];
     assert_eq!(named.iter().cloned().collect::<BTreeSet<_>>().len(), named.len(), "distinct");
     for name in &named {
       assert!(command_properties.contains(name), "{} in {:?}", name, command_properties);
     }
     assert_eq!(names.cache_key_files, "cacheKeyFiles");
+    assert_eq!((names.serve.as_str(), names.workers.as_str()), ("serve", "workers"));
   }
 }

@@ -41,6 +41,37 @@ Compared to the downloaded plugin, the built-in one:
 
 The built-in exec is part of the CLI, not a release of this plugin. It's named `exec` (ex. in `dprint help` and in configuration diagnostics), has the CLI's version, and is updated by upgrading the CLI: `dprint config update` and `dprint add exec` leave a reference it serves as it is. When an upgrade changes how it formats a file, the incremental cache forgets the files it formatted, and only then.
 
+### Served commands
+
+A command with `"serve": true` starts once and formats every file it matches. This suits tools that are slow to start, such as a .NET or JVM formatter:
+
+```toml
+[[exec.commands]]
+command = "dotnet tools/roslyn-format/bin/RoslynFormat.dll --serve"
+exts    = ["cs"]
+serve   = true
+workers = 2
+```
+
+dprint writes each file to the command's stdin as one line of JSON:
+
+```json
+{ "path": "src/Program.cs", "text": "...", "lineWidth": 120, "indentWidth": 4, "useTabs": false }
+```
+
+The command answers each line with one line on stdout:
+
+- `{"text": "..."}` with the formatted text.
+- `{"error": "..."}` when it can't format the file, ex. for a syntax error. That file fails, and the command goes on with the next one.
+
+The rest of how it runs:
+
+- `"workers"` (default: `1`) sets how many processes of the command format files at once.
+- Its arguments can't use `{{file_path}}`, as one process formats every file. Each request carries the file's path and settings, and the other variables are available.
+- `"timeout"` applies to each answer. A process that exits, answers with something else, or takes longer fails the file it was formatting and is killed. The next file starts a new process.
+- A process that formats no file for 5 minutes ends, and every process ends with dprint.
+- Files travel as JSON text, so a file that isn't UTF-8 fails.
+
 ### Commands in remote configuration
 
 Commands run programs, so like process plugins and `"includes"`, the exec commands and plugin of a remote configuration file (ex. one `"extends"` refers to by url) are ignored unless a local configuration file allows them with `"playWithFire"` in its exec configuration:
@@ -59,7 +90,7 @@ Commands run programs, so like process plugins and `"includes"`, the exec comman
 
 This includes the commands in its `"overrides"`. Its `"cwd"` (the directory commands run in, which decides what a command with a relative path runs, including your local commands) is only used with `"playWithFire": true`. A remote configuration can't allow itself. When none of its commands are allowed, its exec plugin is ignored too.
 
-This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"` and `"cacheKey"` are used without `"playWithFire": true`. `"timeout"` and `"setupTimeout"` set how long a command may run on your machine, so a remote command runs within what your local configuration allows unless it specifies `"playWithFire": true`. Any other property might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have, so such a command only runs with `"playWithFire": true` too. Likewise, the program a command runs is read the way 0.7.3 reads it, so a list of programs only applies when the exec plugin that runs the commands is 0.7.3 (or the remote configuration's): with another version, or one installed in `node_modules` without a version, remote commands only run with `"playWithFire": true`. A command's own `"cwd"` decides what a program it runs by a relative path (ex. `./formatter`) is, so a remote command that sets both only runs with `"playWithFire": true` too; one that runs a program by name (ex. `cargo fmt`, found on the PATH) or by an absolute path may set its `"cwd"`, unless the PATH has a relative entry (ex. `.`), which is searched in that directory: then a command that sets its `"cwd"` and runs a program by name only runs with `"playWithFire": true` too. On Windows, a remote command whose program is a batch file (`.cmd` or `.bat`, ex. a shim `npm install -g` makes) runs through `cmd.exe`, which arguments can't be passed to safely, so it only runs with `"playWithFire": true` as well. A remote command with `"cacheKeyFiles"` has the plugin read those files on this machine to key its cache, which isn't running a program, so it only runs with `"playWithFire": true` as well.
+This goes by what version 0.7.3 of the plugin has, so of a remote configuration's other exec properties, at the root or in an override, only `"lineWidth"`, `"indentWidth"`, `"useTabs"` and `"cacheKey"` are used without `"playWithFire": true`. `"timeout"` and `"setupTimeout"` set how long a command may run on your machine, so a remote command runs within what your local configuration allows unless it specifies `"playWithFire": true`. Any other property might decide what runs (ex. one a later version adds), and so might a property of a command that 0.7.3 doesn't have (ex. `"serve"`), so such a command only runs with `"playWithFire": true` too. Likewise, the program a command runs is read the way 0.7.3 reads it, so a list of programs only applies when the exec plugin that runs the commands is 0.7.3 (or the remote configuration's): with another version, or one installed in `node_modules` without a version, remote commands only run with `"playWithFire": true`. A command's own `"cwd"` decides what a program it runs by a relative path (ex. `./formatter`) is, so a remote command that sets both only runs with `"playWithFire": true` too; one that runs a program by name (ex. `cargo fmt`, found on the PATH) or by an absolute path may set its `"cwd"`, unless the PATH has a relative entry (ex. `.`), which is searched in that directory: then a command that sets its `"cwd"` and runs a program by name only runs with `"playWithFire": true` too. On Windows, a remote command whose program is a batch file (`.cmd` or `.bat`, ex. a shim `npm install -g` makes) runs through `cmd.exe`, which arguments can't be passed to safely, so it only runs with `"playWithFire": true` as well. A remote command with `"cacheKeyFiles"` has the plugin read those files on this machine to key its cache, which isn't running a program, so it only runs with `"playWithFire": true` as well.
 
 A nested configuration file with `"inherit": true` inherits the remote commands its ancestor allowed, unless it specifies `"playWithFire"` itself: then it only inherits the ones that allows, and what its ancestor's local configuration files specified in their place (ex. their own `"commands"` or `"cwd"`).
 

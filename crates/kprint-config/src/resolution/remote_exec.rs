@@ -820,7 +820,26 @@ fn allowed_commands(
 
 /// Reads a remote command the way the exec plugin 0.7.3 does.
 fn read_command(command: &ConfigKeyValue) -> Result<ExecCommandInput, ValueError> {
-  from_value(command.clone())
+  let not_in_release = || format!("the exec plugin {} doesn't have it", EXEC_COMMANDS_RELEASE);
+  let command: ExecCommandInput = from_value(command.clone()).map_err(|err| {
+    if err.message.starts_with("unknown field") {
+      ValueError {
+        path: err.path,
+        message: not_in_release(),
+      }
+    } else {
+      err
+    }
+  })?;
+  let names = command_names();
+  let served = [(&names.serve, command.serve.is_some()), (&names.workers, command.workers.is_some())];
+  match served.into_iter().find(|(_, specified)| *specified) {
+    Some((name, _)) => Err(ValueError {
+      path: name.clone(),
+      message: not_in_release(),
+    }),
+    None => Ok(command),
+  }
 }
 
 /// Takes the policy out of the exec configuration, which by now only has what

@@ -9,15 +9,19 @@ use serde::Serializer;
 use sha2::Digest;
 use sha2::Sha256;
 use std::fs::read_to_string;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 
 use super::input::Associations;
 use super::input::ExecCommandInput;
 use super::input::ExecConfigInput;
+use super::input::default_serve;
 use super::input::default_setup_timeout;
 use super::input::default_stdin;
 use super::input::default_timeout;
+use super::input::default_workers;
+use super::template::uses_variable;
 use super::template::validate_template;
 
 #[derive(Clone, Serialize)]
@@ -54,6 +58,14 @@ pub struct CommandConfiguration {
   pub cache_key_files_hash: Option<String>,
   /// Command to run once before this command formats its first file.
   pub setup_command: Option<SetupCommand>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub serve: Option<Serve>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Serve {
+  pub workers: NonZeroUsize,
 }
 
 /// A command run a single time before formatting begins (ex. to install a
@@ -219,6 +231,8 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
   };
 
   let setup_command = command.setup_command.and_then(|raw| resolve_setup_command(&raw, &mut diagnostics));
+  let stdin = command.stdin.unwrap_or_else(default_stdin);
+  let serve = resolve_serve(&command.serve, command.workers, stdin, &parts, &mut diagnostics);
 
   let associations = match command.associations {
     None => None,
@@ -256,7 +270,8 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
     setup_command,
     associations,
     cwd,
-    stdin: command.stdin.unwrap_or_else(default_stdin),
+    stdin,
+    serve,
     file_extensions: command
       .exts
       .map(Vec::from)
@@ -291,6 +306,42 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
 ///   spaces. Without such a quote, it's the rest of the command as is.
 /// - Quotes anywhere else are kept, and empty parts (ex. `""`) are left out.
 pub use kprint_config::exec::split_command;
+
+fn resolve_serve(serve: &Option<bool>, workers: Option<u32>, stdin: bool, parts: &[String], diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<Serve> {
+  let names = ExecCommandInput::property_names();
+  if !serve.unwrap_or_else(default_serve) {
+    if workers.is_some() {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: names.workers.clone(),
+        message: format!("Only a served command has it. Set \"{}\": true to serve the command.", names.serve),
+      });
+    }
+    return None;
+  }
+  if !stdin {
+    diagnostics.push(ConfigurationDiagnostic {
+      property_name: names.serve.clone(),
+      message: "A served command gets the files on stdin, so \"stdin\" can't be false.".to_string(),
+    });
+  }
+  if parts.iter().skip(1).any(|arg| uses_variable(arg, "file_path")) {
+    diagnostics.push(ConfigurationDiagnostic {
+      property_name: names.command.clone(),
+      message: "A served command formats every file, so its arguments can't use {{file_path}}. It gets each file's path in its request.".to_string(),
+    });
+  }
+  let workers = match NonZeroUsize::new(workers.unwrap_or_else(default_workers) as usize) {
+    Some(workers) => workers,
+    None => {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: names.workers.clone(),
+        message: "Expected at least 1.".to_string(),
+      });
+      NonZeroUsize::MIN
+    }
+  };
+  Some(Serve { workers })
+}
 
 fn resolve_setup_command(raw: &str, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
   let mut parts = split_command(raw);
@@ -619,6 +670,63 @@ mod tests {
         message: "Expected to find a command name.".to_string(),
       }],
     );
+  }
+
+  #[test]
+  fn serves_a_command_with_one_worker_unless_it_says_more() {
+    let commands = |workers: serde_json::Value| {
+      let mut command = json!({ "command": "fmt", "exts": ["txt"], "serve": true });
+      if !workers.is_null() {
+        command["workers"] = workers;
+      }
+      let result = Configuration::resolve(
+        parse_config(json!({ "commands": [command, { "command": "fmt", "exts": ["md"] }] })),
+        &Default::default(),
+      );
+      assert_eq!(result.diagnostics, vec![]);
+      result
+        .config
+        .commands
+        .iter()
+        .map(|command| command.serve.map(|serve| serve.workers.get()))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(commands(serde_json::Value::Null), vec![Some(1), None]);
+    assert_eq!(commands(json!(3)), vec![Some(3), None]);
+  }
+
+  #[test]
+  fn reports_what_a_served_command_cant_have() {
+    for (command, property, message) in [
+      (
+        json!({ "command": "fmt", "exts": ["txt"], "workers": 2 }),
+        "commands[0].workers",
+        "Only a served command has it. Set \"serve\": true to serve the command.",
+      ),
+      (
+        json!({ "command": "fmt", "exts": ["txt"], "serve": true, "stdin": false }),
+        "commands[0].serve",
+        "A served command gets the files on stdin, so \"stdin\" can't be false.",
+      ),
+      (
+        json!({ "command": "fmt --path {{file_path}}", "exts": ["txt"], "serve": true }),
+        "commands[0].command",
+        "A served command formats every file, so its arguments can't use {{file_path}}. It gets each file's path in its request.",
+      ),
+    ] {
+      run_diagnostics_test(
+        parse_config(json!({ "commands": [command] })),
+        vec![ConfigurationDiagnostic {
+          property_name: property.to_string(),
+          message: message.to_string(),
+        }],
+      );
+    }
+    let result = Configuration::resolve(
+      parse_config(json!({ "commands": [{ "command": "fmt --width {{line_width}}", "exts": ["txt"], "serve": true }] })),
+      &Default::default(),
+    );
+    assert_eq!(result.diagnostics, vec![]);
   }
 
   #[track_caller]

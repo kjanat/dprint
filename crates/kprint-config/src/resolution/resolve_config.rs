@@ -3890,8 +3890,7 @@ lineWidth = 80
         vec![
           concat!(
             "Note: Ignored 1 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands ",
-            "the exec plugin 0.7.3 reads, which only run with \"playWithFire\": true: shell: unknown field `shell`, expected one of ",
-            "`command`, `exts`, `fileNames`, `associations`, `stdin`, `cwd`, `cacheKeyFiles`, `setupCommand`"
+            "the exec plugin 0.7.3 reads, which only run with \"playWithFire\": true: shell: the exec plugin 0.7.3 doesn't have it"
           )
           .to_string(),
           ignored_property("shell"),
@@ -4066,6 +4065,41 @@ lineWidth = 80
       let (includes, _, _, messages) = resolve_extending("<https://dprint.dev/exec>", &laundering, with_includes).unwrap();
       assert_eq!(includes, None);
       assert_eq!(messages, vec![get_warn_includes_message()]);
+    }
+
+    #[test]
+    fn only_serves_a_remote_command_when_playing_with_fire() {
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": "cargo fmt", "exts": ["rs"], "serve": true },
+            { "command": "cargo fmt", "exts": ["toml"], "serve": true, "workers": 4 },
+            { "command": "cargo fmt", "exts": ["md"] }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          remote,
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
+            "which only run with \"playWithFire\": true: serve: the exec plugin 0.7.3 doesn't have it"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string(); 3]);
+      assert_eq!(result.messages, Vec::<String>::new());
     }
 
     #[test]
