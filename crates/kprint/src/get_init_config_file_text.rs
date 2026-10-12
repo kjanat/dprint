@@ -40,11 +40,6 @@ pub struct GetInitConfigFileTextOptions {
   pub non_interactive: bool,
   /// Don't write an npm plugin version published more recently than this.
   pub minimum_dependency_age: Option<MinimumDependencyAgeArg>,
-  /// Directory the config file will be written to. An .npmrc setting
-  /// `min-release-age` is looked for here and in its ancestors, so the
-  /// age that applies is the one nearest the config file rather than the
-  /// process cwd (which differs for `--global` and `--config`).
-  pub config_dir: Option<PathBuf>,
   /// The format of the config file to be written.
   pub config_format: ConfigFileFormat,
 }
@@ -56,9 +51,8 @@ pub struct GetInitPluginsToAddOptions {
   pub existing_plugin_names: HashSet<String>,
   /// Don't add an npm plugin version published more recently than this.
   pub minimum_dependency_age: Option<MinimumDependencyAgeArg>,
-  /// Directory of the config file being added to. An .npmrc setting
-  /// `min-release-age` is looked for here and in its ancestors.
-  pub config_dir: Option<PathBuf>,
+  /// The `minimumDependencyAge` of the config file being added to.
+  pub configured_minimum_dependency_age: Option<MinimumDependencyAgeArg>,
   /// The format of the config file being added to.
   pub config_format: ConfigFileFormat,
 }
@@ -110,9 +104,7 @@ pub async fn get_init_config_file_text(environment: &impl Environment, options: 
     // keep the config file in info.json order regardless of the display order
     selected_indexes.sort_unstable();
 
-    // an .npmrc setting `min-release-age` is looked for where the config file
-    // is going to be written
-    let age_cutoff = resolve_dependency_age_cutoff(options.minimum_dependency_age.as_ref(), options.config_dir.as_deref(), environment);
+    let age_cutoff = resolve_dependency_age_cutoff(options.minimum_dependency_age.as_ref(), None, environment);
     // resolve concurrently — a plugin distributed on npm costs a registry round trip
     let entries = future::join_all(
       selected_indexes
@@ -192,8 +184,11 @@ pub async fn get_init_plugins_to_add(environment: &impl Environment, options: Ge
   // add them to the config file in info.json order regardless of the display order
   selected_indexes.sort_unstable();
 
-  // an .npmrc setting `min-release-age` is looked for where the config file lives
-  let age_cutoff = resolve_dependency_age_cutoff(options.minimum_dependency_age.as_ref(), options.config_dir.as_deref(), environment);
+  let age_cutoff = resolve_dependency_age_cutoff(
+    options.minimum_dependency_age.as_ref(),
+    options.configured_minimum_dependency_age.as_ref(),
+    environment,
+  );
   // resolve concurrently — a plugin distributed on npm costs a registry round trip
   let entries = future::join_all(
     selected_indexes
@@ -260,10 +255,6 @@ struct SelectedPlugin {
 /// one failure that isn't fallen back from is a minimum dependency age holding
 /// every version back: the url names the plugin's newest release, so writing
 /// it would hand back the very version the age ruled out.
-///
-/// The npm registry is resolved from the current directory: that's where the
-/// config file lands in the normal case, and where the user ran the command in
-/// any case.
 async fn resolve_plugin_entry(plugin: &InfoFilePluginInfo, age_cutoff: Option<&DependencyAgeCutoff>, environment: &impl Environment) -> Result<String> {
   let options = ResolveNpmLatestOptions {
     force_checksum: false,
@@ -1205,7 +1196,7 @@ mod test {
           GetInitPluginsToAddOptions {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
-            config_dir: None,
+            configured_minimum_dependency_age: None,
             config_format: ConfigFileFormat::Json,
           },
         )
@@ -1245,7 +1236,7 @@ mod test {
           GetInitPluginsToAddOptions {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
-            config_dir: None,
+            configured_minimum_dependency_age: None,
             config_format: ConfigFileFormat::Json,
           },
         )
@@ -1281,7 +1272,7 @@ mod test {
           GetInitPluginsToAddOptions {
             existing_plugin_names: HashSet::from(["a".to_string()]),
             minimum_dependency_age: None,
-            config_dir: None,
+            configured_minimum_dependency_age: None,
             config_format: ConfigFileFormat::Json,
           },
         )
@@ -1582,6 +1573,41 @@ mod test {
     });
   }
 
+  #[test]
+  fn should_hold_a_plugin_added_to_an_existing_config_file_back_to_its_configured_age() {
+    let environment = age_test_builder("2099-12-31T00:00:00Z").build();
+    environment.set_fs_time(AGE_TEST_NOW);
+    environment.clone().run_in_runtime({
+      let environment = environment.clone();
+      async move {
+        use std::str::FromStr;
+        let plugins = get_init_plugins_to_add(
+          &environment,
+          GetInitPluginsToAddOptions {
+            existing_plugin_names: HashSet::new(),
+            minimum_dependency_age: None,
+            configured_minimum_dependency_age: Some(MinimumDependencyAgeArg::from_str("P3D").unwrap()),
+            config_format: ConfigFileFormat::Json,
+          },
+        )
+        .await
+        .unwrap();
+        let InitPluginsToAdd::Entries(entries) = plugins else {
+          unreachable!();
+        };
+        assert_eq!(entries, vec!["npm:@dprint/a@1.0.0".to_string()]);
+        environment.take_multi_selection_items();
+        assert_eq!(
+          environment.take_stderr_messages(),
+          vec![
+            "Select plugins to add (space to toggle, type to filter, enter to finish):",
+            "Using @dprint/a 1.0.0 instead of 1.1.0, which is newer than the minimum dependency age allows (minimumDependencyAge P3D). Pass --minimum-dependency-age=0 to use the latest version.",
+          ]
+        );
+      }
+    });
+  }
+
   /// 2100-01-01T00:00:00Z — the "now" the minimum dependency age tests run at.
   const AGE_TEST_NOW: u64 = 4102444800;
 
@@ -1625,7 +1651,6 @@ mod test {
     GetInitConfigFileTextOptions {
       non_interactive: true,
       minimum_dependency_age: Some(MinimumDependencyAgeArg::from_str(age).unwrap()),
-      config_dir: None,
       config_format: ConfigFileFormat::Json,
     }
   }

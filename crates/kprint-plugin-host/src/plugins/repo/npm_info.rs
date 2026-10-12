@@ -39,9 +39,8 @@ pub struct ResolveNpmLatestOptions {
   /// Compute the package's checksum even for a wasm plugin, which is
   /// otherwise written without one (`dprint add --checksum`).
   pub force_checksum: bool,
-  /// The directory of the config file the plugin is being written to. The
-  /// registry (`.npmrc`) is resolved from it, and it's recorded on the
-  /// resulting reference for resolving the package later.
+  /// The directory of the config file the plugin is being written to, recorded
+  /// on the resulting reference for resolving the package later.
   pub base_dir: Option<CanonicalizedPathBuf>,
   /// How old the resolved version must be, when the user asked for a minimum
   /// dependency age. `None` selects whatever the registry tags as latest.
@@ -83,7 +82,6 @@ impl PluginNpmInfo {
     let latest = fetch_npm_latest_info(
       FetchNpmLatestInfo {
         specifier: &unversioned,
-        start_dir: base_dir.as_ref().map(|dir| dir.as_ref()),
         want_tarball_sha: force_checksum,
         minimum_dependency_age: minimum_dependency_age.as_ref(),
       },

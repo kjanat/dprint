@@ -4,9 +4,11 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use anyhow::bail;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// How old a package version must be before dprint will select it, as given by
-/// `--minimum-dependency-age` or an `.npmrc`'s `min-release-age`.
+/// `--minimum-dependency-age` or a configuration file's `minimumDependencyAge`.
 ///
 /// The accepted forms match Deno's so a value can move between the two:
 /// an ISO-8601 duration (`P3D`, `PT72H`), a bare integer of minutes (`1440`),
@@ -22,18 +24,6 @@ pub enum MinimumDependencyAge {
 }
 
 impl MinimumDependencyAge {
-  /// A whole number of days, as `.npmrc`'s `min-release-age` expresses it.
-  ///
-  /// An absurd number of days saturates rather than overflowing. That rules
-  /// every version out, which is the safe direction to fail for a value that
-  /// asked for more caution than the calendar can express.
-  pub fn from_days(days: u64) -> Self {
-    match days {
-      0 => MinimumDependencyAge::Disabled,
-      days => MinimumDependencyAge::Age(Duration::from_secs(days.saturating_mul(60 * 60 * 24))),
-    }
-  }
-
   /// The instant that publish times are compared against, given the current
   /// time. `None` when no age requirement is in effect.
   pub fn cutoff_time(&self, now: SystemTime) -> Option<SystemTime> {
@@ -47,11 +37,12 @@ impl MinimumDependencyAge {
   }
 }
 
-/// A `--minimum-dependency-age` value together with the text it was written
-/// as, so a message about a version being held back can quote what the user
-/// actually passed instead of a canonicalized rendering of it (`1440` reading
-/// back as `P1D`, or an absolute cutoff having no text at all).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A minimum dependency age together with the text it was written as, so a
+/// message about a version being held back can quote what the user actually
+/// wrote instead of a canonicalized rendering of it (`1440` reading back as
+/// `P1D`, or an absolute cutoff having no text at all).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct MinimumDependencyAgeArg {
   age: MinimumDependencyAge,
   text: String,
@@ -62,9 +53,23 @@ impl MinimumDependencyAgeArg {
     &self.age
   }
 
-  /// How the value was written on the command line.
+  /// How the value was written.
   pub fn text(&self) -> &str {
     &self.text
+  }
+}
+
+impl TryFrom<String> for MinimumDependencyAgeArg {
+  type Error = anyhow::Error;
+
+  fn try_from(text: String) -> Result<Self> {
+    MinimumDependencyAgeArg::from_str(&text)
+  }
+}
+
+impl From<MinimumDependencyAgeArg> for String {
+  fn from(arg: MinimumDependencyAgeArg) -> Self {
+    arg.text
   }
 }
 
@@ -86,7 +91,7 @@ impl FromStr for MinimumDependencyAgeArg {
 pub struct DependencyAgeCutoff {
   time: SystemTime,
   /// Where the requirement came from, for error and warning messages
-  /// (ex. `P3D` or `min-release-age=3` in an .npmrc).
+  /// (ex. `--minimum-dependency-age P3D`).
   description: String,
 }
 
@@ -380,23 +385,20 @@ mod test {
   }
 
   #[test]
-  fn from_days_matches_npmrc_semantics() {
-    assert_eq!(MinimumDependencyAge::from_days(0), MinimumDependencyAge::Disabled);
-    assert_eq!(MinimumDependencyAge::from_days(3), MinimumDependencyAge::Age(Duration::from_secs(3 * 86400)));
-    // an absurd .npmrc value saturates rather than overflowing, ruling every
-    // version out instead of wrapping to a tiny age
-    assert_eq!(
-      MinimumDependencyAge::from_days(u64::MAX),
-      MinimumDependencyAge::Age(Duration::from_secs(u64::MAX))
-    );
-  }
-
-  #[test]
   fn arg_keeps_the_text_it_was_written_as() {
     let arg = MinimumDependencyAgeArg::from_str(" 1440 ").unwrap();
     assert_eq!(*arg.age(), MinimumDependencyAge::Age(Duration::from_secs(1440 * 60)));
     assert_eq!(arg.text(), "1440");
     assert!(MinimumDependencyAgeArg::from_str("nonsense").is_err());
+  }
+
+  #[test]
+  fn arg_reads_and_writes_as_its_text() {
+    let arg: MinimumDependencyAgeArg = serde_json::from_value(serde_json::json!(" P3D ")).unwrap();
+    assert_eq!(*arg.age(), MinimumDependencyAge::Age(Duration::from_secs(3 * 86400)));
+    assert_eq!(serde_json::to_value(&arg).unwrap(), serde_json::json!("P3D"));
+    let err = serde_json::from_value::<MinimumDependencyAgeArg>(serde_json::json!("nonsense")).unwrap_err();
+    assert!(err.to_string().contains("Invalid minimum dependency age"), "got: {err}");
   }
 
   #[test]

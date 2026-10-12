@@ -70,6 +70,10 @@ pub struct ConfigFile {
   /// Array of plugin URLs to format files.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub plugins: Option<Vec<String>>,
+  /// How long ago a version of an npm plugin must have been published for `dprint add` and `dprint config update` to select it: an ISO-8601 duration (ex. "P3D"), a number of minutes, a date or RFC3339 timestamp, or "0" for no minimum. The `--minimum-dependency-age` flag takes precedence.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+  pub minimum_dependency_age: Option<crate::utils::MinimumDependencyAgeArg>,
   /// An old property that's no longer used, which is still accepted so old
   /// configuration files keep working. Not in the schema, so editors don't
   /// offer it.

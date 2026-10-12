@@ -485,7 +485,7 @@ plugins/v12/<os>-<arch>/wasmtime-<version>/<compatibility-key>/
 
 The compatibility key includes Rust compiler and CPU-feature compatibility. Source and content hashes distinguish plugins that use the same name and version. Restored CI caches can contain multiple compatible namespaces side by side. Old namespaces remain untouched; remove those you no longer use when no dprint process is using them, or use `dprint clear-cache` to remove the whole cache.
 
-Public npm Wasm references without a tarball checksum download only the requested file from jsDelivr. A missing CDN file falls back to the npm registry. References with a tarball checksum, private/custom registries and process plugins use the registry and preserve tarball verification.
+npm Wasm references without a tarball checksum download only the requested file from jsDelivr. A missing CDN file falls back to the npm registry. References with a tarball checksum and process plugins download the tarball from the npm registry and verify it.
 
 ### Clearing Cache
 

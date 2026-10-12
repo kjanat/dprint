@@ -237,6 +237,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "minimumDependencyAge": {
+      "description": "How long ago a version of an npm plugin must have been published for `dprint add` and `dprint config update` to select it: an ISO-8601 duration (ex. \"P3D\"), a number of minutes, a date or RFC3339 timestamp, or \"0\" for no minimum. The `--minimum-dependency-age` flag takes precedence.",
+      "type": [
+        "null",
+        "string"
+      ]
     }
   },
   "additionalProperties": {

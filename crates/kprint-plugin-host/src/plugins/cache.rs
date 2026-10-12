@@ -2,7 +2,6 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -95,12 +94,6 @@ struct VerifyAndStoreOptions<'a> {
 pub struct PluginCache<TEnvironment: Environment> {
   environment: TEnvironment,
   fs_locks: CacheFsLockPool<TEnvironment>,
-  /// Memoized npm registry resolutions keyed on (package name, config dir).
-  /// Resolving via `.npmrc` walks the directory tree, so the same key is hit
-  /// multiple times per plugin (cache lookup, store, forget cleanup).
-  registry_cache: Mutex<HashMap<RegistryUrlKey, npm_resolution::NpmRegistryResolution>>,
-  // Including missing files: all packages in this cache share one config snapshot.
-  npmrc_cache: Mutex<HashMap<PathBuf, Option<deno_npmrc::NpmRc>>>,
   cache_dir_ready: Mutex<bool>,
 }
 
@@ -111,8 +104,6 @@ where
   pub fn new(environment: TEnvironment) -> Self {
     PluginCache {
       fs_locks: CacheFsLockPool::new(environment.clone()),
-      registry_cache: Mutex::new(HashMap::new()),
-      npmrc_cache: Mutex::new(HashMap::new()),
       cache_dir_ready: Mutex::new(false),
       environment,
     }
@@ -152,10 +143,7 @@ where
     if let PathSource::Npm(npm_source) = &source_reference.path_source
       && let Some(version) = &npm_source.specifier.version
     {
-      let start_dir = npm_source.base_dir.as_ref().map(|d| d.as_ref());
-      let registry = self.resolve_registry_url(&npm_source.specifier.name, start_dir);
-      let registry_segment = npm_resolution::registry_dir_segment(&registry);
-      let extract_dir = npm_resolution::get_npm_extract_dir(&registry_segment, &npm_source.specifier.name, version, &self.environment);
+      let extract_dir = npm_resolution::get_npm_extract_dir(&npm_source.specifier.name, version, &self.environment);
       self.environment.try_remove_dir_all(&extract_dir);
     }
 
@@ -227,16 +215,12 @@ where
 
     let specifier = &npm_source.specifier;
     let checksum = source_reference.checksum.as_deref();
-    let base_dir = npm_source.base_dir.as_ref().map(|d| d.as_ref());
-    let registry = self.resolve_registry(&specifier.name, base_dir);
     let resolved = npm_resolution::resolve_npm_from_registry(
       npm_resolution::ResolveNpmRegistryOptions {
         specifier,
         checksum,
         detect_path: false,
         establish_checksum: false,
-        registry: &registry,
-        config_dir: base_dir,
       },
       &self.environment,
     )
@@ -273,14 +257,13 @@ where
       .version
       .as_deref()
       .ok_or_else(|| anyhow::anyhow!("Internal error: resolve_npm_for_add requires a versioned specifier"))?;
-    let base_dir_ref = base_dir.map(|d| d.as_ref());
 
     // fast path: a prior add/format cached this version's tarball checksum, so
     // skip the re-download. The kind comes from the real path/files (NOT a
     // package-level cached kind, which would be wrong for a package shipping
     // multiple plugins): an explicit path determines its own kind; a pathless
     // specifier is re-detected from the already-extracted package.
-    if let Some(checksum) = npm_resolution::read_npm_tarball_checksum(&specifier.name, version, base_dir_ref, &self.environment) {
+    if let Some(checksum) = npm_resolution::read_npm_tarball_checksum(&specifier.name, version, &self.environment) {
       if path_was_explicit {
         return Ok(NpmAddResolution {
           plugin_kind: specifier.plugin_kind(),
@@ -288,22 +271,19 @@ where
           checksum,
         });
       }
-      if let Some((path, plugin_kind)) = npm_resolution::detect_extracted_npm_plugin(&specifier.name, version, base_dir_ref, &self.environment) {
+      if let Some((path, plugin_kind)) = npm_resolution::detect_extracted_npm_plugin(&specifier.name, version, &self.environment) {
         return Ok(NpmAddResolution { plugin_kind, path, checksum });
       }
       // the extract dir is gone (or has no conventional plugin file) — fall
       // through to a full resolve, which re-downloads and re-detects.
     }
 
-    let registry = self.resolve_registry(&specifier.name, base_dir_ref);
     let resolved = npm_resolution::resolve_npm_from_registry(
       npm_resolution::ResolveNpmRegistryOptions {
         specifier,
         checksum: None,
         detect_path: !path_was_explicit,
         establish_checksum: true,
-        registry: &registry,
-        config_dir: base_dir_ref,
       },
       &self.environment,
     )
@@ -736,34 +716,8 @@ where
     }
   }
 
-  pub(super) fn resolve_registry(&self, package_name: &str, start_dir: Option<&Path>) -> npm_resolution::NpmRegistryResolution {
-    let key = RegistryUrlKey {
-      package_name: package_name.to_string(),
-      start_dir: start_dir.map(|p| p.to_path_buf()),
-    };
-    if let Some(info) = self.registry_cache.lock().get(&key) {
-      return info.clone();
-    }
-    // resolved outside the lock since it does file I/O. a concurrent caller may
-    // compute the same value — harmless since the result is deterministic.
-    let info = npm_resolution::resolve_registry_with_reader(package_name, start_dir, &self.environment, |path| {
-      self
-        .npmrc_cache
-        .lock()
-        .entry(path.to_path_buf())
-        .or_insert_with(|| npm_resolution::read_npmrc(path, &self.environment))
-        .clone()
-    });
-    self.registry_cache.lock().insert(key, info.clone());
-    info
-  }
-
-  pub(super) fn resolve_registry_url(&self, package_name: &str, start_dir: Option<&Path>) -> String {
-    self.resolve_registry(package_name, start_dir).url
-  }
-
   /// The stable cache key string for a source (`remote:<url>`, `local:<path>`,
-  /// or `npm:<registry>#<name>@<ver>/<path>`). Hashed into the entry's filename
+  /// or `npm:<name>@<ver>/<path>`). Hashed into the entry's filename
   /// and stored in the sidecar for collision detection.
   ///
   /// Entries are keyed purely per-source: the same plugin referenced two ways
@@ -781,27 +735,18 @@ where
         // only versioned npm specifiers use the npm cache key — unversioned ones
         // are mapped to local paths before reaching here (see
         // `get_plugin_cache_item` / `cache_source_for_forget`). include the
-        // resolved registry (private vs public mirror) and the specifier path (a
-        // single package can ship plugin.wasm and plugin.json) so distinct
-        // specifiers don't share an entry.
+        // specifier path (a single package can ship plugin.wasm and
+        // plugin.json) so distinct specifiers don't share an entry.
         let Some(version) = npm_source.specifier.version.as_deref() else {
           bail!(
             "Internal error: cache key requested for unversioned npm specifier {} — this should have been mapped to a local path.",
             npm_source.specifier.display(),
           );
         };
-        let start_dir = npm_source.base_dir.as_ref().map(|d| d.as_ref());
-        let registry = self.resolve_registry_url(&npm_source.specifier.name, start_dir);
-        format!("npm:{}#{}@{}/{}", registry, npm_source.specifier.name, version, npm_source.specifier.path,)
+        format!("npm:{}@{}/{}", npm_source.specifier.name, version, npm_source.specifier.path)
       }
     })
   }
-}
-
-#[derive(Hash, PartialEq, Eq)]
-struct RegistryUrlKey {
-  package_name: String,
-  start_dir: Option<PathBuf>,
 }
 
 /// Result of [`PluginCache::lookup_or_lock`]: either a ready cache hit, or a
@@ -847,22 +792,6 @@ mod test {
       source_checksum: None,
       previous_module_file_name: None,
     }
-  }
-
-  #[test]
-  fn npm_packages_share_one_config_snapshot_without_losing_scope_overrides() {
-    let environment = TestEnvironment::new();
-    environment.mk_dir_all("/repo").unwrap();
-    environment
-      .write_file("/repo/.npmrc", "@one:registry=https://one.example/\n@two:registry=https://two.example/\n")
-      .unwrap();
-    let cache = PluginCache::new(environment.clone());
-    assert_eq!(cache.resolve_registry("@one/a", Some(Path::new("/repo"))).url, "https://one.example");
-    environment.write_file("/repo/.npmrc", "registry=https://changed.example/\n").unwrap();
-    assert_eq!(cache.resolve_registry("@two/b", Some(Path::new("/repo"))).url, "https://two.example");
-    assert_eq!(cache.npmrc_cache.lock().len(), 1);
-    let fresh = PluginCache::new(environment.clone());
-    assert_eq!(fresh.resolve_registry("@two/b", Some(Path::new("/repo"))).url, "https://changed.example");
   }
 
   #[tokio::test]
@@ -1202,28 +1131,6 @@ mod test {
     );
     let err = plugin_cache.compute_cache_key(&ps).unwrap_err();
     assert!(err.to_string().contains("unversioned npm specifier"), "got: {err}");
-  }
-
-  #[tokio::test]
-  async fn cache_key_includes_registry() -> Result<()> {
-    let environment = TestEnvironment::new();
-    let plugin_cache = PluginCache::new(environment.clone());
-    let ps = PathSource::new_npm(
-      NpmSpecifier {
-        name: "foo".to_string(),
-        version: Some("1.0.0".to_string()),
-        path: "plugin.wasm".to_string(),
-      },
-      None,
-    );
-    let default_key = plugin_cache.compute_cache_key(&ps)?;
-
-    // a cache pointed at a private registry resolves to a different key
-    environment.set_env_var("NPM_CONFIG_REGISTRY", Some("https://private.example.com"));
-    let private_cache = PluginCache::new(environment.clone());
-    let private_key = private_cache.compute_cache_key(&ps)?;
-    assert_ne!(default_key, private_key);
-    Ok(())
   }
 
   #[tokio::test]

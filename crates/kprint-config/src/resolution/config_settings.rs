@@ -49,6 +49,7 @@ pub struct FileRouting {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExecutionPolicy {
   pub incremental: Option<bool>,
+  pub minimum_dependency_age: Option<crate::utils::MinimumDependencyAgeArg>,
 }
 
 /// The plugins and their configuration.
@@ -226,6 +227,9 @@ impl ExecutionPolicy {
   fn add_lower_precedence(&mut self, other: &ExecutionPolicy) {
     if self.incremental.is_none() {
       self.incremental = other.incremental;
+    }
+    if self.minimum_dependency_age.is_none() {
+      self.minimum_dependency_age.clone_from(&other.minimum_dependency_age);
     }
   }
 }

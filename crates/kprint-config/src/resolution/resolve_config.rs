@@ -1108,6 +1108,26 @@ lineWidth = 80
   }
 
   #[test]
+  fn should_use_minimum_dependency_age_of_extended_config_when_not_specified() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file("/dprint.json", r#"{ "extends": "./base.json" }"#)
+      .write_file("/specified.json", r#"{ "extends": "./base.json", "minimumDependencyAge": "1440" }"#)
+      .write_file("/base.json", r#"{ "minimumDependencyAge": "P3D" }"#)
+      .write_file("/invalid.json", r#"{ "minimumDependencyAge": "3 days" }"#)
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = resolve_local_config("/dprint.json", &environment).await;
+      assert_eq!(result.execution.minimum_dependency_age.unwrap().text(), "P3D");
+      assert_eq!(result.plugins.config, ConfigMap::new());
+      let result = resolve_local_config("/specified.json", &environment).await;
+      assert_eq!(result.execution.minimum_dependency_age.unwrap().text(), "1440");
+      let err = get_result("/invalid.json", &environment).await.err().unwrap();
+      assert!(err.to_string().contains("minimumDependencyAge: Invalid minimum dependency age"), "got: {err}");
+    });
+  }
+
+  #[test]
   fn should_record_which_file_each_property_is_from() {
     let environment = TestEnvironment::new();
     environment.add_remote_file(
@@ -2607,7 +2627,10 @@ lineWidth = 80
           ("#!/usr/bin/env node".to_string(), "js".to_string()),
         ])),
       },
-      execution: ExecutionPolicy { incremental: Some(true) },
+      execution: ExecutionPolicy {
+        incremental: Some(true),
+        minimum_dependency_age: Some("P3D".parse().unwrap()),
+      },
       plugins: PluginConfiguration {
         origins: Default::default(),
         remote_exec: Default::default(),
@@ -2675,8 +2698,9 @@ lineWidth = 80
     );
     // includes are not inherited
     assert_eq!(result.files.includes, None);
-    // incremental is inherited when not specified
+    // incremental and the minimum dependency age are inherited when not specified
     assert_eq!(result.execution.incremental, Some(true));
+    assert_eq!(result.execution.minimum_dependency_age.unwrap().text(), "P3D");
     // the nested config has shebangs of its own, so the ancestor's aren't used
     assert_eq!(
       result.routing.shebangs.unwrap().into_iter().collect::<Vec<_>>(),

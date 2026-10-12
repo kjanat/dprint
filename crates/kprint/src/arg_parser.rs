@@ -333,8 +333,8 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
     })
   }
 
-  /// Parses `--minimum-dependency-age`. `None` leaves the age to any
-  /// `min-release-age` an .npmrc sets.
+  /// Parses `--minimum-dependency-age`. `None` leaves the age to the
+  /// configuration file's `minimumDependencyAge`.
   fn parse_minimum_dependency_age(matches: &ArgMatches) -> Result<Option<MinimumDependencyAgeArg>> {
     match matches.get_one::<String>("minimum-dependency-age") {
       Some(text) => Ok(Some(MinimumDependencyAgeArg::from_str(text)?)),
@@ -814,7 +814,7 @@ pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
       .help(concat!(
         "Don't resolve npm plugin versions published more recently than this. Accepts an ISO-8601 duration ",
         "(ex. 'P3D', 'PT72H'), a number of minutes (ex. '1440'), a date or RFC3339 timestamp (ex. '2026-01-15'), or '0' to disable. ",
-        "Defaults to min-release-age in .npmrc, otherwise no minimum.",
+        "Defaults to the configuration file's minimumDependencyAge, otherwise no minimum.",
       ))
       .num_args(1)
       .required(false)
@@ -1867,7 +1867,7 @@ mod test {
     }
 
     // the same flag is available on the commands that resolve a version on
-    // the user's behalf, and defaults to leaving the age to the .npmrc
+    // the user's behalf
     let args = test_args(vec!["config", "update", "--minimum-dependency-age", "0"]).unwrap();
     match &args.sub_command {
       SubCommand::Config(ConfigSubCommand::Update { minimum_dependency_age, .. }) => {

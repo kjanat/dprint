@@ -9,12 +9,10 @@ use anyhow::bail;
 use flate2::read::GzDecoder;
 use tar::Archive;
 
-use deno_npmrc::RegistryConfig;
 use deno_semver::Version;
 
 use crate::environment::PluginEnvironment as Environment;
 use crate::utils::DependencyAgeCutoff;
-use crate::utils::MinimumDependencyAge;
 use crate::utils::MinimumDependencyAgeArg;
 use crate::utils::NpmSpecifier;
 use crate::utils::PathSource;
@@ -23,13 +21,7 @@ use crate::utils::get_sha256_checksum;
 use crate::utils::parse_rfc3339;
 use crate::utils::verify_sha256_checksum;
 
-/// Resolved npm registry for a package, including the auth header to send
-/// with requests (if the configured `.npmrc` provides one).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NpmRegistryResolution {
-  pub url: String,
-  pub auth_header: Option<String>,
-}
+const NPM_REGISTRY_HOST: &str = "registry.npmjs.org";
 
 /// The result of resolving an npm plugin specifier.
 pub struct NpmResolvedPlugin {
@@ -80,9 +72,6 @@ pub struct NpmLatestInfo {
 /// Inputs to [`fetch_npm_latest_info`].
 pub struct FetchNpmLatestInfo<'a> {
   pub specifier: &'a NpmSpecifier,
-  /// Directory to start the `.npmrc` walk from when resolving the registry.
-  /// `None` falls back to `~/.npmrc` and then the default registry.
-  pub start_dir: Option<&'a Path>,
   /// Force computing the tarball checksum even for wasm plugins. Used on
   /// update when the existing specifier carries a checksum, so the upgrade
   /// pins to the new tarball rather than carrying the stale hash. Non-wasm
@@ -98,21 +87,18 @@ pub struct FetchNpmLatestInfo<'a> {
 pub async fn fetch_npm_latest_info(args: FetchNpmLatestInfo<'_>, environment: &impl Environment) -> Result<NpmLatestInfo> {
   let FetchNpmLatestInfo {
     specifier,
-    start_dir,
     want_tarball_sha,
     minimum_dependency_age,
   } = args;
-  let registry = resolve_registry_for_package(&specifier.name, start_dir, environment);
-  let (packument, packument_url) = fetch_packument(&specifier.name, &registry, environment).await?;
+  let packument = fetch_packument(&specifier.name, environment).await?;
   let latest_version = select_version_from_packument(&packument, &specifier.name, minimum_dependency_age, environment)?;
 
   let need_tarball_sha = want_tarball_sha || specifier.plugin_kind() != PluginKind::Wasm;
   let tarball_sha256 = if need_tarball_sha {
     let tarball_url_str = get_tarball_url_from_packument(&packument, &latest_version, &specifier.name)?;
     let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
-    let tarball_auth = same_origin_auth(&packument_url, &tarball_url, registry.auth_header.as_deref());
     let (_, tarball_file) = environment
-      .download_file_err_404(&tarball_url, tarball_auth)
+      .download_file_err_404(&tarball_url, None)
       .await
       .with_context(|| format!("Failed to download npm tarball for {}@{}", specifier.name, latest_version))?;
     Some(get_sha256_checksum(&tarball_file.content))
@@ -128,14 +114,8 @@ pub async fn fetch_npm_latest_info(args: FetchNpmLatestInfo<'_>, environment: &i
 
 /// Resolves the latest published version of a package from its packument.
 /// Used by `dprint add` to pin an unversioned specifier before setup.
-pub async fn resolve_npm_latest_version(
-  name: &str,
-  start_dir: Option<&Path>,
-  minimum_dependency_age: Option<&DependencyAgeCutoff>,
-  environment: &impl Environment,
-) -> Result<String> {
-  let registry = resolve_registry_for_package(name, start_dir, environment);
-  let (packument, _) = fetch_packument(name, &registry, environment).await?;
+pub async fn resolve_npm_latest_version(name: &str, minimum_dependency_age: Option<&DependencyAgeCutoff>, environment: &impl Environment) -> Result<String> {
+  let packument = fetch_packument(name, environment).await?;
   select_version_from_packument(&packument, name, minimum_dependency_age, environment)
 }
 
@@ -143,10 +123,8 @@ pub async fn resolve_npm_latest_version(
 /// recorded one. The checksum is a package-version property (the same for any
 /// plugin file the package ships), so `dprint add` can reuse it without
 /// re-downloading the tarball.
-pub fn read_npm_tarball_checksum(name: &str, version: &str, start_dir: Option<&Path>, environment: &impl Environment) -> Option<String> {
-  let registry = resolve_registry_for_package(name, start_dir, environment);
-  let registry_segment = registry_dir_segment(&registry.url);
-  Some(read_npm_tarball_meta(&registry_segment, name, version, environment)?.tarball_sha256)
+pub fn read_npm_tarball_checksum(name: &str, version: &str, environment: &impl Environment) -> Option<String> {
+  Some(read_npm_tarball_meta(name, version, environment)?.tarball_sha256)
 }
 
 /// For a pathless `dprint add` on a repeat add: if `name@version` is already
@@ -154,10 +132,8 @@ pub fn read_npm_tarball_checksum(name: &str, version: &str, start_dir: Option<&P
 /// `plugin.wasm` over `plugin.json`) without re-downloading. Returns the path
 /// and its kind, or `None` if the package isn't extracted or ships neither
 /// conventional file (so the caller falls back to a full download).
-pub fn detect_extracted_npm_plugin(name: &str, version: &str, start_dir: Option<&Path>, environment: &impl Environment) -> Option<(String, PluginKind)> {
-  let registry = resolve_registry_for_package(name, start_dir, environment);
-  let registry_segment = registry_dir_segment(&registry.url);
-  let extract_dir = get_npm_extract_dir(&registry_segment, name, version, environment);
+pub fn detect_extracted_npm_plugin(name: &str, version: &str, environment: &impl Environment) -> Option<(String, PluginKind)> {
+  let extract_dir = get_npm_extract_dir(name, version, environment);
   if !environment.path_exists(&extract_dir) {
     return None;
   }
@@ -182,26 +158,20 @@ pub fn detect_npm_plugin_kind_in_node_modules(package_name: &str, start_dir: &Pa
   }
 }
 
-/// Resolves the minimum dependency age in effect, checking (in order):
-/// 1. the `--minimum-dependency-age` flag
-/// 2. `min-release-age` in the nearest .npmrc walking up from `start_dir`
-/// 3. `min-release-age` in ~/.npmrc
-///
-/// `None` means no age requirement, which is dprint's default — a version is
-/// only held back when the user asks for it.
+/// The `--minimum-dependency-age` flag takes precedence over the configuration
+/// file's `minimumDependencyAge`. `None` means no age requirement, which is
+/// dprint's default — a version is only held back when the user asks for it.
 pub fn resolve_dependency_age_cutoff(
   flag: Option<&MinimumDependencyAgeArg>,
-  start_dir: Option<&Path>,
+  configured: Option<&MinimumDependencyAgeArg>,
   environment: &impl Environment,
 ) -> Option<DependencyAgeCutoff> {
   let now = environment.sys_time_now();
-  // an explicit flag decides it, including `--minimum-dependency-age=0`
-  // turning off an age an .npmrc would otherwise set
-  if let Some(flag) = flag {
-    return DependencyAgeCutoff::new(flag.age(), format!("--minimum-dependency-age {}", flag.text()), now);
+  match (flag, configured) {
+    (Some(flag), _) => DependencyAgeCutoff::new(flag.age(), format!("--minimum-dependency-age {}", flag.text()), now),
+    (None, Some(configured)) => DependencyAgeCutoff::new(configured.age(), format!("minimumDependencyAge {}", configured.text()), now),
+    (None, None) => None,
   }
-  let days = resolve_min_release_age_days(start_dir, environment)?;
-  DependencyAgeCutoff::new(&MinimumDependencyAge::from_days(days), format!("min-release-age={} in .npmrc", days), now)
 }
 
 /// No published version of a package is old enough to satisfy the configured
@@ -216,18 +186,15 @@ pub struct MinimumDependencyAgeError {
   pub configured: String,
 }
 
-/// Fetches and parses a package's packument, returning it alongside the URL it
-/// was fetched from (needed for the same-origin check when downloading the
-/// tarball).
-async fn fetch_packument(name: &str, registry: &NpmRegistryResolution, environment: &impl Environment) -> Result<(serde_json::Value, url::Url)> {
-  let packument_url_str = get_packument_url(&registry.url, name);
+async fn fetch_packument(name: &str, environment: &impl Environment) -> Result<serde_json::Value> {
+  let packument_url_str = get_packument_url(name);
   let packument_url = url::Url::parse(&packument_url_str).with_context(|| format!("Failed to parse npm packument URL: {}", packument_url_str))?;
+  log_debug!(environment, "Fetching npm packument: {}", packument_url);
   let (_, packument_file) = environment
-    .download_file_err_404(&packument_url, registry.auth_header.as_deref())
+    .download_file_err_404(&packument_url, None)
     .await
     .with_context(|| format!("Failed to fetch npm packument for {}", name))?;
-  let packument = serde_json::from_slice(&packument_file.content).with_context(|| format!("Failed to parse npm packument for {}", name))?;
-  Ok((packument, packument_url))
+  serde_json::from_slice(&packument_file.content).with_context(|| format!("Failed to parse npm packument for {}", name))
 }
 
 /// Picks the version of a package to resolve to, which is `dist-tags.latest`
@@ -355,26 +322,6 @@ fn published_time(times: &serde_json::Map<String, serde_json::Value>, version: &
   parse_rfc3339(times.get(version)?.as_str()?)
 }
 
-/// Reads `min-release-age` (a whole number of days) from the nearest .npmrc
-/// that sets it. Unlike the registry, which is resolved per package, this is a
-/// single value, so the first file setting it wins.
-fn resolve_min_release_age_days(start_dir: Option<&Path>, environment: &impl Environment) -> Option<u64> {
-  fn read(npmrc_path: &Path, environment: &impl Environment) -> Option<u64> {
-    let text = environment.read_file(npmrc_path).ok()?;
-    deno_npmrc::NpmRc::parse(environment, &text).ok()?.min_release_age_days
-  }
-
-  if let Some(start) = start_dir {
-    for dir in start.ancestors() {
-      if let Some(days) = read(&dir.join(".npmrc"), environment) {
-        return Some(days);
-      }
-    }
-  }
-  let home_dir = environment.get_home_dir()?;
-  read(&home_dir.join(".npmrc"), environment)
-}
-
 /// Reads `dist-tags.latest` from a packument.
 fn latest_version_from_packument(packument: &serde_json::Value, name: &str) -> Result<String> {
   packument
@@ -423,14 +370,10 @@ pub struct ResolveNpmRegistryOptions<'a> {
   /// requiring one for process plugins. `dprint fmt` leaves this false so a
   /// process plugin without a checksum is still rejected.
   pub establish_checksum: bool,
-  pub registry: &'a NpmRegistryResolution,
-  /// The dprint config's directory; seeds the `.npmrc` walk when a process
-  /// plugin's plugin.json references a per-platform npm package.
-  pub config_dir: Option<&'a Path>,
 }
 
-/// Resolves a versioned npm plugin. Public Wasm files without a tarball checksum
-/// can use the CDN directly. Other references download, verify and extract the
+/// Resolves a versioned npm plugin. Wasm files without a tarball checksum use
+/// the CDN directly. Other references download, verify and extract the
 /// tarball, then resolve the per-platform binary for process plugins.
 pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, environment: &impl Environment) -> Result<NpmResolvedPlugin> {
   let ResolveNpmRegistryOptions {
@@ -438,23 +381,13 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
     checksum,
     detect_path,
     establish_checksum,
-    registry,
-    config_dir,
   } = options;
   let version = specifier
     .version
     .as_deref()
     .ok_or_else(|| anyhow::anyhow!("Cannot resolve npm plugin without a version from the registry"))?;
-  // Public, unpinned Wasm packages need only the requested file. A checksum
-  // on an npm reference covers the tarball, so those references retain the
-  // registry path, as do private/custom registries and process plugins.
-  if !detect_path
-    && !establish_checksum
-    && checksum.is_none()
-    && specifier.plugin_kind() == PluginKind::Wasm
-    && registry.url.trim_end_matches('/') == "https://registry.npmjs.org"
-    && registry.auth_header.is_none()
-  {
+  // A checksum on an npm reference covers the tarball.
+  if !detect_path && !establish_checksum && checksum.is_none() && specifier.plugin_kind() == PluginKind::Wasm {
     let mut url = url::Url::parse("https://cdn.jsdelivr.net/npm/")?;
     {
       let mut path = url.path_segments_mut().expect("CDN URL has a path");
@@ -476,28 +409,13 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
     }
     // A version missing from the CDN may already be available on npm.
   }
-  let registry_segment = registry_dir_segment(&registry.url);
 
-  // fetch the packument to get the tarball URL
-  let packument_url_str = get_packument_url(&registry.url, &specifier.name);
-  let packument_url = url::Url::parse(&packument_url_str).with_context(|| format!("Failed to parse npm packument URL: {}", packument_url_str))?;
-  log_debug!(environment, "Fetching npm packument: {}", packument_url);
-  let (_, packument_file) = environment
-    .download_file_err_404(&packument_url, registry.auth_header.as_deref())
-    .await
-    .with_context(|| format!("Failed to fetch npm packument for {}", specifier.name))?;
-  let packument: serde_json::Value =
-    serde_json::from_slice(&packument_file.content).with_context(|| format!("Failed to parse npm packument for {}", specifier.name))?;
-
+  let packument = fetch_packument(&specifier.name, environment).await?;
   let tarball_url_str = get_tarball_url_from_packument(&packument, version, &specifier.name)?;
   let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
   log_debug!(environment, "Downloading npm tarball: {}", tarball_url);
-
-  // download the tarball — only send the registry auth if the tarball is on
-  // the same origin as the registry (don't leak credentials to a CDN)
-  let tarball_auth = same_origin_auth(&packument_url, &tarball_url, registry.auth_header.as_deref());
   let (_, tarball_file) = environment
-    .download_file_err_404(&tarball_url, tarball_auth)
+    .download_file_err_404(&tarball_url, None)
     .await
     .with_context(|| format!("Failed to download npm tarball for {}@{}", specifier.name, version))?;
   let tarball_bytes = tarball_file.content;
@@ -531,7 +449,7 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
 
   // extract and read the plugin file in a blocking task since
   // tarball decompression and file I/O can be slow
-  let extract_dir = get_npm_extract_dir(&registry_segment, &specifier.name, version, environment);
+  let extract_dir = get_npm_extract_dir(&specifier.name, version, environment);
   let requested_path = specifier.path.clone();
   let specifier_clone = specifier.clone();
   let environment_clone = environment.clone();
@@ -572,14 +490,14 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
   // verify its checksum (same flow as the node_modules path). File/relative
   // references resolve against the extract dir via the standard setup flow.
   let pre_resolved_tarball = if plugin_kind == PluginKind::Process {
-    try_resolve_process_plugin_per_platform_tarball(&plugin_bytes, config_dir, environment).await?
+    try_resolve_process_plugin_per_platform_tarball(&plugin_bytes, environment).await?
   } else {
     None
   };
 
   // record the tarball's checksum so a later `dprint add` of the same version
   // can reuse it without re-downloading the tarball. Best-effort.
-  write_npm_tarball_meta(&registry_segment, &specifier.name, version, &tarball_sha256, environment);
+  write_npm_tarball_meta(&specifier.name, version, &tarball_sha256, environment);
 
   Ok(NpmResolvedPlugin {
     plugin_bytes,
@@ -599,7 +517,7 @@ pub async fn resolve_npm_from_registry(options: ResolveNpmRegistryOptions<'_>, e
 pub async fn resolve_npm_from_node_modules(specifier: &NpmSpecifier, config_dir: &Path, environment: &impl Environment) -> Result<NpmResolvedPlugin> {
   let package_dir = match find_package_in_node_modules(&specifier.name, config_dir, environment) {
     Some(dir) => dir,
-    None => bail!(node_modules_missing_message(specifier, Some(config_dir), environment).await),
+    None => bail!(node_modules_missing_message(specifier, environment).await),
   };
   let plugin_path = package_dir.join(&specifier.path);
   if !environment.path_exists(&plugin_path) {
@@ -617,7 +535,7 @@ pub async fn resolve_npm_from_node_modules(specifier: &NpmSpecifier, config_dir:
     .with_context(|| format!("Failed to read {}", canonical.display()))?;
 
   let pre_resolved_tarball = if specifier.plugin_kind() == PluginKind::Process {
-    try_resolve_process_plugin_per_platform_tarball(&plugin_bytes, Some(config_dir), environment).await?
+    try_resolve_process_plugin_per_platform_tarball(&plugin_bytes, environment).await?
   } else {
     None
   };
@@ -717,7 +635,6 @@ fn npm_specifier_with_path(specifier: &NpmSpecifier, path: &str) -> String {
 /// [`bail_if_disallowed_reference`].
 async fn try_resolve_process_plugin_per_platform_tarball(
   plugin_json_bytes: &[u8],
-  config_dir: Option<&Path>,
   environment: &impl Environment,
 ) -> Result<Option<PreResolvedProcessPluginTarball>> {
   use crate::plugins::implementations::get_process_plugin_os_path;
@@ -738,8 +655,7 @@ async fn try_resolve_process_plugin_per_platform_tarball(
     .as_deref()
     .ok_or_else(|| anyhow::anyhow!("npm reference in plugin '{}' must include a version: {}", plugin_file.name, os_path.reference,))?;
 
-  let registry = resolve_registry_for_package(&parsed.specifier.name, config_dir, environment);
-  let tarball_bytes = fetch_and_verify_npm_tarball(&parsed.specifier.name, version, &os_path.checksum, &registry, environment)
+  let tarball_bytes = fetch_and_verify_npm_tarball(&parsed.specifier.name, version, &os_path.checksum, environment)
     .await
     .with_context(|| format!("Resolving npm dependency for process plugin '{}'", plugin_file.name))?;
 
@@ -751,31 +667,17 @@ async fn try_resolve_process_plugin_per_platform_tarball(
   }))
 }
 
-/// Fetches `name@version` from `registry` and verifies its SHA-256 against
-/// `expected_checksum`. Returns the tarball bytes — the caller decides
+/// Fetches `name@version` from the npm registry and verifies its SHA-256
+/// against `expected_checksum`. Returns the tarball bytes — the caller decides
 /// where (if anywhere) to extract them. Always re-fetches and re-verifies
 /// on every call so a registry that silently swaps the tarball's contents
 /// is detected immediately.
-async fn fetch_and_verify_npm_tarball(
-  name: &str,
-  version: &str,
-  expected_checksum: &str,
-  registry: &NpmRegistryResolution,
-  environment: &impl Environment,
-) -> Result<Vec<u8>> {
-  let packument_url_str = get_packument_url(&registry.url, name);
-  let packument_url = url::Url::parse(&packument_url_str).with_context(|| format!("Failed to parse npm packument URL: {}", packument_url_str))?;
-  let (_, packument_file) = environment
-    .download_file_err_404(&packument_url, registry.auth_header.as_deref())
-    .await
-    .with_context(|| format!("Failed to fetch npm packument for {}", name))?;
-  let packument: serde_json::Value = serde_json::from_slice(&packument_file.content).with_context(|| format!("Failed to parse npm packument for {}", name))?;
-
+async fn fetch_and_verify_npm_tarball(name: &str, version: &str, expected_checksum: &str, environment: &impl Environment) -> Result<Vec<u8>> {
+  let packument = fetch_packument(name, environment).await?;
   let tarball_url_str = get_tarball_url_from_packument(&packument, version, name)?;
   let tarball_url = url::Url::parse(&tarball_url_str).with_context(|| format!("Failed to parse npm tarball URL: {}", tarball_url_str))?;
-  let tarball_auth = same_origin_auth(&packument_url, &tarball_url, registry.auth_header.as_deref());
   let (_, tarball_file) = environment
-    .download_file_err_404(&tarball_url, tarball_auth)
+    .download_file_err_404(&tarball_url, None)
     .await
     .with_context(|| format!("Failed to download npm tarball for {}@{}", name, version))?;
   let tarball_bytes = tarball_file.content;
@@ -868,14 +770,11 @@ fn is_absolute_reference(reference: &str) -> bool {
   matches!(chars.first(), Some(c) if c.is_ascii_alphabetic()) && matches!(chars.get(1), Some(':')) && matches!(chars.get(2), Some('/' | '\\'))
 }
 
-/// Finds a .zip file in the given package directory.
 /// Returns the directory where an npm package tarball should be extracted.
-/// Namespaced by the registry so the same name@version from different registries
-/// (e.g. public npmjs.org vs a private registry) do not collide.
-pub(super) fn get_npm_extract_dir(registry_segment: &str, package_name: &str, version: &str, environment: &impl Environment) -> PathBuf {
+pub(super) fn get_npm_extract_dir(package_name: &str, version: &str, environment: &impl Environment) -> PathBuf {
   // use a sanitized name for the directory (replace / with __)
   let dir_name = format!("{}@{}", package_name.replace('/', "__"), version);
-  environment.get_cache_dir().join("npm").join(registry_segment).join(dir_name)
+  environment.get_cache_dir().join("npm").join(NPM_REGISTRY_HOST).join(dir_name)
 }
 
 /// The tarball's SHA-256, cached so a later `dprint add` of the same
@@ -894,14 +793,14 @@ struct NpmTarballMeta {
 /// inside) the `name@version` extract directory so it doesn't mix with the
 /// package's own files. Wiped by `dprint clear-cache` along with the rest of
 /// the npm cache.
-fn npm_tarball_meta_path(registry_segment: &str, package_name: &str, version: &str, environment: &impl Environment) -> PathBuf {
+fn npm_tarball_meta_path(package_name: &str, version: &str, environment: &impl Environment) -> PathBuf {
   let file_name = format!("{}@{}.meta.json", package_name.replace('/', "__"), version);
-  environment.get_cache_dir().join("npm").join(registry_segment).join(file_name)
+  environment.get_cache_dir().join("npm").join(NPM_REGISTRY_HOST).join(file_name)
 }
 
 /// Reads the cached tarball sidecar, or `None` if it's missing or unreadable.
-fn read_npm_tarball_meta(registry_segment: &str, package_name: &str, version: &str, environment: &impl Environment) -> Option<NpmTarballMeta> {
-  let path = npm_tarball_meta_path(registry_segment, package_name, version, environment);
+fn read_npm_tarball_meta(package_name: &str, version: &str, environment: &impl Environment) -> Option<NpmTarballMeta> {
+  let path = npm_tarball_meta_path(package_name, version, environment);
   let text = environment.read_file(&path).ok()?;
   let value: serde_json::Value = serde_json::from_str(&text).ok()?;
   let tarball_sha256 = value.get("tarballChecksum")?.as_str()?.to_string();
@@ -910,28 +809,10 @@ fn read_npm_tarball_meta(registry_segment: &str, package_name: &str, version: &s
 
 /// Writes the tarball sidecar. Best-effort — a failure just means the next
 /// `dprint add` re-downloads to recompute the checksum.
-fn write_npm_tarball_meta(registry_segment: &str, package_name: &str, version: &str, tarball_sha256: &str, environment: &impl Environment) {
+fn write_npm_tarball_meta(package_name: &str, version: &str, tarball_sha256: &str, environment: &impl Environment) {
   let json = serde_json::json!({ "tarballChecksum": tarball_sha256 });
-  let path = npm_tarball_meta_path(registry_segment, package_name, version, environment);
+  let path = npm_tarball_meta_path(package_name, version, environment);
   let _ = environment.write_file(&path, &json.to_string());
-}
-
-/// Returns a filesystem- and key-safe segment identifying a registry by host
-/// (and port, if non-default). For URLs we can't parse or that have no host,
-/// falls back to `unknown_<hash>` so distinct unparseable URLs land in
-/// different cache directories instead of colliding under a shared `unknown`.
-pub(super) fn registry_dir_segment(registry_url: &str) -> String {
-  let fallback = || format!("unknown_{:016x}", crate::utils::get_bytes_hash(registry_url.as_bytes()));
-  let Ok(url) = url::Url::parse(registry_url) else {
-    return fallback();
-  };
-  let Some(host) = url.host_str() else {
-    return fallback();
-  };
-  match url.port() {
-    Some(port) => format!("{host}_{port}"),
-    None => host.to_string(),
-  }
 }
 
 /// Extracts an npm tarball to a directory on disk.
@@ -1138,156 +1019,8 @@ fn normalize_path(path: &Path) -> PathBuf {
   result
 }
 
-/// Resolves the npm registry URL and credentials for a package, checking (in order):
-/// 1. NPM_CONFIG_REGISTRY env var (no credentials)
-/// 2. .npmrc files walking up from `start_dir` — keep walking past `.npmrc`s
-///    that don't apply to this package's scope
-/// 3. ~/.npmrc
-/// 4. https://registry.npmjs.org (no credentials)
-pub fn resolve_registry_for_package(package_name: &str, start_dir: Option<&Path>, environment: &impl Environment) -> NpmRegistryResolution {
-  resolve_registry_with_reader(package_name, start_dir, environment, |path| read_npmrc(path, environment))
-}
-
-pub(super) fn read_npmrc(path: &Path, environment: &impl Environment) -> Option<deno_npmrc::NpmRc> {
-  deno_npmrc::NpmRc::parse(environment, &environment.read_file(path).ok()?).ok()
-}
-
-pub(super) fn resolve_registry_with_reader(
-  package_name: &str,
-  start_dir: Option<&Path>,
-  environment: &impl Environment,
-  mut read: impl FnMut(&Path) -> Option<deno_npmrc::NpmRc>,
-) -> NpmRegistryResolution {
-  // env vars take precedence over .npmrc — but they only set the URL,
-  // never auth, so we can return immediately.
-  if let Some(registry) = environment.env_var("NPM_CONFIG_REGISTRY") {
-    let registry = registry.to_string_lossy().to_string();
-    return NpmRegistryResolution {
-      url: registry.trim_end_matches('/').to_string(),
-      auth_header: None,
-    };
-  }
-
-  // walk up from the config file's directory checking for .npmrc files
-  if let Some(start) = start_dir {
-    for dir in start.ancestors() {
-      if let Some(info) = read(&dir.join(".npmrc")).and_then(|npmrc| resolve_registry_from_npmrc(package_name, &npmrc, environment)) {
-        return info;
-      }
-    }
-  }
-
-  // user-level ~/.npmrc
-  if let Some(home_dir) = environment.get_home_dir()
-    && !start_dir.is_some_and(|start| start.ancestors().any(|dir| dir == home_dir.as_ref()))
-    && let Some(info) = read(&home_dir.join(".npmrc")).and_then(|npmrc| resolve_registry_from_npmrc(package_name, &npmrc, environment))
-  {
-    return info;
-  }
-
-  NpmRegistryResolution {
-    url: deno_npmrc::NPM_DEFAULT_REGISTRY.to_string(),
-    auth_header: None,
-  }
-}
-
-/// Parses a single .npmrc file and resolves the registry for a package.
-/// Returns `None` if the file doesn't exist, or if it doesn't configure a registry
-/// that applies to this package (so the caller keeps walking).
-fn resolve_registry_from_npmrc(package_name: &str, npmrc: &deno_npmrc::NpmRc, environment: &impl Environment) -> Option<NpmRegistryResolution> {
-  // figure out whether this .npmrc actually applies to this package — either
-  // a scope registry matching the package's scope, or a default registry.
-  let scope = scope_of(package_name);
-  let has_default = npmrc.registry.is_some();
-  let has_scope = scope.is_some_and(|s| npmrc.scope_registries.contains_key(s));
-  if !has_default && !has_scope {
-    return None;
-  }
-
-  let default_url = url::Url::parse(deno_npmrc::NPM_DEFAULT_REGISTRY).unwrap();
-  let registry_url = deno_npmrc::NpmRegistryUrl {
-    url: default_url,
-    from_env: false,
-  };
-  let resolved = npmrc.as_resolved(&registry_url).ok()?;
-  let url = resolved.get_registry_url(package_name).as_str().trim_end_matches('/').to_string();
-  let auth_header = compute_auth_header(resolved.get_registry_config(package_name).as_ref(), environment);
-
-  Some(NpmRegistryResolution { url, auth_header })
-}
-
-/// Returns the scope (without the `@`) for a scoped package, or `None` for
-/// unscoped packages.
-fn scope_of(package_name: &str) -> Option<&str> {
-  package_name.strip_prefix('@')?.split_once('/').map(|(scope, _)| scope)
-}
-
-/// Builds an HTTP `Authorization` header value from a registry's `.npmrc`
-/// credentials. Supports `_authToken` (Bearer), `_auth` (Basic), and the
-/// `username` + `_password` pair (Basic, base64-encoded here — npm stores
-/// `_password` itself as base64 over the cleartext password). Warns when
-/// credentials are configured but unusable rather than silently sending
-/// an unauthenticated request, since the resulting 401 from the registry
-/// is otherwise hard to trace back to a misconfigured `.npmrc`.
-fn compute_auth_header(config: &RegistryConfig, environment: &impl Environment) -> Option<String> {
-  use base64::Engine;
-  if let Some(token) = &config.auth_token {
-    return Some(format!("Bearer {}", token));
-  }
-  if let Some(auth) = &config.auth {
-    return Some(format!("Basic {}", auth));
-  }
-  if let (Some(username), Some(password_b64)) = (&config.username, &config.password) {
-    // npm stores `_password` as base64 of the cleartext password; we need to
-    // send `Basic base64(username:password)`. Decode then re-encode.
-    let password_bytes = match base64::engine::general_purpose::STANDARD.decode(password_b64.as_bytes()) {
-      Ok(bytes) => bytes,
-      Err(err) => {
-        log_warn!(
-          environment,
-          "Ignoring .npmrc _password for user '{}': not valid base64 ({}). Request will be sent unauthenticated.",
-          username,
-          err,
-        );
-        return None;
-      }
-    };
-    let password = match String::from_utf8(password_bytes) {
-      Ok(s) => s,
-      Err(_) => {
-        log_warn!(
-          environment,
-          "Ignoring .npmrc _password for user '{}': decoded bytes are not valid UTF-8. Request will be sent unauthenticated.",
-          username,
-        );
-        return None;
-      }
-    };
-    let credentials = format!("{}:{}", username, password);
-    return Some(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes())));
-  }
-  // username without _password (or vice versa) is a partial config; warn so
-  // the user knows we saw it and chose not to use it.
-  if config.username.is_some() || config.password.is_some() {
-    log_warn!(
-      environment,
-      "Ignoring .npmrc credentials: 'username' and '_password' must both be set (saw only one). Request will be sent unauthenticated.",
-    );
-  }
-  None
-}
-
-/// Returns `auth` only when `other` shares an origin (scheme + host + port)
-/// with `registry`. Tarballs/packuments sometimes live on a CDN; the registry
-/// credentials must not be sent there.
-fn same_origin_auth<'a>(registry: &url::Url, other: &url::Url, auth: Option<&'a str>) -> Option<&'a str> {
-  let same =
-    registry.scheme() == other.scheme() && registry.host_str() == other.host_str() && registry.port_or_known_default() == other.port_or_known_default();
-  if same { auth } else { None }
-}
-
-fn get_packument_url(registry_url: &str, package_name: &str) -> String {
-  format!("{}/{}", registry_url, package_name)
+fn get_packument_url(package_name: &str) -> String {
+  format!("https://{}/{}", NPM_REGISTRY_HOST, package_name)
 }
 
 fn get_tarball_url_from_packument(packument: &serde_json::Value, version: &str, package_name: &str) -> Result<String> {
@@ -1329,8 +1062,8 @@ fn find_package_in_node_modules(package_name: &str, start_dir: &Path, environmen
 /// the bare `npm install` hint. We deliberately don't append the tarball
 /// checksum here — for non-wasm plugins the next resolve step bails with a
 /// "must have a checksum" error that quotes the exact value to use.
-async fn node_modules_missing_message(specifier: &NpmSpecifier, start_dir: Option<&Path>, environment: &impl Environment) -> String {
-  match fetch_npm_latest_version(&specifier.name, start_dir, environment).await {
+async fn node_modules_missing_message(specifier: &NpmSpecifier, environment: &impl Environment) -> String {
+  match fetch_npm_latest_version(&specifier.name, environment).await {
     Some(version) => {
       // hide the default `plugin.wasm` path so the suggestion matches what
       // a user would actually type. Non-default paths (e.g. `plugin.json`)
@@ -1362,10 +1095,9 @@ async fn node_modules_missing_message(specifier: &NpmSpecifier, start_dir: Optio
 /// as a best-effort hint, not a hard requirement, so we don't bubble the
 /// error up. Unlike [`fetch_npm_latest_info`] this never downloads the
 /// tarball, so it's cheap enough to call inside an error path.
-async fn fetch_npm_latest_version(package_name: &str, start_dir: Option<&Path>, environment: &impl Environment) -> Option<String> {
-  let registry = resolve_registry_for_package(package_name, start_dir, environment);
-  let packument_url = url::Url::parse(&get_packument_url(&registry.url, package_name)).ok()?;
-  let (_, packument_file) = environment.download_file_err_404(&packument_url, registry.auth_header.as_deref()).await.ok()?;
+async fn fetch_npm_latest_version(package_name: &str, environment: &impl Environment) -> Option<String> {
+  let packument_url = url::Url::parse(&get_packument_url(package_name)).ok()?;
+  let (_, packument_file) = environment.download_file_err_404(&packument_url, None).await.ok()?;
   let packument: serde_json::Value = serde_json::from_slice(&packument_file.content).ok()?;
   packument
     .get("dist-tags")
@@ -1408,162 +1140,6 @@ mod tests {
     }
   }
 
-  #[test]
-  fn compute_auth_header_supports_auth_token_and_auth() {
-    use crate::environment::TestEnvironment;
-    let env = TestEnvironment::new();
-    let mut cfg = RegistryConfig::default();
-    assert_eq!(compute_auth_header(&cfg, &env), None);
-
-    cfg.auth_token = Some("tok".to_string());
-    assert_eq!(compute_auth_header(&cfg, &env), Some("Bearer tok".to_string()));
-
-    cfg.auth_token = None;
-    cfg.auth = Some("dXNlcjpwd2Q=".to_string());
-    assert_eq!(compute_auth_header(&cfg, &env), Some("Basic dXNlcjpwd2Q=".to_string()));
-
-    // auth_token wins over auth when both are present
-    cfg.auth_token = Some("tok".to_string());
-    assert_eq!(compute_auth_header(&cfg, &env), Some("Bearer tok".to_string()));
-  }
-
-  #[test]
-  fn compute_auth_header_supports_username_and_password() {
-    use crate::environment::TestEnvironment;
-    use base64::Engine;
-    let env = TestEnvironment::new();
-    // npm stores _password as base64 of the cleartext password
-    let password_b64 = base64::engine::general_purpose::STANDARD.encode(b"pwd");
-    let cfg = RegistryConfig {
-      username: Some("user".to_string()),
-      password: Some(password_b64),
-      ..Default::default()
-    };
-    // header is base64(user:pwd) which matches the well-known _auth example
-    assert_eq!(compute_auth_header(&cfg, &env), Some("Basic dXNlcjpwd2Q=".to_string()));
-  }
-
-  #[test]
-  fn compute_auth_header_username_only_warns_and_returns_none() {
-    use crate::environment::TestEnvironment;
-    let env = TestEnvironment::new();
-    let cfg = RegistryConfig {
-      username: Some("user".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(compute_auth_header(&cfg, &env), None);
-    let stderr = env.take_stderr_messages();
-    assert!(
-      stderr.iter().any(|m| m.contains("'username' and '_password' must both be set")),
-      "expected partial-config warning, got: {stderr:?}"
-    );
-  }
-
-  #[test]
-  fn compute_auth_header_invalid_base64_password_warns_and_returns_none() {
-    // a misconfigured _password (not valid base64) shouldn't silently produce
-    // an unauthenticated request; the user gets a 401 with no clue why.
-    use crate::environment::TestEnvironment;
-    let env = TestEnvironment::new();
-    let cfg = RegistryConfig {
-      username: Some("user".to_string()),
-      password: Some("!!!not base64!!!".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(compute_auth_header(&cfg, &env), None);
-    let stderr = env.take_stderr_messages();
-    assert!(
-      stderr.iter().any(|m| m.contains("not valid base64") && m.contains("user")),
-      "expected base64 warning, got: {stderr:?}"
-    );
-  }
-
-  #[test]
-  fn compute_auth_header_non_utf8_password_warns_and_returns_none() {
-    use crate::environment::TestEnvironment;
-    use base64::Engine;
-    let env = TestEnvironment::new();
-    // base64 of a non-UTF-8 byte sequence
-    let password_b64 = base64::engine::general_purpose::STANDARD.encode([0xff, 0xfe, 0xfd]);
-    let cfg = RegistryConfig {
-      username: Some("user".to_string()),
-      password: Some(password_b64),
-      ..Default::default()
-    };
-    assert_eq!(compute_auth_header(&cfg, &env), None);
-    let stderr = env.take_stderr_messages();
-    assert!(stderr.iter().any(|m| m.contains("not valid UTF-8")), "expected utf-8 warning, got: {stderr:?}");
-  }
-
-  #[tokio::test]
-  async fn resolve_registry_walks_past_unrelated_npmrc() {
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    // child .npmrc configures a scope that is not our package's scope —
-    // the walk should not stop here. Parent .npmrc configures our scope.
-    environment.mk_dir_all("/repo").unwrap();
-    environment.write_file("/repo/.npmrc", "@other:registry=https://other.example.com").unwrap();
-    environment.write_file("/.npmrc", "@dprint:registry=https://dprint.example.com").unwrap();
-    let info = resolve_registry_for_package("@dprint/typescript", Some(std::path::Path::new("/repo")), &environment);
-    assert_eq!(info.url, "https://dprint.example.com");
-  }
-
-  #[tokio::test]
-  async fn resolve_registry_picks_up_auth_token() {
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    environment.mk_dir_all("/repo").unwrap();
-    environment
-      .write_file(
-        "/repo/.npmrc",
-        "@dprint:registry=https://dprint.example.com\n//dprint.example.com/:_authToken=MYTOKEN",
-      )
-      .unwrap();
-    let info = resolve_registry_for_package("@dprint/typescript", Some(std::path::Path::new("/repo")), &environment);
-    assert_eq!(info.url, "https://dprint.example.com");
-    assert_eq!(info.auth_header.as_deref(), Some("Bearer MYTOKEN"));
-  }
-
-  #[tokio::test]
-  async fn fetch_npm_latest_info_sends_auth_header() {
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    environment.mk_dir_all("/repo").unwrap();
-    environment
-      .write_file(
-        "/repo/.npmrc",
-        "@dprint:registry=https://dprint.example.com\n//dprint.example.com/:_authToken=MYTOKEN",
-      )
-      .unwrap();
-    let packument = serde_json::json!({
-      "dist-tags": { "latest": "1.2.3" },
-      "versions": { "1.2.3": { "dist": { "tarball": "https://dprint.example.com/@dprint/foo/-/foo-1.2.3.tgz" } } }
-    });
-    environment.add_remote_file_bytes("https://dprint.example.com/@dprint/foo", packument.to_string().into_bytes());
-
-    let specifier = NpmSpecifier {
-      name: "@dprint/foo".to_string(),
-      version: Some("1.0.0".to_string()),
-      path: "plugin.wasm".to_string(),
-    };
-    let info = fetch_npm_latest_info(
-      FetchNpmLatestInfo {
-        specifier: &specifier,
-        start_dir: Some(std::path::Path::new("/repo")),
-        minimum_dependency_age: None,
-        want_tarball_sha: false,
-      },
-      &environment,
-    )
-    .await
-    .unwrap();
-    assert_eq!(info.version, "1.2.3");
-
-    // verify the Authorization header was sent
-    let seen = environment.take_remote_file_auth("https://dprint.example.com/@dprint/foo");
-    assert_eq!(seen.as_deref(), Some("Bearer MYTOKEN"));
-  }
-
   /// 2024-05-10T00:00:00Z — the "now" the minimum dependency age tests run at.
   const NOW: u64 = 1715299200;
 
@@ -1598,7 +1174,7 @@ mod tests {
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo", packument.to_string().into_bytes());
     let age = MinimumDependencyAgeArg::from_str(age).unwrap();
     let cutoff = resolve_dependency_age_cutoff(Some(&age), None, &environment);
-    let result = resolve_npm_latest_version("foo", None, cutoff.as_ref(), &environment).await;
+    let result = resolve_npm_latest_version("foo", cutoff.as_ref(), &environment).await;
     let logged = environment.take_stderr_messages();
     (result, logged)
   }
@@ -1737,58 +1313,7 @@ mod tests {
     use crate::environment::TestEnvironment;
     let environment = TestEnvironment::new();
     environment.set_fs_time(NOW);
-    assert_eq!(resolve_dependency_age_cutoff(None, Some(Path::new("/repo")), &environment), None);
-  }
-
-  #[test]
-  fn resolve_dependency_age_cutoff_reads_min_release_age_from_npmrc() {
-    use crate::environment::TestEnvironment;
-    use std::str::FromStr;
-    let environment = TestEnvironment::new();
-    environment.set_fs_time(NOW);
-    environment.mk_dir_all("/repo/sub").unwrap();
-    environment.write_file("/repo/.npmrc", "min-release-age=3").unwrap();
-
-    let cutoff = resolve_dependency_age_cutoff(None, Some(Path::new("/repo/sub")), &environment).unwrap();
-    assert_eq!(cutoff.description(), "min-release-age=3 in .npmrc");
-    // 3 days before `NOW`
-    assert!(cutoff.is_too_new(parse_rfc3339("2024-05-08T00:00:00Z").unwrap()));
-    assert!(!cutoff.is_too_new(parse_rfc3339("2024-05-06T00:00:00Z").unwrap()));
-
-    // the flag wins over the .npmrc, including when it turns the age off
-    let flag = MinimumDependencyAgeArg::from_str("P1D").unwrap();
-    let cutoff = resolve_dependency_age_cutoff(Some(&flag), Some(Path::new("/repo/sub")), &environment).unwrap();
-    assert_eq!(cutoff.description(), "--minimum-dependency-age P1D");
-    assert!(!cutoff.is_too_new(parse_rfc3339("2024-05-08T00:00:00Z").unwrap()));
-
-    let off = MinimumDependencyAgeArg::from_str("0").unwrap();
-    assert_eq!(resolve_dependency_age_cutoff(Some(&off), Some(Path::new("/repo/sub")), &environment), None);
-  }
-
-  #[test]
-  fn resolve_dependency_age_cutoff_falls_back_to_the_home_npmrc() {
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    environment.set_fs_time(NOW);
-    environment.mk_dir_all("/home").unwrap();
-    environment.mk_dir_all("/repo").unwrap();
-    environment.write_file("/home/.npmrc", "min-release-age=5").unwrap();
-
-    // nothing above the start dir sets it, so the user-level file decides
-    let cutoff = resolve_dependency_age_cutoff(None, Some(Path::new("/repo")), &environment).unwrap();
-    assert_eq!(cutoff.description(), "min-release-age=5 in .npmrc");
-    assert!(cutoff.is_too_new(parse_rfc3339("2024-05-06T00:00:00Z").unwrap()));
-    assert!(!cutoff.is_too_new(parse_rfc3339("2024-05-04T00:00:00Z").unwrap()));
-
-    // ...and with no start dir at all, which is how a command with no config
-    // file on disk resolves it
-    let cutoff = resolve_dependency_age_cutoff(None, None, &environment).unwrap();
-    assert_eq!(cutoff.description(), "min-release-age=5 in .npmrc");
-
-    // a nearer .npmrc wins over the user-level one
-    environment.write_file("/repo/.npmrc", "min-release-age=1").unwrap();
-    let cutoff = resolve_dependency_age_cutoff(None, Some(Path::new("/repo")), &environment).unwrap();
-    assert_eq!(cutoff.description(), "min-release-age=1 in .npmrc");
+    assert_eq!(resolve_dependency_age_cutoff(None, None, &environment), None);
   }
 
   #[test]
@@ -1807,6 +1332,22 @@ mod tests {
     assert_eq!(describe("2024-05-05"), "--minimum-dependency-age 2024-05-05");
   }
 
+  #[test]
+  fn resolve_dependency_age_cutoff_prefers_the_flag_over_the_config_file() {
+    use crate::environment::TestEnvironment;
+    use std::str::FromStr;
+    let environment = TestEnvironment::new();
+    environment.set_fs_time(NOW);
+    let configured = MinimumDependencyAgeArg::from_str("P3D").unwrap();
+    let cutoff = resolve_dependency_age_cutoff(None, Some(&configured), &environment).unwrap();
+    assert_eq!(cutoff.description(), "minimumDependencyAge P3D");
+    let flag = MinimumDependencyAgeArg::from_str("P1D").unwrap();
+    let cutoff = resolve_dependency_age_cutoff(Some(&flag), Some(&configured), &environment).unwrap();
+    assert_eq!(cutoff.description(), "--minimum-dependency-age P1D");
+    let off = MinimumDependencyAgeArg::from_str("0").unwrap();
+    assert_eq!(resolve_dependency_age_cutoff(Some(&off), Some(&configured), &environment), None);
+  }
+
   #[tokio::test]
   async fn minimum_dependency_age_accepts_an_absolute_cutoff_date() {
     let packument = packument_with_times("1.1.0", &[("1.0.0", Some("2024-01-01T00:00:00Z")), ("1.1.0", Some("2024-05-09T00:00:00Z"))]);
@@ -1821,18 +1362,12 @@ mod tests {
 
   #[test]
   fn test_get_packument_url_scoped() {
-    assert_eq!(
-      get_packument_url("https://registry.npmjs.org", "@dprint/typescript"),
-      "https://registry.npmjs.org/@dprint/typescript"
-    );
+    assert_eq!(get_packument_url("@dprint/typescript"), "https://registry.npmjs.org/@dprint/typescript");
   }
 
   #[test]
   fn test_get_packument_url_unscoped() {
-    assert_eq!(
-      get_packument_url("https://registry.npmjs.org", "dprint-plugin-foo"),
-      "https://registry.npmjs.org/dprint-plugin-foo"
-    );
+    assert_eq!(get_packument_url("dprint-plugin-foo"), "https://registry.npmjs.org/dprint-plugin-foo");
   }
 
   #[test]
@@ -1879,7 +1414,6 @@ mod tests {
     let info = fetch_npm_latest_info(
       FetchNpmLatestInfo {
         specifier: &specifier,
-        start_dir: None,
         minimum_dependency_age: None,
         want_tarball_sha: false,
       },
@@ -1914,7 +1448,6 @@ mod tests {
     let info = fetch_npm_latest_info(
       FetchNpmLatestInfo {
         specifier: &specifier,
-        start_dir: None,
         minimum_dependency_age: None,
         want_tarball_sha: true,
       },
@@ -1947,7 +1480,6 @@ mod tests {
     let info = fetch_npm_latest_info(
       FetchNpmLatestInfo {
         specifier: &specifier,
-        start_dir: None,
         minimum_dependency_age: None,
         want_tarball_sha: false,
       },
@@ -1999,10 +1531,6 @@ mod tests {
     let tarball = create_test_npm_tarball(&[("package/plugin.wasm", b"\0asm")]);
     let expected = get_sha256_checksum(&tarball);
     environment.add_remote_file_bytes("https://registry.npmjs.org/foo/-/foo-1.0.0.tgz", tarball);
-    let registry = NpmRegistryResolution {
-      url: "https://registry.npmjs.org".to_string(),
-      auth_header: None,
-    };
     // a defaulted path + add mode: detect the file, compute the checksum (no
     // checksum required to verify), and record the sidecar.
     let specifier = NpmSpecifier {
@@ -2016,8 +1544,6 @@ mod tests {
         checksum: None,
         detect_path: true,
         establish_checksum: true,
-        registry: &registry,
-        config_dir: None,
       },
       &environment,
     )
@@ -2028,14 +1554,11 @@ mod tests {
     assert_eq!(resolved.tarball_checksum.as_deref(), Some(expected.as_str()));
 
     // the setup wrote the checksum sidecar, so a later add can reuse it...
-    assert_eq!(
-      read_npm_tarball_checksum("foo", "1.0.0", None, &environment).as_deref(),
-      Some(expected.as_str())
-    );
+    assert_eq!(read_npm_tarball_checksum("foo", "1.0.0", &environment).as_deref(), Some(expected.as_str()));
     // ...and re-detect the plugin file from the already-extracted package
     // (no package-level cached "kind").
     assert_eq!(
-      detect_extracted_npm_plugin("foo", "1.0.0", None, &environment),
+      detect_extracted_npm_plugin("foo", "1.0.0", &environment),
       Some(("plugin.wasm".to_string(), PluginKind::Wasm))
     );
   }
@@ -2153,38 +1676,6 @@ mod tests {
   }
 
   use crate::test_helpers::create_test_npm_tarball as create_test_tarball;
-
-  #[test]
-  fn registry_dir_segment_uses_host_for_normal_urls() {
-    assert_eq!(registry_dir_segment("https://registry.npmjs.org"), "registry.npmjs.org");
-    assert_eq!(registry_dir_segment("https://registry.npmjs.org/"), "registry.npmjs.org");
-    // non-default ports are encoded so :443 vs :8443 don't share a directory
-    assert_eq!(registry_dir_segment("http://localhost:8080"), "localhost_8080");
-  }
-
-  #[test]
-  fn registry_dir_segment_unparseable_urls_get_distinct_hashed_segments() {
-    // distinct unparseable URLs must NOT share the literal "unknown" — a
-    // collision there would silently mix two registries' tarballs in one dir.
-    let a = registry_dir_segment("not a url at all");
-    let b = registry_dir_segment("also not a url");
-    assert!(a.starts_with("unknown_"), "got: {a}");
-    assert!(b.starts_with("unknown_"), "got: {b}");
-    assert_ne!(a, b);
-
-    // deterministic: same input → same segment
-    assert_eq!(a, registry_dir_segment("not a url at all"));
-  }
-
-  #[test]
-  fn registry_dir_segment_hostless_urls_get_distinct_hashed_segments() {
-    // `file:` URLs parse fine but have no host — historically also "unknown"
-    let a = registry_dir_segment("file:///tmp/registry-a");
-    let b = registry_dir_segment("file:///tmp/registry-b");
-    assert!(a.starts_with("unknown_"), "got: {a}");
-    assert!(b.starts_with("unknown_"), "got: {b}");
-    assert_ne!(a, b);
-  }
 
   #[test]
   fn extract_tarball_is_idempotent_when_dest_dir_exists() {
@@ -2357,100 +1848,6 @@ mod tests {
     // initial registry request gets the token; CDN does not
     assert_eq!(environment.take_remote_file_auth(start).as_deref(), Some("Bearer T"));
     assert_eq!(environment.take_remote_file_auth(cdn), None);
-  }
-
-  #[tokio::test]
-  async fn resolve_npm_from_registry_sends_auth_on_packument_and_tarball() {
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://private.example.com/foo/-/foo-1.0.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://private.example.com/foo", packument.to_string().into_bytes());
-    let tarball = create_test_tarball(&[("package/plugin.wasm", b"wasm")]);
-    let tarball_checksum = get_sha256_checksum(&tarball);
-    environment.add_remote_file_bytes("https://private.example.com/foo/-/foo-1.0.0.tgz", tarball);
-
-    let registry = NpmRegistryResolution {
-      url: "https://private.example.com".to_string(),
-      auth_header: Some("Bearer SECRET".to_string()),
-    };
-    let specifier = NpmSpecifier {
-      name: "foo".to_string(),
-      version: Some("1.0.0".to_string()),
-      path: "plugin.wasm".to_string(),
-    };
-    let _ = resolve_npm_from_registry(
-      ResolveNpmRegistryOptions {
-        specifier: &specifier,
-        checksum: Some(&tarball_checksum),
-        detect_path: false,
-        establish_checksum: false,
-        registry: &registry,
-        config_dir: None,
-      },
-      &environment,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-      environment.take_remote_file_auth("https://private.example.com/foo").as_deref(),
-      Some("Bearer SECRET")
-    );
-    assert_eq!(
-      environment.take_remote_file_auth("https://private.example.com/foo/-/foo-1.0.0.tgz").as_deref(),
-      Some("Bearer SECRET")
-    );
-  }
-
-  #[tokio::test]
-  async fn resolve_npm_from_registry_drops_auth_on_cross_origin_tarball() {
-    // registry's packument points at a different host (a CDN) for the tarball —
-    // the auth header must not be sent to the CDN.
-    use crate::environment::TestEnvironment;
-    let environment = TestEnvironment::new();
-    let packument = serde_json::json!({
-      "versions": {
-        "1.0.0": { "dist": { "tarball": "https://cdn.example.net/foo-1.0.0.tgz" } }
-      }
-    });
-    environment.add_remote_file_bytes("https://private.example.com/foo", packument.to_string().into_bytes());
-    let tarball = create_test_tarball(&[("package/plugin.wasm", b"wasm")]);
-    let tarball_checksum = get_sha256_checksum(&tarball);
-    environment.add_remote_file_bytes("https://cdn.example.net/foo-1.0.0.tgz", tarball);
-
-    let registry = NpmRegistryResolution {
-      url: "https://private.example.com".to_string(),
-      auth_header: Some("Bearer SECRET".to_string()),
-    };
-    let specifier = NpmSpecifier {
-      name: "foo".to_string(),
-      version: Some("1.0.0".to_string()),
-      path: "plugin.wasm".to_string(),
-    };
-    let _ = resolve_npm_from_registry(
-      ResolveNpmRegistryOptions {
-        specifier: &specifier,
-        checksum: Some(&tarball_checksum),
-        detect_path: false,
-        establish_checksum: false,
-        registry: &registry,
-        config_dir: None,
-      },
-      &environment,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-      environment.take_remote_file_auth("https://private.example.com/foo").as_deref(),
-      Some("Bearer SECRET")
-    );
-    // tarball request is to a different origin — no credentials leak
-    assert_eq!(environment.take_remote_file_auth("https://cdn.example.net/foo-1.0.0.tgz"), None);
   }
 
   /// Stages an npm registry tarball at the default registry so
@@ -2661,10 +2058,6 @@ mod tests {
     let tarball_checksum = get_sha256_checksum(&tarball);
     environment.add_remote_file_bytes("https://registry.npmjs.org/@dprint/exec/-/exec-0.6.2.tgz", tarball);
 
-    let registry = NpmRegistryResolution {
-      url: "https://registry.npmjs.org".to_string(),
-      auth_header: None,
-    };
     let specifier = NpmSpecifier {
       name: "@dprint/exec".to_string(),
       version: Some("0.6.2".to_string()),
@@ -2676,8 +2069,6 @@ mod tests {
         checksum: Some(&tarball_checksum),
         detect_path: false,
         establish_checksum: false,
-        registry: &registry,
-        config_dir: None,
       },
       &environment,
     )

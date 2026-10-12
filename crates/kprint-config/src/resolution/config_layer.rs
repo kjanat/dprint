@@ -135,6 +135,7 @@ impl ConfigDocument<'_> {
       .shebangs
       .map(|shebangs| shebangs.0.into_iter().map(|(shebang, extension)| (shebang, extension.0)).collect());
     settings.execution.incremental = file.incremental;
+    settings.execution.minimum_dependency_age = file.minimum_dependency_age;
     if let Some(plugins) = file.plugins {
       let mut sources = Vec::new();
       for specifier in templates.expand_all(plugins)? {

@@ -17,8 +17,6 @@ kprint-process-plugin = { workspace = true }
 kprint-wasm-plugin    = { workspace = true }
 
 anyhow       = { workspace = true }
-base64       = { workspace = true }
-deno_npmrc   = { workspace = true }
 deno_semver  = { workspace = true }
 flate2       = { workspace = true }
 globset      = { workspace = true }

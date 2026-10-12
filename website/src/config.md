@@ -176,13 +176,15 @@ dprint config update --minimum-dependency-age=P3D
 
 The value takes the following forms: an ISO-8601 duration (`P3D`, `PT72H`), a plain number of minutes (`1440`), an absolute date (`2026-01-15`) or RFC3339 timestamp to hold back everything published after it, or `0` to turn the requirement off.
 
-With no flag, dprint reads `min-release-age` (in whole days) from the nearest `.npmrc` walking up from the configuration file, then `~/.npmrc` — the same npm setting other tools honour:
+With no flag, dprint uses the configuration file's `minimumDependencyAge`, which takes the same forms:
 
-```
-min-release-age=3
+```jsonc
+{
+  "minimumDependencyAge": "P3D"
+}
 ```
 
-There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
+The flag takes precedence, so `--minimum-dependency-age=0` turns a configured age off for one run. There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
 
 - It applies to npm-distributed plugins. Plugins served from a URL carry no publish date for dprint to check, so they resolve as they always have.
 - It never downgrades an entry you already have. Existing plugin versions are left alone, and a version you write out yourself (`dprint config add npm:@dprint/json@1.2.3`) is taken as your decision and added as-is — so an explicit version is a way to opt a single plugin out.
@@ -228,30 +230,14 @@ Supported `npm:` specifier forms:
 
 Behaviour:
 
-- A version after `@` makes dprint fetch the package from the npm registry and cache it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
+- A version after `@` makes dprint download the plugin and cache it. A Wasm plugin without a checksum comes straight from jsDelivr (`https://cdn.jsdelivr.net/npm/<name>@<version>/<path>`). A checksum covers the package tarball, so a checksummed reference and a process plugin download the tarball from `registry.npmjs.org` and verify it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
 - Omitting the version (`npm:@scope/name`) tells dprint to look up the package in `node_modules` walking up from the config file's directory. Use this when you want npm and your lockfile to be the source of truth.
-- The registry is resolved from `NPM_CONFIG_REGISTRY`, then `.npmrc` files walking up from the config, then `~/.npmrc`, then the default `https://registry.npmjs.org`. Scoped registries are supported.
 - `dprint config update` will bump versioned npm specifiers to the latest published version (and compute the new checksum for process plugins). Unversioned specifiers are managed by your package manager, so they're skipped. See [Minimum Dependency Age](#minimum-dependency-age) to hold off on npm dependencies that are only days old.
 - `dprint add npm:@scope/name` resolves to the latest version and writes the pinned form, unless the package is listed in a nearby `package.json` under `devDependencies` — in which case the unversioned form is written so npm/`package-lock.json` stays the source of truth. When you don't include a plugin path, dprint inspects the package to detect whether it's a Wasm or process plugin and writes the right form automatically — for a process plugin that means `npm:@scope/name@<version>/plugin.json@<sha256>`.
 
 Available npm packages include `@dprint/typescript`, `@dprint/json`, `@dprint/markdown`, `@dprint/toml`, `@dprint/dockerfile`, `@dprint/biome`, `@dprint/oxc`, `@dprint/ruff`, `@dprint/sql`, `@dprint/mago`, `@dprint/jupyter`, `@dprint/exec`, `@dprint/prettier`, and `@dprint/roslyn`.
 
 You can also reference a plugin file directly in `node_modules` if you prefer (`"./node_modules/@dprint/typescript/plugin.wasm"`); the `npm:` form just removes the need for that path.
-
-#### Private npm registries
-
-dprint reads `.npmrc` files (walking up from the config, then `~/.npmrc`) to pick a registry and credentials. Both common auth schemes are supported:
-
-```
-@mycorp:registry=https://npm.mycorp.com
-//npm.mycorp.com/:_authToken=${MYCORP_NPM_TOKEN}
-```
-
-- `_authToken=…` → sent as `Authorization: Bearer …`
-- `_auth=…` (already base64-encoded user:pass) → sent as `Authorization: Basic …`
-- `${VAR}` substitution works the same as for npm itself.
-
-Credentials are dropped on cross-origin redirects (e.g. a registry that redirects tarball downloads to a CDN on a different host), so they never leak outside the configured registry.
 
 #### Process plugins distributed via npm
 
@@ -264,7 +250,7 @@ A process plugin's `plugin.json` lists per-platform binaries; for npm-installed 
 
 #### Cache layout
 
-Resolved npm packages are extracted under `<dprint-cache>/npm/<registry-host>/<name>@<version>/`. Different registries (public vs. private mirror) get separate directories. Compiled wasm modules and extracted process-plugin binaries continue to live under `<dprint-cache>/plugins/`. `dprint clear-cache` wipes everything.
+Resolved npm packages are extracted under `<dprint-cache>/npm/registry.npmjs.org/<name>@<version>/`. Compiled wasm modules and extracted process-plugin binaries continue to live under `<dprint-cache>/plugins/`. `dprint clear-cache` wipes everything.
 
 ### Editing Config via CLI
 

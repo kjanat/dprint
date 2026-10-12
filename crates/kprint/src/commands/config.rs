@@ -109,15 +109,11 @@ pub async fn init_config_file<TEnvironment: Environment>(
     return add_missing_plugins_to_config_file(environment, plugin_resolver, existing_path.clone(), &options).await;
   }
   let config_file_path = config_file_paths.remove(0);
-  // a relative path (the default file names, or a relative --config) is
-  // relative to the cwd; resolved so the .npmrc walk starts from the right place
-  let config_dir = environment.cwd().join(&config_file_path).parent().map(|dir| dir.to_path_buf());
   let text = get_init_config_file_text(
     environment,
     GetInitConfigFileTextOptions {
       non_interactive,
       minimum_dependency_age: options.minimum_dependency_age,
-      config_dir,
       config_format: ConfigFileFormat::from_path(&config_file_path),
     },
   )
@@ -172,7 +168,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
     GetInitPluginsToAddOptions {
       existing_plugin_names,
       minimum_dependency_age: options.minimum_dependency_age.clone(),
-      config_dir: config_dir.map(|dir| dir.into_path_buf()),
+      configured_minimum_dependency_age: config.execution.minimum_dependency_age.clone(),
       config_format,
     },
   )
@@ -282,10 +278,8 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
     PathSource::Local(source) => source.path,
     PathSource::Remote(_) | PathSource::Npm(_) => bail!("Cannot update plugins in a remote configuration."),
   };
-  // the config file's directory is where an .npmrc setting `min-release-age`
-  // is looked for, the same place the registry is resolved from
   let config_dir = config_path.parent();
-  let age_cutoff = resolve_dependency_age_cutoff(minimum_dependency_age.as_ref(), config_dir.as_ref().map(|dir| dir.as_ref()), environment);
+  let age_cutoff = resolve_dependency_age_cutoff(minimum_dependency_age.as_ref(), config.execution.minimum_dependency_age.as_ref(), environment);
 
   // Track npm packages we still need to write to package.json after the
   // config update succeeds. Walked-up package.json lookup happens once at
@@ -741,7 +735,6 @@ async fn resolve_npm_plugin_to_add<TEnvironment: Environment>(
       let info = fetch_npm_latest_info(
         FetchNpmLatestInfo {
           specifier: &parsed.specifier,
-          start_dir: Some(start_dir_ref),
           want_tarball_sha: false,
           minimum_dependency_age,
         },
@@ -780,7 +773,7 @@ async fn resolve_npm_plugin_to_add<TEnvironment: Environment>(
   // download) when there's actually something to compute: a pathless specifier
   // (to detect the kind), a process plugin, or `--checksum`. A wasm plugin with
   // an explicit path and no `--checksum` just needs the version.
-  let version = resolve_npm_latest_version(&name, Some(start_dir_ref), minimum_dependency_age, environment).await?;
+  let version = resolve_npm_latest_version(&name, minimum_dependency_age, environment).await?;
   let needs_setup = !explicit_path || checksum || parsed.specifier.plugin_kind() == PluginKind::Process;
   if !needs_setup {
     let pinned = crate::utils::NpmSpecifier {
@@ -1026,10 +1019,8 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     };
 
     let mut file_text = environment.read_file(config_path)?;
-    // each config file resolves its own age: the .npmrc that applies is the
-    // one nearest it, which differs between scopes
     let config_dir = config_path.parent();
-    let age_cutoff = resolve_dependency_age_cutoff(minimum_dependency_age.as_ref(), config_dir.as_ref().map(|dir| dir.as_ref()), environment);
+    let age_cutoff = resolve_dependency_age_cutoff(minimum_dependency_age.as_ref(), config.execution.minimum_dependency_age.as_ref(), environment);
     let plugins_to_update = get_plugins_to_update(
       environment,
       plugin_resolver,
@@ -1361,8 +1352,8 @@ struct PluginUpdateError {
 struct PluginUpdateContext {
   /// The info file's npm distributed plugins, keyed by plugin name.
   npm_info_plugins: Rc<HashMap<String, InfoFilePluginInfo>>,
-  /// The directory the config file being updated lives in, used to resolve the
-  /// npm registry and stored on new npm references for later resolution.
+  /// The directory the config file being updated lives in, stored on new npm
+  /// references for later resolution.
   config_dir: Option<CanonicalizedPathBuf>,
   /// Holds a plugin back from a version published more recently than this.
   /// Plugins that aren't distributed on npm have no publish date to check and
@@ -1431,13 +1422,11 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
         );
         return None;
       };
-      let start_dir = npm_source.base_dir.as_ref().map(|d| d.as_ref());
       // preserve the user's checksum on update: if they pinned a checksum on
       // the old reference, fetch a fresh one for the new version instead of
       // carrying the stale hash (which would fail verification on next run)
       let args = FetchNpmLatestInfo {
         specifier: &npm_source.specifier,
-        start_dir,
         want_tarball_sha: plugin_reference.checksum.is_some(),
         minimum_dependency_age: context.age_cutoff.as_ref(),
       };
@@ -2286,48 +2275,6 @@ mod test {
       stderr
         .iter()
         .any(|m| m.contains("Using @dprint/test-plugin 0.2.0 instead of 0.3.0, which is newer than the minimum dependency age")),
-      "got: {stderr:?}"
-    );
-    environment.take_stdout_messages();
-  }
-
-  #[test]
-  fn should_initialize_reading_min_release_age_from_the_config_file_directory_npmrc() {
-    // with no flag the age comes from the .npmrc nearest where the config
-    // file is written, which isn't the cwd when --config points elsewhere
-    let mut builder = TestEnvironmentBuilder::new();
-    let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
-    let environment = add_aged_test_plugin_tarballs(&mut builder)
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
-      .with_info_file(|info| {
-        info.add_plugin(TestInfoFilePlugin {
-          name: "test-plugin".to_string(),
-          version: "0.2.0".to_string(),
-          url: "https://plugins.dprint.dev/test-plugin.wasm".to_string(),
-          config_key: Some("test-plugin".to_string()),
-          file_extensions: vec!["ts".to_string()],
-          npm: Some(crate::environment::TestInfoFileNpm {
-            name: "@dprint/test-plugin".to_string(),
-            ..Default::default()
-          }),
-          ..Default::default()
-        });
-      })
-      .write_file("./file.ts", "")
-      // the cwd's .npmrc doesn't apply to a config file written elsewhere
-      .write_file("./.npmrc", "min-release-age=0")
-      .write_file("/other/.npmrc", "min-release-age=3")
-      .build();
-    environment.set_fs_time(AGE_TEST_NOW);
-
-    run_test_cli(vec!["init", "--yes", "--config", "/other/dprint.json"], &environment).unwrap();
-
-    let created = environment.read_file("/other/dprint.json").unwrap();
-    assert!(created.contains("\"npm:@dprint/test-plugin@0.2.0\""), "got: {created}");
-    let stderr = environment.take_stderr_messages();
-    assert!(
-      stderr.iter().any(|m| m
-        .contains("Using @dprint/test-plugin 0.2.0 instead of 0.3.0, which is newer than the minimum dependency age allows (min-release-age=3 in .npmrc). Pass --minimum-dependency-age=0 to use the latest version.")),
       "got: {stderr:?}"
     );
     environment.take_stdout_messages();
@@ -5615,16 +5562,15 @@ text",
   }
 
   #[test]
-  fn config_add_npm_specifier_reads_min_release_age_from_an_npmrc() {
-    // with no flag the age comes from the .npmrc nearest the config file
+  fn config_add_npm_specifier_reads_the_minimum_dependency_age_from_the_config_file() {
     let mut builder = TestEnvironmentBuilder::new();
     let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
     let environment = add_aged_test_plugin_tarballs(&mut builder)
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
       .with_local_config("/dprint.json", |config| {
+        config.add_config_section("minimumDependencyAge", r#""P3D""#);
         config.ensure_plugins_section();
       })
-      .write_file("/.npmrc", "min-release-age=3")
       .build();
     environment.set_fs_time(AGE_TEST_NOW);
 
@@ -5635,7 +5581,7 @@ text",
     let stderr = environment.take_stderr_messages();
     assert!(
       stderr.iter().any(|m| m
-        .contains("Using @dprint/test-plugin 0.2.0 instead of 0.3.0, which is newer than the minimum dependency age allows (min-release-age=3 in .npmrc). Pass --minimum-dependency-age=0 to use the latest version.")),
+        .contains("Using @dprint/test-plugin 0.2.0 instead of 0.3.0, which is newer than the minimum dependency age allows (minimumDependencyAge P3D). Pass --minimum-dependency-age=0 to use the latest version.")),
       "got: {stderr:?}"
     );
     let _ = environment.take_stdout_messages();
@@ -6292,19 +6238,19 @@ text",
   }
 
   #[test]
-  fn config_update_reads_min_release_age_from_an_npmrc() {
+  fn config_update_reads_the_minimum_dependency_age_from_the_config_file() {
     let mut builder = TestEnvironmentBuilder::new();
     let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
     let environment = add_aged_test_plugin_tarballs(&mut builder)
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
       .with_info_file(|_| {})
       .with_local_config("/dprint.json", |config| {
+        config.add_config_section("minimumDependencyAge", r#""P3D""#);
         config.add_plugin("npm:@dprint/test-plugin@0.1.0");
       })
       .initialize()
       .build();
     environment.set_fs_time(AGE_TEST_NOW);
-    environment.write_file("/.npmrc", "min-release-age=3").unwrap();
 
     run_test_cli(vec!["config", "update"], &environment).unwrap();
 
@@ -6317,37 +6263,8 @@ text",
   }
 
   #[test]
-  fn config_update_reads_min_release_age_from_a_parent_directory_npmrc() {
-    // the .npmrc doesn't have to sit next to the config file — the walk goes up
-    // from the config's directory, the same as the registry lookup does
-    let mut builder = TestEnvironmentBuilder::new();
-    let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
-    let environment = add_aged_test_plugin_tarballs(&mut builder)
-      .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
-      .with_info_file(|_| {})
-      .with_local_config("/sub/dprint.json", |config| {
-        config.add_plugin("npm:@dprint/test-plugin@0.1.0");
-      })
-      .set_cwd("/sub")
-      .initialize()
-      .build();
-    environment.set_fs_time(AGE_TEST_NOW);
-    environment.write_file("/.npmrc", "min-release-age=3").unwrap();
-
-    run_test_cli(vec!["config", "update"], &environment).unwrap();
-
-    assert!(
-      environment.read_file("/sub/dprint.json").unwrap().contains("npm:@dprint/test-plugin@0.2.0"),
-      "got: {}",
-      environment.read_file("/sub/dprint.json").unwrap()
-    );
-    environment.take_stderr_messages();
-  }
-
-  #[test]
-  fn config_update_resolves_the_min_release_age_per_config_file() {
-    // the .npmrc that applies is the one nearest each config file, so a
-    // recursive update can hold one file back while the other moves on
+  fn config_update_resolves_the_minimum_dependency_age_per_config_file() {
+    // a recursive update can hold one file back while the other moves on
     let mut builder = TestEnvironmentBuilder::new();
     let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
     let environment = add_aged_test_plugin_tarballs(&mut builder)
@@ -6357,12 +6274,12 @@ text",
         config.add_plugin("npm:@dprint/test-plugin@0.1.0");
       })
       .with_local_config("/sub/dprint.json", |config| {
+        config.add_config_section("minimumDependencyAge", r#""P3D""#);
         config.add_plugin("npm:@dprint/test-plugin@0.1.0");
       })
       .initialize()
       .build();
     environment.set_fs_time(AGE_TEST_NOW);
-    environment.write_file("/sub/.npmrc", "min-release-age=3").unwrap();
 
     run_test_cli(vec!["config", "update", "--recursive"], &environment).unwrap();
 
@@ -6374,21 +6291,19 @@ text",
   }
 
   #[test]
-  fn config_update_flag_turns_off_an_npmrc_min_release_age() {
-    // `--minimum-dependency-age 0` is how a user overrides an .npmrc for a
-    // single run, so the latest version is written despite the file
+  fn config_update_flag_turns_off_the_configured_minimum_dependency_age() {
     let mut builder = TestEnvironmentBuilder::new();
     let packument = aged_test_plugin_packument("2099-12-31T00:00:00Z");
     let environment = add_aged_test_plugin_tarballs(&mut builder)
       .add_remote_file_bytes("https://registry.npmjs.org/@dprint/test-plugin", packument.to_string().into_bytes())
       .with_info_file(|_| {})
       .with_local_config("/dprint.json", |config| {
+        config.add_config_section("minimumDependencyAge", r#""P3D""#);
         config.add_plugin("npm:@dprint/test-plugin@0.1.0");
       })
       .initialize()
       .build();
     environment.set_fs_time(AGE_TEST_NOW);
-    environment.write_file("/.npmrc", "min-release-age=3").unwrap();
 
     run_test_cli(vec!["config", "update", "--minimum-dependency-age", "0"], &environment).unwrap();
 
@@ -6708,80 +6623,6 @@ text",
     // the plugin's own config updates ran against the moved entry
     assert!(dprint_json.contains("\"should_set\": \"new_value_wasm\""), "got: {dprint_json}");
     environment.take_stderr_messages();
-  }
-
-  #[test]
-  fn config_update_resolves_the_registry_from_an_npmrc_next_to_the_config() {
-    // the config file's directory is where the .npmrc walk starts, so a private
-    // registry configured beside it decides both the version an entry updates
-    // to and where the package is fetched from
-    use crate::test_helpers::WASM_PLUGIN_BYTES;
-    use crate::test_helpers::create_test_npm_tarball;
-
-    let tarball_url = |version: &str| format!("https://dprint.example.com/@dprint/test-plugin/-/test-plugin-{version}.tgz");
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0" },
-      "versions": {
-        "0.1.0": { "dist": { "tarball": tarball_url("0.1.0") } },
-        "0.3.0": { "dist": { "tarball": tarball_url("0.3.0") } },
-      }
-    });
-    let tarball = create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]);
-    let environment = TestEnvironmentBuilder::new()
-      // only the private registry serves the package — the default one has nothing
-      .add_remote_file_bytes("https://dprint.example.com/@dprint/test-plugin", packument.to_string().into_bytes())
-      .add_remote_file_bytes(&tarball_url("0.1.0"), tarball.clone())
-      .add_remote_file_bytes(&tarball_url("0.3.0"), tarball)
-      .write_file("/.npmrc", "@dprint:registry=https://dprint.example.com")
-      .with_info_file(|_| {})
-      .with_local_config("/dprint.json", |config| {
-        config.add_plugin("npm:@dprint/test-plugin@0.1.0");
-      })
-      .initialize()
-      .build();
-
-    run_test_cli(vec!["config", "update"], &environment).unwrap();
-
-    let dprint_json = environment.read_file("/dprint.json").unwrap();
-    assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
-    // the package came from the private registry, not the default
-    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.3.0...",]);
-  }
-
-  #[test]
-  fn config_update_moves_a_url_plugin_to_a_registry_from_an_npmrc() {
-    // the same .npmrc walk decides where a plugin moving off its url is
-    // fetched from, so the entry it writes points at the private registry
-    use crate::test_helpers::WASM_PLUGIN_BYTES;
-    use crate::test_helpers::create_test_npm_tarball;
-
-    let tarball_url = "https://dprint.example.com/@dprint/test-plugin/-/test-plugin-0.3.0.tgz";
-    let packument = json!({
-      "dist-tags": { "latest": "0.3.0" },
-      "versions": { "0.3.0": { "dist": { "tarball": tarball_url } } }
-    });
-    let environment = TestEnvironmentBuilder::new()
-      // only the private registry serves the package — the default one has nothing
-      .add_remote_file_bytes("https://dprint.example.com/@dprint/test-plugin", packument.to_string().into_bytes())
-      .add_remote_file_bytes(tarball_url, create_test_npm_tarball(&[("package/plugin.wasm", WASM_PLUGIN_BYTES)]))
-      .add_remote_wasm_0_1_0_plugin()
-      .write_file("/.npmrc", "@dprint:registry=https://dprint.example.com")
-      .with_info_file(|_| {})
-      .add_remote_file("https://plugins.dprint.dev/dprint/test-plugin/latest.json", &test_plugin_latest_json(true))
-      .with_local_config("/dprint.json", |config| {
-        config.add_plugin("https://plugins.dprint.dev/test-plugin-0.1.0.wasm");
-      })
-      .initialize()
-      .build();
-
-    run_test_cli(vec!["config", "update"], &environment).unwrap();
-
-    let dprint_json = environment.read_file("/dprint.json").unwrap();
-    assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
-    assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
-    );
   }
 
   #[test]
