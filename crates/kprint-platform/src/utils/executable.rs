@@ -14,16 +14,17 @@ const DEFAULT_PATH_EXT: &str = ".COM;.EXE;.BAT;.CMD";
 /// is returned as given.
 // commands run on the real system, so this looks at the real file system
 #[allow(clippy::disallowed_methods)]
-pub fn resolve_executable(executable: &str, cwd: &Path) -> PathBuf {
+pub fn resolve_executable<'a>(executable: &str, cwd: &Path, env: impl Fn(&str) -> Option<&'a str>) -> PathBuf {
   #[cfg(windows)]
   {
-    let path_var = std::env::var_os("PATH");
-    let path_ext_var = std::env::var_os("PATHEXT");
+    let var = |name: &str| env(name).map(std::ffi::OsString::from).or_else(|| std::env::var_os(name));
+    let path_var = var("PATH");
+    let path_ext_var = var("PATHEXT");
     if let Some(path) = find_with_path_ext(executable, cwd, path_var.as_deref(), path_ext_var.as_deref(), &|path| path.is_file()) {
       return path;
     }
   }
-  let _ = cwd;
+  let _ = (cwd, env);
   PathBuf::from(executable)
 }
 
@@ -143,6 +144,6 @@ mod test {
   #[test]
   fn returns_the_executable_when_not_found() {
     assert_eq!(find("missing", &[], None), None);
-    assert_eq!(resolve_executable("missing", Path::new("/cwd")), PathBuf::from("missing"));
+    assert_eq!(resolve_executable("missing", Path::new("/cwd"), |_| None), PathBuf::from("missing"));
   }
 }

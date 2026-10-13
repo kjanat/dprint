@@ -30,7 +30,6 @@ pub use implementations::WASM_PLUGIN_THREAD_STACK_SIZE;
 pub use implementations::WasmCompileControl;
 pub use implementations::compile_wasm;
 pub use implementations::compile_wasm_supervised;
-pub use implementations::exec_command_program;
 pub use implementations::exec_input;
 #[cfg(windows)]
 pub use implementations::find_with_path_ext;

@@ -221,6 +221,7 @@ mod test {
             config
           },
           global: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         });
 
         // ensure basic formatting works
@@ -312,6 +313,7 @@ mod test {
           id: FormatConfigId::from_raw(1),
           plugin: Default::default(),
           global: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         });
 
         // start up a format that will wait for cancellation
@@ -356,6 +358,7 @@ mod test {
           id: FormatConfigId::from_raw(1),
           plugin: Default::default(),
           global: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         });
         communicator.get_resolved_config(&format_config).await.unwrap();
         assert!(communicator.inner.lock().await.registered_configs.borrow().contains(&format_config.id));

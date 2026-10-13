@@ -77,6 +77,7 @@ impl SyncPluginHandler<Configuration> for TestWasmPlugin {
         file_extensions,
         file_names,
         additive,
+        additive_associations: Vec::new(),
       },
     }
   }

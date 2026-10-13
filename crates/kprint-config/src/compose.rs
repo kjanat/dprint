@@ -80,13 +80,13 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     .and_then(Value::as_object)
     .cloned()
     .unwrap_or_default();
-  let files = root
+  let override_properties = root
     .get("$defs")
     .and_then(|definitions| definitions.get("pluginOverride"))
     .and_then(|schema| schema.get("properties"))
-    .and_then(|properties| properties.get("files"))
+    .and_then(Value::as_object)
     .cloned()
-    .unwrap_or(Value::Bool(true));
+    .unwrap_or_default();
 
   let mut warnings = Vec::new();
   for plugin in plugins {
@@ -162,7 +162,7 @@ pub fn build_config_schema(plugins: Vec<PluginSchema>) -> Result<ConfigSchema> {
     // resource refers to has to be within it (or at an absolute uri)
     let override_name = override_definition_name(&resource.schema);
     let override_reference = pointer::resource_reference(resource.uri.as_str(), &pointer::append("/$defs", &override_name));
-    let override_schema = override_schema(&resource, &table_schemas, &table_properties, &files);
+    let override_schema = override_schema(&resource, &table_schemas, &table_properties, &override_properties);
     if let Some((pointer, keyword)) = &table_schemas.conditional_properties {
       warnings.push(format!(
         concat!(
@@ -534,7 +534,7 @@ impl TableSchemas {
 /// branch) isn't in it, as the table an override is merged into decides the
 /// condition, which is warned about (see
 /// [`TableSchemas::conditional_properties`]).
-fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: &Map<String, Value>, files: &Value) -> Value {
+fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: &Map<String, Value>, override_properties: &Map<String, Value>) -> Value {
   // the plugin's own properties a schema declares
   let declared = |pointer: &str| -> Vec<String> {
     match resource.schema.pointer(pointer).and_then(|schema| schema.get("properties")) {
@@ -566,15 +566,14 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
       }
     }
     // what this schema says of the properties the schemas in `evaluated`
-    // don't declare; `files` is dprint's, so it's exempt
+    // don't declare; dprint's (ex. `files`) are exempt
     let others = |keyword: &str| match object.get(keyword) {
       Some(Value::Bool(false)) => Some(Value::Bool(false)),
       Some(Value::Object(_)) => Some(serde_json::json!({ "$ref": resource.index.reference_to(&format!("{}/{}", pointer, keyword)) })),
       _ => None,
     };
     let restriction = |evaluated: &[String], others: Value| {
-      let mut allowed = Map::new();
-      allowed.insert("files".to_string(), Value::Bool(true));
+      let mut allowed = override_properties.keys().map(|name| (name.clone(), Value::Bool(true))).collect::<Map<_, _>>();
       for name in evaluated.iter().flat_map(|pointer| declared(pointer)) {
         allowed.insert(name, Value::Bool(true));
       }
@@ -611,9 +610,8 @@ fn override_schema(resource: &Resource, table: &TableSchemas, table_properties: 
       }
     }
   }
-  // `files`, as dprint describes it for every override
-  let mut all_properties = Map::new();
-  all_properties.insert("files".to_string(), files.clone());
+  // dprint's (ex. `files`), as it describes them for every override
+  let mut all_properties = override_properties.clone();
   all_properties.extend(properties);
   let mut result = Map::new();
   result.insert("type".to_string(), Value::String("object".to_string()));
@@ -747,12 +745,16 @@ mod test {
       let text = serde_json::to_string(&properties["overrides"]).unwrap();
       properties["overrides"] = serde_json::from_str(&text.replace("#/$defs/pluginOverride", &override_reference)).unwrap();
     }
-    json!({
+    let mut table = json!({
       "description": format!("The configuration of the {} plugin.", key),
       "type": "object",
       "properties": properties,
       "allOf": [{ "$ref": reference }],
-    })
+    });
+    let mut options = json_schema_sort::SortOptions::default();
+    options.properties = json_schema_sort::PropertyOrdering::Preserve;
+    json_schema_sort::sort_schema_with_options(&mut table, options);
+    table
   }
 
   #[test]
@@ -813,6 +815,7 @@ mod test {
         "minProperties": 2,
         "properties": {
           "files": schema["$defs"]["pluginOverride"]["properties"]["files"],
+          "embedded": schema["$defs"]["pluginOverride"]["properties"]["embedded"],
           "quoteStyle": { "$ref": "https://plugins.dprint.dev/typescript/schema.json#/properties/quoteStyle" },
           "absolute": { "$ref": "https://plugins.dprint.dev/typescript/schema.json#/properties/absolute" },
         },
@@ -1089,7 +1092,10 @@ mod test {
       "$ref": "https://example.com/config.json",
       "additionalProperties": false,
     }));
-    assert_eq!(closed["allOf"], json!([{ "properties": { "files": true }, "additionalProperties": false }]));
+    assert_eq!(
+      closed["allOf"],
+      json!([{ "properties": { "files": true, "embedded": true }, "additionalProperties": false }])
+    );
     // a `$dynamicRef` is resolved by what applies the schema, which the
     // table decides, so it isn't followed either
     let dynamic = json!({
@@ -1249,7 +1255,7 @@ mod test {
     // declares, as it does of the table
     assert_eq!(
       override_schema["allOf"],
-      json!([{ "properties": { "files": true, "b": true }, "additionalProperties": false }])
+      json!([{ "properties": { "files": true, "embedded": true, "b": true }, "additionalProperties": false }])
     );
     assert!(override_schema.get("additionalProperties").is_none());
     assert_eq!(validate(combined.clone(), json!({ "overrides": [{ "files": "*.x", "b": 1 }] })), Ok(()));
@@ -1522,8 +1528,9 @@ mod test {
       schema.schema["$defs"]["plugin:test"]["$defs"]["dprint-override"]["properties"]
         .as_object()
         .unwrap()
-        .len(),
-      1
+        .keys()
+        .collect::<Vec<_>>(),
+      ["files", "embedded"]
     );
     // the table itself is checked in full
     assert_eq!(validate(&either, json!({ "a": "x" })), Ok(()));

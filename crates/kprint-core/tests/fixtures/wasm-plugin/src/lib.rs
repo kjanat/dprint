@@ -22,6 +22,7 @@ impl api::SyncPluginHandler<Configuration> for Plugin {
         file_extensions: vec!["txt".into()],
         file_names: Vec::new(),
         additive: false,
+        additive_associations: Vec::new(),
       },
     }
   }

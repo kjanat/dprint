@@ -132,27 +132,6 @@ impl<TEnvironment: Environment> FileMatcher<TEnvironment> {
   }
 }
 
-pub fn get_patterns_as_glob_matcher(patterns: &[String], config_base_path: &CanonicalizedPathBuf) -> Result<GlobMatcher> {
-  let patterns = process_config_patterns(patterns);
-  let (includes, excludes) = patterns.into_iter().partition(|p| !is_negated_glob(p));
-  GlobMatcher::new(
-    GlobPatterns {
-      shebangs: Vec::new(),
-      arg_includes: None,
-      config_includes: Some(GlobPattern::new_vec(includes, config_base_path.clone())),
-      arg_excludes: None,
-      config_excludes: excludes
-        .into_iter()
-        .map(|relative_pattern| GlobPattern::new(relative_pattern, config_base_path.clone()).invert())
-        .collect(),
-    },
-    &GlobMatcherOptions {
-      case_sensitive: true,
-      base_dir: config_base_path.clone(),
-    },
-  )
-}
-
 pub fn get_all_file_patterns(config: &ResolvedConfig, args: &FilePatternArgs, cwd: &CanonicalizedPathBuf, environment: &impl Environment) -> GlobPatterns {
   GlobPatterns {
     config_includes: get_config_includes_file_patterns(config, args, cwd, environment),
@@ -345,6 +324,7 @@ fn normalize_path(path: PathBuf) -> PathBuf {
   result
 }
 
+pub use kprint_discovery::get_patterns_as_glob_matcher;
 pub use kprint_discovery::process_config_pattern;
 pub use kprint_discovery::process_config_patterns;
 

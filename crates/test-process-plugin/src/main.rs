@@ -113,6 +113,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
         file_extensions,
         file_names,
         additive,
+        additive_associations: Vec::new(),
       },
       config: Configuration { ending, line_width },
       diagnostics,

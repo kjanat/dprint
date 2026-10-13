@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
@@ -19,13 +20,11 @@ use kprint_async_runtime::async_trait;
 use kprint_async_runtime::future::WeakShared;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::GlobalConfiguration;
-use kprint_plugin_types::AsyncPluginHandler;
 use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::FileMatchingInfo;
 use kprint_plugin_types::FormatError;
 use kprint_plugin_types::FormatRequest;
 use kprint_plugin_types::FormatResult;
-use kprint_plugin_types::HostFormatRequest;
 use kprint_plugin_types::PluginInfo;
 use kprint_plugin_types::PluginResolveConfigurationResult;
 use tokio::sync::oneshot;
@@ -34,6 +33,7 @@ use tokio::sync::oneshot::Sender;
 
 use kprint_owned_child::OwnedChild;
 
+use super::super::in_process::InProcessHandler;
 use super::configuration::CommandConfiguration;
 use super::configuration::Configuration;
 use super::configuration::SetupCommand;
@@ -44,6 +44,7 @@ use super::served::ServedKey;
 use super::served::ServedRequest;
 use super::template::TemplateValues;
 use super::template::render_template;
+use crate::environment::CanonicalizedPathBuf;
 
 /// How much of what a command writes to stderr is kept for its error: the
 /// end, where a command that fails usually says why. The rest is read and
@@ -70,7 +71,7 @@ pub struct ExecHandler {
 }
 
 #[async_trait(?Send)]
-impl AsyncPluginHandler for ExecHandler {
+impl InProcessHandler for ExecHandler {
   type Configuration = Configuration;
 
   fn plugin_info(&self) -> PluginInfo {
@@ -91,8 +92,13 @@ impl AsyncPluginHandler for ExecHandler {
     include_str!("LICENSE").to_string()
   }
 
-  async fn resolve_config(&self, config: ConfigKeyMap, global_config: GlobalConfiguration) -> PluginResolveConfigurationResult<Configuration> {
-    let result = Configuration::resolve(config, &global_config);
+  async fn resolve_config(
+    &self,
+    config: ConfigKeyMap,
+    global_config: GlobalConfiguration,
+    base_dir: &CanonicalizedPathBuf,
+  ) -> PluginResolveConfigurationResult<Configuration> {
+    let result = Configuration::resolve(config, &global_config, base_dir);
     let config = result.config;
     PluginResolveConfigurationResult {
       file_matching: FileMatchingInfo {
@@ -104,17 +110,19 @@ impl AsyncPluginHandler for ExecHandler {
           .collect(),
         file_names: config.commands.iter().flat_map(|c| c.file_names.iter()).map(|s| s.to_string()).collect(),
         additive: false,
+        additive_associations: config
+          .commands
+          .iter()
+          .filter_map(|c| c.associations.as_ref())
+          .map(|associations| associations.glob.clone())
+          .collect(),
       },
       config,
       diagnostics: result.diagnostics,
     }
   }
 
-  async fn format(
-    &self,
-    request: FormatRequest<Self::Configuration>,
-    _format_with_host: impl FnMut(HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> + 'static,
-  ) -> FormatResult {
+  async fn format(&self, request: FormatRequest<Self::Configuration>) -> FormatResult {
     if request.range.is_some() {
       // we don't support range formatting for this plugin
       return Ok(None);
@@ -176,12 +184,14 @@ pub async fn format_bytes(
       return Ok(None);
     }
 
-    let args = maybe_substitute_variables(&file_path, &config, command)?;
+    let (args, env) = maybe_substitute_variables(&file_path, &config, command)?;
+    let executable = setup_state.resolve_executable(&command.executable, &command.cwd, &env);
 
     if let Some(serve) = command.serve {
       let key = ServedKey {
-        executable: setup_state.resolve_executable(&command.executable, &command.cwd),
+        executable,
         args,
+        env,
         cwd: command.cwd.clone(),
         serve,
       };
@@ -206,8 +216,9 @@ pub async fn format_bytes(
     // cancellation. Untied, since a command runs for every file and ends
     // on its own once dprint is gone and its pipes close.
     let mut child = OwnedChild::spawn_untied(
-      Command::new(setup_state.resolve_executable(&command.executable, &command.cwd))
+      Command::new(executable)
         .current_dir(&command.cwd)
+        .envs(&env)
         .stdout(Stdio::piped())
         .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::piped())
@@ -308,7 +319,7 @@ fn select_commands<'a>(config: &'a Configuration, file_path: &Path) -> Result<Ve
 
   for command in &config.commands {
     if let Some(associations) = &command.associations {
-      if associations.is_match(file_path) {
+      if associations.matches(file_path) {
         binaries.push(command);
       }
     } else if binaries.is_empty() && command.matches_exts_or_filenames(file_path) {
@@ -380,7 +391,15 @@ pub struct SetupState {
   /// Executables found through PATHEXT, keyed by the executable and its cwd.
   /// Only found ones are kept, since a setup command may install one later.
   #[cfg_attr(not(windows), allow(dead_code))]
-  executables: Rc<RefCell<HashMap<(String, PathBuf), PathBuf>>>,
+  executables: Rc<RefCell<HashMap<ExecutableKey, PathBuf>>>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct ExecutableKey {
+  executable: String,
+  cwd: PathBuf,
+  path: Option<String>,
+  path_ext: Option<String>,
 }
 
 /// How long after a setup command failed once it's run again.
@@ -407,6 +426,7 @@ struct SetupKey {
   cwd: PathBuf,
   executable: String,
   args: Vec<String>,
+  env: BTreeMap<String, String>,
 }
 
 enum SetupRun {
@@ -500,16 +520,22 @@ impl SetupState {
     self.first_retry_delay.saturating_mul(factor)
   }
 
-  fn resolve_executable(&self, executable: &str, cwd: &Path) -> PathBuf {
+  fn resolve_executable(&self, executable: &str, cwd: &Path, env: &BTreeMap<String, String>) -> PathBuf {
     if !cfg!(windows) {
       // nothing to resolve
       return PathBuf::from(executable);
     }
-    let key = (executable.to_string(), cwd.to_path_buf());
+    let var = |name: &str| env.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str());
+    let key = ExecutableKey {
+      executable: executable.to_string(),
+      cwd: cwd.to_path_buf(),
+      path: var("PATH").map(ToOwned::to_owned),
+      path_ext: var("PATHEXT").map(ToOwned::to_owned),
+    };
     if let Some(path) = self.executables.borrow().get(&key) {
       return path.clone();
     }
-    let path = resolve_executable(executable, cwd);
+    let path = resolve_executable(executable, cwd, var);
     if path.as_os_str() != executable {
       self.executables.borrow_mut().insert(key, path.clone());
     }
@@ -529,6 +555,7 @@ impl SetupState {
       cwd: cwd.to_path_buf(),
       executable: setup_command.executable.clone(),
       args: setup_command.args.clone(),
+      env: setup_command.env.clone(),
     };
     let (mut attempt, started) = {
       let mut setups = self.setups.borrow_mut();
@@ -554,7 +581,7 @@ impl SetupState {
             setups: self.setups.clone(),
             key: key.clone(),
             cwd: cwd.to_path_buf(),
-            executable: self.resolve_executable(&setup_command.executable, cwd),
+            executable: self.resolve_executable(&setup_command.executable, cwd, &setup_command.env),
             setup_command: setup_command.clone(),
             failures,
           })
@@ -655,7 +682,8 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
       // a plugin must not write to stdout (it's the protocol channel)
       .stdout(Stdio::null())
       .stderr(Stdio::piped())
-      .args(&setup_command.args),
+      .args(&setup_command.args)
+      .envs(&setup_command.env),
   ) {
     Ok(child) => child,
     Err(err) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
@@ -755,7 +783,11 @@ fn read_stderr_end(mut readable: impl std::io::Read, sender: Sender<Vec<u8>>) ->
   Ok(())
 }
 
-fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command: &CommandConfiguration) -> Result<Vec<String>, FormatError> {
+fn maybe_substitute_variables(
+  file_path: &Path,
+  config: &Configuration,
+  command: &CommandConfiguration,
+) -> Result<(Vec<String>, BTreeMap<String, String>), FormatError> {
   let values = TemplateValues {
     file_path,
     line_width: config.line_width,
@@ -765,11 +797,21 @@ fn maybe_substitute_variables(file_path: &Path, config: &Configuration, command:
     timeout: config.timeout,
   };
   // the configuration only has valid templates, but say what's wrong if not
-  command
+  let args = command
     .args
     .iter()
     .map(|arg| render_template(arg, &values).map_err(|err| FormatError::new(format!("Cannot substitute the variables in argument '{}': {}", arg, err))))
-    .collect()
+    .collect::<Result<_, _>>()?;
+  let env = command
+    .env
+    .iter()
+    .map(|(name, value)| {
+      render_template(value, &values)
+        .map(|value| (name.clone(), value))
+        .map_err(|err| FormatError::new(format!("Cannot substitute the variables in environment variable '{}': {}", name, err)))
+    })
+    .collect::<Result<_, _>>()?;
+  Ok((args, env))
 }
 
 #[cfg(test)]
@@ -786,14 +828,38 @@ mod test {
 
   use super::SetupState;
   use super::format_bytes;
+  use super::select_commands;
+  use crate::environment::CanonicalizedPathBuf;
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
   use crate::plugins::implementations::builtin_exec::served::ServedCommands;
 
   fn resolve(config: serde_json::Value) -> Arc<Configuration> {
     let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
-    let result = Configuration::resolve(config, &Default::default());
+    let result = Configuration::resolve(config, &Default::default(), &CanonicalizedPathBuf::new_for_testing("/"));
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     Arc::new(result.config)
+  }
+
+  #[test]
+  fn matches_a_commands_associations_relative_to_the_configuration() {
+    let config: ConfigKeyMap = serde_json::from_value(serde_json::json!({ "commands": [
+      { "command": "docs", "associations": "docs/*.md" },
+      { "command": "root", "associations": "/README.md" },
+      { "command": "all", "associations": "**/*.md" },
+    ]}))
+    .unwrap();
+    let config = Configuration::resolve(config, &Default::default(), &CanonicalizedPathBuf::new_for_testing("/project")).config;
+    let selected = |path: &str| {
+      select_commands(&config, std::path::Path::new(path))
+        .unwrap()
+        .into_iter()
+        .map(|command| command.executable.as_str())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(selected("/project/docs/a.md"), vec!["docs", "all"]);
+    assert_eq!(selected("/project/README.md"), vec!["root", "all"]);
+    assert_eq!(selected("/project/sub/docs/a.md"), vec!["all"]);
+    assert_eq!(selected("/project/sub/README.md"), vec!["all"]);
   }
 
   #[cfg(unix)]
@@ -941,6 +1007,8 @@ mod test {
       // every command whose associations match runs, in order
       { "command": "tr x y", "associations": "**/*.chain" },
       { "command": "tr y z", "associations": "**/*.chain" },
+      // associations are relative to the configuration's directory
+      { "command": "tr r s", "associations": "dir/*.rel" },
       // the command gets the path as it is
       { "command": "printf %s {{file_path}}", "exts": ["path"] },
       { "command": "cat", "exts": ["same"] },
@@ -949,6 +1017,7 @@ mod test {
     let files = [
       ("a.up", "text\r\nno newline".to_string()),
       ("a.chain", "x\n".to_string()),
+      ("/dir/a.rel", "r\n".to_string()),
       ("dir/a b.path", String::new()),
       ("a.same", "unchanged\n".to_string()),
       ("short.empty", "1".repeat(100)),
@@ -975,10 +1044,11 @@ mod test {
     assert_eq!(
       (super::super::CACHE_REVISION, made),
       (
-        1,
+        2,
         vec![
           "a.up: \"TEXT\\r\\nNO NEWLINE\"".to_string(),
           "a.chain: \"z\\n\"".to_string(),
+          "/dir/a.rel: \"s\\n\"".to_string(),
           "dir/a b.path: \"dir/a b.path\"".to_string(),
           "a.same: unchanged".to_string(),
           "short.empty: \"\"".to_string(),
@@ -1078,6 +1148,68 @@ mod test {
     }));
     assert_eq!(format(&config, "text", &SetupState::default()).await, Ok(None));
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ran\nran\n");
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn passes_each_argument_of_an_array_or_object_command_as_is() {
+    let script = "cat > /dev/null; printf '[%s]' \"$@\"";
+    let args = ["-c", script, "sh", "", " a ", "\"q\"", "{{line_width}}"];
+    for command in [
+      serde_json::json!(["sh"].into_iter().chain(args).collect::<Vec<_>>()),
+      serde_json::json!({ "executable": "sh", "args": args }),
+    ] {
+      let config = resolve(serde_json::json!({ "lineWidth": 80, "commands": [{ "command": command, "exts": ["txt"] }] }));
+      assert_eq!(
+        format(&config, "text", &SetupState::default()).await,
+        Ok(Some("[][ a ][\"q\"][80]".to_string()))
+      );
+    }
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn runs_a_command_with_its_environment_over_dprints() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("greet");
+    std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\nprintf '%s %s' \"$GREETING\" \"$HOME\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = resolve(serde_json::json!({
+      "lineWidth": 80,
+      "commands": [{
+        "command": { "executable": "greet", "env": { "GREETING": "width {{line_width}}", "PATH": format!("{}:/usr/bin:/bin", dir.path().display()) } },
+        "exts": ["txt"]
+      }]
+    }));
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(format(&config, "text", &SetupState::default()).await, Ok(Some(format!("width 80 {}", home))));
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn runs_a_setup_command_once_for_each_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker.txt");
+    let setup_command = |mark: &str| {
+      serde_json::json!({
+        "executable": "sh",
+        "args": ["-c", format!("echo \"$MARK\" >> {}", marker.display())],
+        "env": { "MARK": mark }
+      })
+    };
+    let config = resolve(serde_json::json!({
+      "commands": [
+        { "command": "cat", "setupCommand": setup_command("a"), "associations": "**/*.txt" },
+        { "command": "cat", "setupCommand": setup_command("b"), "associations": "**/*.txt" },
+        { "command": "cat", "setupCommand": setup_command("a"), "associations": "**/*.txt" }
+      ]
+    }));
+    let setup_state = SetupState::default();
+    for _ in 0..2 {
+      assert_eq!(format(&config, "text", &setup_state).await, Ok(None));
+    }
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "a\nb\n");
   }
 
   /// Gets whether the process running `sleep <seconds>` is still alive.
@@ -1564,6 +1696,7 @@ mod relative_program_test {
 
   use super::SetupState;
   use super::format_bytes;
+  use crate::environment::CanonicalizedPathBuf;
   use crate::plugins::implementations::builtin_exec::configuration::Configuration;
   use crate::plugins::implementations::builtin_exec::served::ServedCommands;
 
@@ -1588,7 +1721,7 @@ mod relative_program_test {
       "commands": [{ "command": "./formatter", "cwd": chosen.to_string_lossy(), "exts": ["txt"] }]
     });
     let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
-    let result = Configuration::resolve(config, &Default::default());
+    let result = Configuration::resolve(config, &Default::default(), &CanonicalizedPathBuf::new_for_testing("/"));
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let output = runtime

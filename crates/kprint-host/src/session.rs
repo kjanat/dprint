@@ -165,15 +165,18 @@ mod tests {
       wrapper,
       PluginWithConfigOptions {
         associations: None,
+        embedded: None,
         format_config: std::sync::Arc::new(crate::plugins::FormatConfig {
           id: FormatConfigId::from_raw(7),
           plugin: Default::default(),
           global: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         }),
         file_matching: FileMatchingInfo {
           file_extensions: vec!["txt".to_string()],
           file_names: vec![],
           additive: false,
+          additive_associations: Vec::new(),
         },
         overrides: Vec::new(),
         serialized_resolved_config: "{}".to_string(),

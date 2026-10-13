@@ -72,10 +72,16 @@ use crate::utils::GlobOutput;
 use crate::utils::OutsideBasePath;
 use crate::utils::PathSource;
 use crate::utils::escape_glob_text_for_cli;
+use crate::utils::get_lowercase_file_extension;
 use crate::utils::is_negated_glob;
 use kprint_config::options::ConfigOptions;
 use kprint_discovery::ConfigDiscovery;
 use kprint_discovery::FilePatternArgs;
+
+struct Embedder {
+  plugin: Rc<PluginWithConfig>,
+  outer_path: PathBuf,
+}
 
 pub enum GetPluginResult {
   HadDiagnostics(usize),
@@ -84,6 +90,7 @@ pub enum GetPluginResult {
 
 pub struct PluginConfigOverride {
   files: Vec<String>,
+  embedded: Option<IndexMap<String, Vec<String>>>,
   properties: ConfigKeyMap,
   config_id: FormatConfigId,
   matcher: GlobMatcher,
@@ -95,6 +102,7 @@ pub struct PluginConfigOverride {
 pub struct PluginWithConfig {
   pub plugin: Rc<PluginWrapper>,
   pub associations: Option<Vec<String>>,
+  pub embedded: Option<IndexMap<String, Vec<String>>>,
   pub overrides: Vec<PluginConfigOverride>,
   pub format_config: Arc<FormatConfig>,
   pub file_matching: FileMatchingInfo,
@@ -115,6 +123,7 @@ impl Drop for PluginWithConfig {
 
 pub struct PluginWithConfigOptions {
   pub associations: Option<Vec<String>>,
+  pub embedded: Option<IndexMap<String, Vec<String>>>,
   pub format_config: Arc<FormatConfig>,
   pub file_matching: FileMatchingInfo,
   pub overrides: Vec<PluginConfigOverride>,
@@ -134,6 +143,7 @@ impl PluginWithConfig {
     Self {
       plugin,
       associations: options.associations,
+      embedded: options.embedded,
       overrides: options.overrides,
       format_config: options.format_config,
       config_diagnostic_count: Default::default(),
@@ -183,12 +193,14 @@ impl PluginWithConfig {
         association.hash(hasher);
       }
     }
+    hash_embedded(&self.embedded, hasher);
     self.overrides.len().hash(hasher);
     for override_config in &self.overrides {
       override_config.files.len().hash(hasher);
       for file in &override_config.files {
         file.hash(hasher);
       }
+      hash_embedded(&override_config.embedded, hasher);
       let sorted_config = override_config.properties.iter().collect::<BTreeMap<_, _>>();
       sorted_config.len().hash(hasher);
       for (key, value) in sorted_config {
@@ -209,6 +221,25 @@ impl PluginWithConfig {
       }
     }
     result
+  }
+
+  pub fn get_embedded_plugins(&self, outer_path: &Path, extension: &str) -> Option<&[String]> {
+    self
+      .overrides
+      .iter()
+      .rev()
+      .filter(|override_config| override_config.matcher.matches(outer_path))
+      .find_map(|override_config| override_config.embedded.as_ref()?.get(extension))
+      .or_else(|| self.embedded.as_ref()?.get(extension))
+      .map(Vec::as_slice)
+  }
+
+  fn embedded_plugin_keys(&self) -> impl Iterator<Item = (&str, &str)> {
+    std::iter::once(&self.embedded)
+      .chain(self.overrides.iter().map(|override_config| &override_config.embedded))
+      .flatten()
+      .flat_map(|embedded| embedded.iter())
+      .flat_map(|(extension, plugins)| plugins.iter().map(move |plugin| (extension.as_str(), plugin.as_str())))
   }
 
   pub fn get_merged_overrides_for_path(&self, file_path: &Path, request_override_config: &ConfigKeyMap) -> ConfigKeyMap {
@@ -334,6 +365,7 @@ impl InitializedPluginWithConfig {
         id: override_config.config_id,
         plugin: plugin_config,
         global: self.plugin.format_config.global.clone(),
+        base_dir: self.plugin.format_config.base_dir.clone(),
       });
       for diagnostic in self.instance.config_diagnostics(format_config).await? {
         log_warn!(
@@ -512,9 +544,27 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     hasher.finish()
   }
 
-  pub fn create_host_format_callback(self: &Rc<Self>) -> HostFormatCallback {
+  pub fn create_host_format_callback(self: &Rc<Self>, plugin: Rc<PluginWithConfig>, outer_path: PathBuf) -> HostFormatCallback {
     let scope = self.clone();
-    Rc::new(move |host_request| scope.format(host_request))
+    Rc::new(move |host_request| {
+      let embedder = Embedder {
+        plugin: plugin.clone(),
+        outer_path: outer_path.clone(),
+      };
+      scope.format_from(host_request, Some(embedder))
+    })
+  }
+
+  fn embedded_plugin_names(&self, embedder: &Embedder, file_path: &Path) -> Option<Vec<String>> {
+    let extension = get_lowercase_file_extension(file_path)?;
+    let keys = embedder.plugin.get_embedded_plugins(&embedder.outer_path, &extension)?;
+    Some(
+      keys
+        .iter()
+        .filter_map(|key| self.plugins.values().find(|plugin| plugin.info().config_key == *key))
+        .map(|plugin| plugin.name().to_string())
+        .collect(),
+    )
   }
 
   /// Whether the editor should ask this scope to format the file.
@@ -574,13 +624,24 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   }
 
   pub fn format(self: &Rc<Self>, request: HostFormatRequest) -> LocalBoxFuture<'static, FormatResult> {
+    self.format_from(request, None)
+  }
+
+  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
-    let plugin_names = self
-      .plugin_name_maps
-      .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes)
-      .into_iter()
-      .map(ToOwned::to_owned)
-      .collect::<Vec<String>>();
+    let plugin_names = match embedder.as_ref().and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
+      Some(plugin_names) => plugin_names,
+      None => self
+        .plugin_name_maps
+        .get_plugin_names_from_file_path_and_bytes(&request.file_path, &request.file_bytes)
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<String>>(),
+    };
+    let outer_path = match embedder {
+      Some(embedder) => embedder.outer_path,
+      None => request.file_path.clone(),
+    };
     log_debug!(
       self.environment,
       "Host formatting {} - File length: {} - Plugins: [{}] - Range: {:?}",
@@ -603,7 +664,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
                 file_bytes: file_text.clone(),
                 range: request.range.clone(),
                 override_config: plugin.get_merged_overrides_for_path(&request.file_path, &request.override_config),
-                on_host_format: scope.create_host_format_callback(),
+                on_host_format: scope.create_host_format_callback(plugin.clone(), outer_path.clone()),
                 token: request.token.clone(),
               })
               .await;
@@ -1425,18 +1486,21 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
         plugin_resolver,
       )?;
       let next_config_id = plugin_resolver.next_config_id();
+      let base_dir = config_base_path.clone();
       Ok(
         async move {
           let format_config = Arc::new(FormatConfig {
             id: next_config_id,
             global: global_config,
             plugin: plugin_config.properties,
+            base_dir,
           });
           let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
           Ok::<_, anyhow::Error>(Rc::new(PluginWithConfig::new(
             plugin,
             PluginWithConfigOptions {
               associations: plugin_config.associations,
+              embedded: plugin_config.embedded,
               format_config,
               file_matching: resolution.file_matching,
               overrides,
@@ -1454,6 +1518,21 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   let mut plugins = Vec::with_capacity(plugin_results.len());
   for result in plugin_results {
     plugins.push(result?);
+  }
+  for plugin in &plugins {
+    for (extension, embedded_key) in plugin.embedded_plugin_keys() {
+      if !plugins.iter().any(|other| other.info().config_key == embedded_key) {
+        return Err(
+          anyhow::anyhow!(
+            "{}.embedded.{}: Unknown plugin '{}'. Expected the configuration key of a plugin in the configuration (ex. \"typescript\").",
+            plugin.info().config_key,
+            extension,
+            embedded_key
+          )
+          .into(),
+        );
+      }
+    }
   }
 
   Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?)
@@ -1502,6 +1581,20 @@ fn filter_duplicate_plugin_names(plugins: Vec<Rc<PluginWrapper>>) -> Vec<Rc<Plug
     .collect()
 }
 
+fn hash_embedded(embedded: &Option<IndexMap<String, Vec<String>>>, hasher: &mut impl Hasher) {
+  use std::hash::Hash;
+  let Some(embedded) = embedded else {
+    false.hash(hasher);
+    return;
+  };
+  true.hash(hasher);
+  embedded.len().hash(hasher);
+  for (extension, plugins) in embedded {
+    extension.hash(hasher);
+    plugins.hash(hasher);
+  }
+}
+
 /// `property_origins` are where the plugin's properties are from, when that's
 /// not `config_source` (see `PluginWithConfig::property_origins`).
 fn resolve_plugin_config_overrides<TEnvironment: Environment>(
@@ -1530,6 +1623,7 @@ fn resolve_plugin_config_overrides<TEnvironment: Environment>(
       }
       Ok(PluginConfigOverride {
         files: override_config.files,
+        embedded: override_config.embedded,
         properties: override_config.properties,
         config_id: plugin_resolver.next_config_id(),
         matcher,
@@ -1558,15 +1652,18 @@ mod test {
         property_origins: Default::default(),
         release_queue: Default::default(),
         associations: None,
+        embedded: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),
           global: Default::default(),
           plugin: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         }),
         file_matching: FileMatchingInfo {
           file_extensions: vec!["txt".to_string()],
           file_names: vec![],
           additive: false,
+          additive_associations: Vec::new(),
         },
         overrides: Vec::new(),
         serialized_resolved_config: "{}".to_string(),
@@ -1641,6 +1738,7 @@ mod test {
         id: FormatConfigId::from_raw(1),
         global: Default::default(),
         plugin: Default::default(),
+        base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
       });
       let plugin_with_config = PluginWithConfig::new(
         plugin,
@@ -1648,11 +1746,13 @@ mod test {
           property_origins: Default::default(),
           release_queue: Default::default(),
           associations: None,
+          embedded: None,
           format_config,
           file_matching: FileMatchingInfo {
             file_extensions: vec!["txt".to_string()],
             file_names: vec![],
             additive: false,
+            additive_associations: Vec::new(),
           },
           overrides: Vec::new(),
           serialized_resolved_config: resolved_config.to_string(),
@@ -1723,6 +1823,26 @@ mod test {
   }
 
   #[test]
+  fn should_hash_embedded_on_the_table_and_in_overrides() {
+    let embedded = |plugin: &str| Some(IndexMap::from([("cs".to_string(), vec![plugin.to_string()])]));
+    let on_table = |value: Option<IndexMap<String, Vec<String>>>| {
+      let mut plugin = create_plugin_with_overrides(Vec::new());
+      plugin.embedded = value;
+      get_plugin_hash(&plugin)
+    };
+    let in_override = |value: Option<IndexMap<String, Vec<String>>>| {
+      let mut plugin = create_plugin_with_override(vec!["**/README.md".to_string()], ConfigKeyMap::new());
+      plugin.overrides[0].embedded = value;
+      get_plugin_hash(&plugin)
+    };
+    assert_ne!(on_table(None), on_table(embedded("exec")));
+    assert_ne!(on_table(embedded("exec")), on_table(embedded("typescript")));
+    assert_eq!(on_table(embedded("exec")), on_table(embedded("exec")));
+    assert_ne!(in_override(None), in_override(embedded("exec")));
+    assert_ne!(in_override(embedded("exec")), in_override(embedded("typescript")));
+  }
+
+  #[test]
   fn should_hash_override_file_patterns_and_property_keys_with_boundaries() {
     let plugin_ab_c = create_plugin_with_override(vec!["ab".to_string()], ConfigKeyMap::from([("c".to_string(), ConfigKeyValue::from_bool(true))]));
     let plugin_a_bc = create_plugin_with_override(vec!["a".to_string()], ConfigKeyMap::from([("bc".to_string(), ConfigKeyValue::from_bool(true))]));
@@ -1736,6 +1856,7 @@ mod test {
     let plugin_without_override = create_plugin_with_overrides(Vec::new());
     let plugin_with_override = create_plugin_with_overrides(vec![PluginConfigOverride {
       files: vec!["**/package.txt".to_string()],
+      embedded: None,
       properties: ConfigKeyMap::from([("ending".to_string(), "package".into())]),
       config_id: FormatConfigId::from_raw(2),
       matcher: get_patterns_as_glob_matcher(&["**/package.txt".to_string()], &config_base_path).unwrap(),
@@ -1756,6 +1877,7 @@ mod test {
     let matcher = get_patterns_as_glob_matcher(&files, &config_base_path).unwrap();
     create_plugin_with_overrides(vec![PluginConfigOverride {
       files,
+      embedded: None,
       properties,
       config_id: FormatConfigId::from_raw(2),
       matcher,
@@ -1779,15 +1901,18 @@ mod test {
         property_origins: Default::default(),
         release_queue: Default::default(),
         associations: None,
+        embedded: None,
         format_config: Arc::new(FormatConfig {
           id: FormatConfigId::from_raw(1),
           plugin: ConfigKeyMap::from([("ending".to_string(), "base".into())]),
           global: GlobalConfiguration::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         }),
         file_matching: FileMatchingInfo {
           file_extensions: vec!["txt".to_string()],
           file_names: Vec::new(),
           additive: false,
+          additive_associations: Vec::new(),
         },
         overrides,
         serialized_resolved_config: String::new(),

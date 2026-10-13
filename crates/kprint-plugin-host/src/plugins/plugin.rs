@@ -20,6 +20,7 @@ use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::PluginInfo;
 
 use super::PluginResolutionCache;
+use crate::environment::CanonicalizedPathBuf;
 use crate::plugins::PluginSourceReference;
 
 /// A formatter that ships inside dprint instead of being loaded as a plugin.
@@ -128,6 +129,8 @@ pub struct FormatConfig {
   pub id: FormatConfigId,
   pub plugin: ConfigKeyMap,
   pub global: GlobalConfiguration,
+  /// The directory the configuration's file patterns are relative to.
+  pub base_dir: CanonicalizedPathBuf,
 }
 
 pub struct InitializedPluginFormatRequest {
@@ -185,6 +188,7 @@ impl TestPlugin {
           file_extensions: file_extensions.into_iter().map(String::from).collect(),
           file_names: file_names.into_iter().map(String::from).collect(),
           additive: false,
+          additive_associations: Vec::new(),
         },
         released_configs: Default::default(),
       },

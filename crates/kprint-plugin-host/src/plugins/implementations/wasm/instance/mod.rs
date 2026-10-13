@@ -526,6 +526,7 @@ mod test {
       id: FormatConfigId::from_raw(config_id),
       plugin: Default::default(),
       global: Default::default(),
+      base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
     };
     instance.format_text(
       &PathBuf::from("/file.txt"),

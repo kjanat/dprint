@@ -126,3 +126,145 @@ fn builtin_exec_filters_remote_commands_without_a_plugin_reference() {
     environment.take_stderr_messages();
   }
 }
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_formats_the_files_a_command_associates() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config.add_config_section("exec", r#"{"commands":[{"command":"tr a-z A-Z","associations":"**/*.data"}]}"#);
+    })
+    .write_file("/file.data", "text\n")
+    .write_file("/file.other", "text\n")
+    .build();
+  run_test_cli(vec!["fmt"], &environment).unwrap();
+  assert_eq!(environment.read_file("/file.data").unwrap(), "TEXT\n");
+  assert_eq!(environment.read_file("/file.other").unwrap(), "text\n");
+  environment.take_stdout_messages();
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_matches_a_commands_associations_relative_to_the_config() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config.add_config_section("exec", r#"{"commands":[{"command":"tr a-z A-Z","associations":"docs/*.data"}]}"#);
+    })
+    .write_file("/docs/file.data", "text\n")
+    .write_file("/file.data", "text\n")
+    .build();
+  run_test_cli(vec!["fmt"], &environment).unwrap();
+  assert_eq!(environment.read_file("/docs/file.data").unwrap(), "TEXT\n");
+  assert_eq!(environment.read_file("/file.data").unwrap(), "text\n");
+  environment.take_stdout_messages();
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_formats_the_files_a_command_associates_after_their_formatter() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+    .with_default_config(|config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_config_section("test-plugin", r#"{"ending":"DONE"}"#)
+        .add_config_section("exec", r#"{"commands":[{"command":"tr a-z A-Z","associations":"**/*.txt"}]}"#);
+    })
+    .write_file("/file.txt", "text")
+    .build();
+  run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+  assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT_DONE");
+  environment.take_stdout_messages();
+}
+
+#[cfg(unix)]
+#[test]
+fn builtin_exec_only_runs_a_missing_program_for_its_files() {
+  let environment = TestEnvironmentBuilder::new()
+    .with_default_config(|config| {
+      config.add_config_section(
+        "exec",
+        r#"{"commands":[{"command":"kprint-missing-formatter","exts":["rs"]},{"command":"tr a-z A-Z","exts":["txt"]}]}"#,
+      );
+    })
+    .write_file("/file.txt", "text\n")
+    .write_file("/file.rs", "text\n")
+    .build();
+  run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+  assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
+  environment.take_stdout_messages();
+  run_test_cli(vec!["fmt", "/file.rs"], &environment).unwrap_err();
+  let errors = environment.take_stderr_messages().join("\n");
+  assert!(errors.contains("Cannot start formatter process"), "{}", errors);
+  assert_eq!(environment.read_file("/file.rs").unwrap(), "text\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn names_the_plugins_that_keep_changing_each_others_output() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+    .with_default_config(|config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_config_section("exec", r#"{"commands":[{"command":"tr a-z A-Z","associations":"**/*.txt"}]}"#);
+    })
+    .write_file("/file.txt", "text")
+    .build();
+  run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap_err().assert_exit_code(1);
+  assert_eq!(
+    environment.take_stderr_messages(),
+    vec![
+      "Error formatting /file.txt. Message: Formatting not stable. Bailed after 5 tries. test-plugin and exec keep changing each other's output.".to_string()
+    ]
+  );
+  assert_eq!(environment.read_file("/file.txt").unwrap(), "text");
+}
+
+#[cfg(unix)]
+#[test]
+fn formats_a_plugins_embedded_code_with_the_plugins_it_names() {
+  let run = |test_plugin_config: &str| {
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+      .with_default_config(|config| {
+        config
+          .add_remote_wasm_plugin()
+          .add_remote_process_plugin()
+          .add_config_section("test-plugin", test_plugin_config)
+          .add_config_section("exec", r#"{"commands":[{"command":"tr a-z A-Z","exts":["txt_ps"]}]}"#);
+      })
+      .write_file("/file.txt", "plugin: text")
+      .write_file("/skip.txt", "plugin: text")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt", "/skip.txt"], &environment).unwrap();
+    environment.take_stdout_messages();
+    (environment.read_file("/file.txt").unwrap(), environment.read_file("/skip.txt").unwrap())
+  };
+  let both = |text: &str| (text.to_string(), text.to_string());
+  assert_eq!(run("{}"), both("plugin: text_formatted_process_formatted"));
+  assert_eq!(run(r#"{"embedded":{"txt_ps":["exec"]}}"#), both("plugin: TEXT_formatted"));
+  assert_eq!(run(r#"{"embedded":{".TXT_PS":[]}}"#), both("plugin: text_formatted"));
+  assert_eq!(
+    run(r#"{"embedded":{"txt_ps":["exec"]},"overrides":[{"files":"/skip.txt","embedded":{"txt_ps":[]}}]}"#),
+    ("plugin: TEXT_formatted".to_string(), "plugin: text_formatted".to_string())
+  );
+}
+
+#[test]
+fn reports_an_unknown_plugin_for_embedded_code() {
+  let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_plugin()
+    .with_default_config(|config| {
+      config
+        .add_remote_wasm_plugin()
+        .add_config_section("test-plugin", r#"{"embedded":{"cs":["csharp"]}}"#);
+    })
+    .write_file("/file.txt", "text")
+    .build();
+  let error = run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap_err();
+  error.assert_exit_code(12);
+  assert!(
+    error
+      .to_string()
+      .contains("test-plugin.embedded.cs: Unknown plugin 'csharp'. Expected the configuration key of a plugin in the configuration (ex. \"typescript\")."),
+    "{}",
+    error
+  );
+}

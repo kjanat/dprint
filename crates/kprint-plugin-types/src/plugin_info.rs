@@ -50,4 +50,6 @@ pub struct FileMatchingInfo {
   /// otherwise stop the file's usual formatter from running.
   #[serde(default)]
   pub additive: bool,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub additive_associations: Vec<String>,
 }

@@ -10,6 +10,7 @@ kprint-async-runtime  = { workspace = true }
 kprint-communication  = { workspace = true }
 kprint-config         = { workspace = true }
 kprint-configuration  = { workspace = true }
+kprint-discovery      = { workspace = true }
 kprint-owned-child    = { workspace = true }
 kprint-platform       = { workspace = true }
 kprint-plugin-types   = { workspace = true }
@@ -19,7 +20,6 @@ kprint-wasm-plugin    = { workspace = true }
 anyhow       = { workspace = true }
 deno_semver  = { workspace = true }
 flate2       = { workspace = true }
-globset      = { workspace = true }
 indexmap     = { workspace = true }
 jsonc-parser = { workspace = true, features = ["cst", "preserve_order"] }
 once_cell    = { workspace = true }

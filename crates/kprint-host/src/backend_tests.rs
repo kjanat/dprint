@@ -38,6 +38,7 @@ fn should_support_host_format_cancellation() {
           id: FormatConfigId::from_raw(1),
           global: Default::default(),
           plugin: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         });
         let instance = plugin.initialize().await.unwrap();
         let file_matching = instance.file_matching_info(format_config.clone()).await.unwrap();
@@ -47,6 +48,7 @@ fn should_support_host_format_cancellation() {
           PluginWithConfigOptions {
             property_origins: Default::default(),
             associations: None,
+            embedded: None,
             format_config,
             file_matching,
             overrides: Vec::new(),
@@ -105,6 +107,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
           id: FormatConfigId::from_raw(1),
           global: Default::default(),
           plugin: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         });
         let instance = plugin.initialize().await.unwrap();
         let file_matching = instance.file_matching_info(format_config.clone()).await.unwrap();
@@ -114,6 +117,7 @@ fn should_support_shutdown_during_indefinite_host_formatting() {
           PluginWithConfigOptions {
             property_origins: Default::default(),
             associations: None,
+            embedded: None,
             format_config,
             file_matching,
             overrides: Vec::new(),

@@ -193,17 +193,14 @@ impl TryFrom<IndexMap<String, ShebangExtension>> for Shebangs {
           shebang
         ));
       }
-      let extension_without_dot = extension.strip_prefix('.').unwrap_or(&extension);
-      if extension_without_dot.is_empty()
-        || extension_without_dot.contains(|c: char| c.is_whitespace() || matches!(c, '.' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}'))
-      {
+      let Some(extension) = normalize_extension(&extension) else {
         return Err(format!(
           "Expected a file extension (ex. \"sh\") for shebang '{}' in the 'shebangs' property, but found '{}'.",
           shebang, extension
         ));
-      }
+      };
       shebang.truncate(shebang.trim_end().len());
-      normalized.insert(shebang, ShebangExtension(extension_without_dot.to_lowercase()));
+      normalized.insert(shebang, ShebangExtension(extension));
     }
     Ok(Shebangs(normalized))
   }
@@ -213,6 +210,35 @@ impl TryFrom<IndexMap<String, ShebangExtension>> for Shebangs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
 pub struct ShebangExtension(pub String);
+
+fn normalize_extension(extension: &str) -> Option<String> {
+  let extension = extension.strip_prefix('.').unwrap_or(extension);
+  let invalid = extension.is_empty() || extension.contains(|c: char| c.is_whitespace() || matches!(c, '.' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}'));
+  (!invalid).then(|| extension.to_lowercase())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(try_from = "IndexMap<String, Vec<String>>")]
+pub struct Embedded(pub IndexMap<String, Vec<String>>);
+
+impl TryFrom<IndexMap<String, Vec<String>>> for Embedded {
+  type Error = String;
+
+  fn try_from(embedded: IndexMap<String, Vec<String>>) -> Result<Self, Self::Error> {
+    let mut normalized = IndexMap::with_capacity(embedded.len());
+    for (extension, plugins) in embedded {
+      let Some(normalized_extension) = normalize_extension(&extension) else {
+        return Err(format!(
+          "Expected a file extension (ex. \"cs\") as a key of the 'embedded' property, but found '{}'.",
+          extension
+        ));
+      };
+      normalized.insert(normalized_extension, plugins);
+    }
+    Ok(Embedded(normalized))
+  }
+}
 
 /// Plugin configuration.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +254,9 @@ pub struct PluginTable {
   /// Plugin configuration overrides for specific file patterns.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub overrides: Option<Overrides>,
+  /// The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. "cs": ["exec"]), in order. An empty array leaves that code as it is.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub embedded: Option<Embedded>,
   /// The plugin's own configuration, which its schema describes.
   #[serde(flatten)]
   #[cfg_attr(feature = "schema", schemars(with = "PluginProperties"))]
@@ -320,16 +349,43 @@ impl<'de> Deserialize<'de> for Overrides {
 }
 
 /// An override of a plugin's configuration for some of its files.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema), schemars(rename = "pluginOverride", extend("minProperties" = 2)))]
-#[serde(expecting = "an override (an object with 'files' and the plugin's properties for them)")]
 pub struct PluginOverride {
   /// File patterns this override applies to.
   pub files: OverrideFiles,
+  /// The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub embedded: Option<Embedded>,
   /// The plugin's own configuration for the files, which its schema describes.
   #[serde(flatten)]
   #[cfg_attr(feature = "schema", schemars(with = "PluginProperties"))]
   pub plugin: OverrideProperties,
+}
+
+#[derive(Deserialize)]
+#[serde(expecting = "an override (an object with 'files' and the plugin's properties for them)")]
+struct PluginOverrideFields {
+  files: OverrideFiles,
+  embedded: Option<Embedded>,
+  #[serde(flatten)]
+  plugin: ConfigKeyMap,
+}
+
+impl<'de> Deserialize<'de> for PluginOverride {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    let fields = PluginOverrideFields::deserialize(deserializer)?;
+    if fields.plugin.is_empty() && fields.embedded.is_none() {
+      return Err(serde::de::Error::custom(
+        "A plugin configuration override must specify at least one configuration property.",
+      ));
+    }
+    Ok(PluginOverride {
+      files: fields.files,
+      embedded: fields.embedded,
+      plugin: OverrideProperties(fields.plugin),
+    })
+  }
 }
 
 /// File patterns, one or more.
@@ -384,22 +440,11 @@ impl<'de> Deserialize<'de> for OverrideFiles {
   }
 }
 
-/// A plugin's properties in an override of its configuration: at least one
-/// (see `minProperties` of [`PluginOverride`], which counts `files` too).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "ConfigKeyMap")]
+/// A plugin's properties in an override of its configuration. With
+/// `embedded`, an override has at least one property (see `minProperties` of
+/// [`PluginOverride`], which counts `files` too).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OverrideProperties(pub ConfigKeyMap);
-
-impl TryFrom<ConfigKeyMap> for OverrideProperties {
-  type Error = &'static str;
-
-  fn try_from(properties: ConfigKeyMap) -> Result<Self, Self::Error> {
-    if properties.is_empty() {
-      return Err("A plugin configuration override must specify at least one configuration property.");
-    }
-    Ok(OverrideProperties(properties))
-  }
-}
 
 /// The schema of a configuration file without the plugins' schemas: what
 /// the website serves at [`ROOT_SCHEMA_ID`], and what `dprint schema`
@@ -515,6 +560,7 @@ mod test {
       typescript.overrides,
       Some(Overrides::Many(vec![PluginOverride {
         files: OverrideFiles::One("*.test.ts".to_string()),
+        embedded: None,
         plugin: OverrideProperties(ConfigKeyMap::from([("semiColons".to_string(), ConfigKeyValue::from_str("always"))])),
       }]))
     );
@@ -522,6 +568,7 @@ mod test {
       file.plugin_tables["json"].overrides,
       Some(Overrides::One(PluginOverride {
         files: OverrideFiles::Many(vec!["*.lock.json".to_string()]),
+        embedded: None,
         plugin: OverrideProperties(ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))])),
       }))
     );
@@ -670,6 +717,43 @@ mod test {
     for (text, expected) in cases {
       let err = from_json::<ConfigFile>(text.clone()).unwrap_err();
       assert_eq!(err.to_string(), expected, "{}", text);
+    }
+  }
+
+  #[test]
+  fn reads_embedded_on_a_table_and_in_an_override() {
+    let file: ConfigFile = from_json(json!({
+      "test": {
+        "embedded": { ".CS": ["exec"], "sql": [] },
+        "overrides": { "files": "README.md", "embedded": { "ts": [] } }
+      }
+    }))
+    .unwrap();
+    let table = &file.plugin_tables["test"];
+    assert_eq!(
+      table.embedded,
+      Some(Embedded(IndexMap::from([
+        ("cs".to_string(), vec!["exec".to_string()]),
+        ("sql".to_string(), Vec::new()),
+      ])))
+    );
+    let Some(Overrides::One(override_config)) = &table.overrides else {
+      panic!("{:?}", table.overrides);
+    };
+    assert_eq!(override_config.embedded, Some(Embedded(IndexMap::from([("ts".to_string(), Vec::new())]))));
+    assert!(override_config.plugin.0.is_empty());
+
+    for (text, expected) in [
+      (
+        json!({ "test": { "embedded": { "a.b": [] } } }),
+        "test.embedded: Expected a file extension (ex. \"cs\") as a key of the 'embedded' property, but found 'a.b'.",
+      ),
+      (
+        json!({ "test": { "embedded": { "cs": "exec" } } }),
+        "test.embedded.cs: invalid type: string \"exec\", expected a sequence",
+      ),
+    ] {
+      assert_eq!(from_json::<ConfigFile>(text.clone()).unwrap_err().to_string(), expected, "{}", text);
     }
   }
 

@@ -679,6 +679,7 @@ mod test {
       })
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     environment.write_file(".gitignore", "gitignored_file.txt\ngitignored_dir").unwrap();
 
     environment.clone().run_in_runtime(async move {
@@ -1124,6 +1125,7 @@ mod test {
       })
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     environment.clone().run_in_runtime(async move {
       let (backend, recv_task, test_client) = setup_backend(environment.clone());
@@ -1184,6 +1186,7 @@ mod test {
       })
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     environment.clone().run_in_runtime(async move {
       let (backend, recv_task, test_client) = setup_backend(environment.clone());
@@ -1258,6 +1261,7 @@ mod test {
       })
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     environment.clone().run_in_runtime(async move {
       // pass the override config path

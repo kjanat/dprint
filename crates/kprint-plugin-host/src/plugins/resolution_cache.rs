@@ -130,6 +130,7 @@ mod test {
         line_width,
         ..Default::default()
       },
+      base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
     }
   }
 
@@ -153,6 +154,7 @@ mod test {
         file_extensions: vec![ext.to_string()],
         file_names: vec![],
         additive: false,
+        additive_associations: Vec::new(),
       },
       resolved_config: format!("{{\"ext\":\"{}\"}}", ext),
     }

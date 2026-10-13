@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -54,6 +55,7 @@ impl Default for ServedCommands {
 pub struct ServedKey {
   pub executable: PathBuf,
   pub args: Vec<String>,
+  pub env: BTreeMap<String, String>,
   pub cwd: PathBuf,
   pub serve: Serve,
 }
@@ -282,6 +284,7 @@ impl ServedCommand {
       Command::new(&self.key.executable)
         .current_dir(&self.key.cwd)
         .args(&self.key.args)
+        .envs(&self.key.env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped()),
@@ -482,7 +485,7 @@ function field(name,   value) {
       let mut config = exec;
       config["commands"] = serde_json::json!([command_config]);
       let config: ConfigKeyMap = serde_json::from_value(config).unwrap();
-      let result = Configuration::resolve(config, &Default::default());
+      let result = Configuration::resolve(config, &Default::default(), &crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
       assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
       Arc::new(result.config)
     }
@@ -561,6 +564,20 @@ function field(name,   value) {
         format(&config, &served, "dir/a b.txt", b"one\ntwo").await,
         Ok(Some("dir/a b.txt|one\ntwo|80|4|true".to_string()))
       );
+    });
+  }
+
+  #[test]
+  fn starts_a_command_with_its_environment() {
+    let worker = Worker::new(r#"{ printf "{\"text\":\"%s\"}\n", ENVIRON["GREETING"]; fflush() }"#);
+    let script = format!("exec awk -f {}", worker.dir.path().join("worker.awk").display());
+    let config = worker.config(
+      serde_json::json!({ "lineWidth": 80 }),
+      serde_json::json!({ "command": { "executable": "sh", "args": ["-c", script], "env": { "GREETING": "width {{line_width}}" } } }),
+    );
+    run(async {
+      let served = ServedCommands::default();
+      assert_eq!(format(&config, &served, "a.txt", b"text").await, Ok(Some("width 80".to_string())));
     });
   }
 

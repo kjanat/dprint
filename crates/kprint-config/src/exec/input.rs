@@ -13,6 +13,7 @@
 //! [`default_timeout`] seconds) is the resolution's, which the schema states
 //! as the property's `default` from the same function.
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 
@@ -115,8 +116,8 @@ impl Default for PlayWithFire {
   )
 )]
 pub struct ExecCommandInput {
-  /// The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.
-  pub command: String,
+  /// The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.
+  pub command: InvocationInput,
   /// File extensions to format with this command.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub exts: Option<StringOrStrings>,
@@ -138,8 +139,8 @@ pub struct ExecCommandInput {
   pub cache_key_files: Option<Vec<String>>,
   /// A command to run once before this command formats its first file, ex. to install it. It's killed after "setupTimeout" seconds.
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub setup_command: Option<String>,
-  /// Keeps the command running and sends it every file on stdin, one JSON line each: {"path", "text", "lineWidth", "indentWidth", "useTabs"}. It answers each with one line on stdout: {"text"} with the formatted text, or {"error"} with why the file can't be formatted. Its arguments can't use {{file_path}}.
+  pub setup_command: Option<InvocationInput>,
+  /// Keeps the command running and sends it every file on stdin, one JSON line each: {"path", "text", "lineWidth", "indentWidth", "useTabs"}. It answers each with one line on stdout: {"text"} with the formatted text, or {"error"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}.
   #[serde(skip_serializing_if = "Option::is_none")]
   #[schemars(default = "schema_default_serve")]
   pub serve: Option<bool>,
@@ -163,6 +164,78 @@ pub fn default_workers() -> u32 {
 
 fn schema_default_workers() -> Option<u32> {
   Some(default_workers())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+  untagged,
+  expecting = "Expected a command line, an array of the program and its arguments, or an object with \"executable\", \"args\" and \"env\"."
+)]
+#[schemars(inline)]
+pub enum InvocationInput {
+  /// The program and its arguments, separated by spaces. A part in double quotes may contain spaces.
+  Line(String),
+  /// The program and its arguments, each passed as is.
+  #[schemars(extend("minItems" = 1))]
+  Argv(Vec<String>),
+  /// The program, its arguments and its environment variables.
+  Options(InvocationOptions),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(inline)]
+pub struct InvocationOptions {
+  /// The program to run.
+  pub executable: String,
+  /// The program's arguments, each passed as is.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub args: Option<Vec<String>>,
+  /// Environment variables to set for the program, over the ones dprint runs with.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub env: Option<BTreeMap<String, String>>,
+}
+
+impl Default for InvocationInput {
+  fn default() -> Self {
+    InvocationInput::Line(String::new())
+  }
+}
+
+impl From<&str> for InvocationInput {
+  fn from(line: &str) -> Self {
+    InvocationInput::Line(line.to_string())
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Invocation {
+  pub executable: String,
+  pub args: Vec<String>,
+  pub env: BTreeMap<String, String>,
+}
+
+impl InvocationInput {
+  pub fn resolve(self) -> Option<Invocation> {
+    let (mut parts, env) = match self {
+      InvocationInput::Line(line) => (super::split_command(&line), BTreeMap::new()),
+      InvocationInput::Argv(parts) => (parts, BTreeMap::new()),
+      InvocationInput::Options(options) => {
+        let mut parts = vec![options.executable];
+        parts.extend(options.args.unwrap_or_default());
+        (parts, options.env.unwrap_or_default())
+      }
+    };
+    if parts.first().is_none_or(|executable| executable.is_empty()) {
+      return None;
+    }
+    let executable = parts.remove(0);
+    Some(Invocation { executable, args: parts, env })
+  }
+
+  pub fn program(&self) -> Option<String> {
+    self.clone().resolve().map(|invocation| invocation.executable)
+  }
 }
 
 /// Whether a command gets the file text on stdin when the configuration
@@ -268,6 +341,7 @@ impl ExecConfigInput {
 /// [`ExecPropertyNames`]).
 pub struct ExecCommandPropertyNames {
   pub command: String,
+  pub setup_command: String,
   pub exts: String,
   pub file_names: String,
   pub associations: String,
@@ -283,7 +357,8 @@ impl ExecCommandInput {
     static NAMES: LazyLock<ExecCommandPropertyNames> = LazyLock::new(|| {
       let name = |set: fn(&mut ExecCommandInput)| crate::property_name(set);
       ExecCommandPropertyNames {
-        command: name(|command| command.command = "fmt".to_string()),
+        command: name(|command| command.command = "fmt".into()),
+        setup_command: name(|command| command.setup_command = Some("fmt".into())),
         exts: name(|command| command.exts = Some(StringOrStrings::Many(Vec::new()))),
         file_names: name(|command| command.file_names = Some(StringOrStrings::Many(Vec::new()))),
         associations: name(|command| command.associations = Some(Associations::Many(Vec::new()))),
@@ -348,6 +423,7 @@ mod test {
     let command_properties = keys(&schema["properties"]["commands"]["items"]["properties"]);
     let named = [
       names.command.clone(),
+      names.setup_command.clone(),
       names.exts.clone(),
       names.file_names.clone(),
       names.associations.clone(),
@@ -361,6 +437,31 @@ mod test {
       assert!(command_properties.contains(name), "{} in {:?}", name, command_properties);
     }
     assert_eq!(names.cache_key_files, "cacheKeyFiles");
+    assert_eq!(names.setup_command, "setupCommand");
     assert_eq!((names.serve.as_str(), names.workers.as_str()), ("serve", "workers"));
+  }
+
+  #[test]
+  fn reads_a_command_line_an_array_or_an_object() {
+    let resolve = |value: serde_json::Value| crate::from_json::<InvocationInput>(value).unwrap().resolve();
+    let invocation = |executable: &str, args: &[&str], env: &[(&str, &str)]| {
+      Some(Invocation {
+        executable: executable.to_string(),
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+        env: env.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect(),
+      })
+    };
+    assert_eq!(resolve(json!("\"my fmt\" --a \"b c\"")), invocation("my fmt", &["--a", "b c"], &[]));
+    assert_eq!(resolve(json!(["my fmt", "", " a ", "\"q\""])), invocation("my fmt", &["", " a ", "\"q\""], &[]));
+    assert_eq!(
+      resolve(json!({ "executable": "/opt/My Tools/fmt", "args": ["--emit", "stdout"], "env": { "RUST_LOG": "warn" } })),
+      invocation("/opt/My Tools/fmt", &["--emit", "stdout"], &[("RUST_LOG", "warn")])
+    );
+    assert_eq!(resolve(json!({ "executable": "fmt" })), invocation("fmt", &[], &[]));
+    for nothing in [json!(""), json!([]), json!([""]), json!({ "executable": "" })] {
+      assert_eq!(resolve(nothing.clone()), None, "{}", nothing);
+    }
+    let err = crate::from_json::<InvocationInput>(json!({ "program": "fmt" })).unwrap_err();
+    assert!(err.message.starts_with("Expected a command line"), "{}", err.message);
   }
 }

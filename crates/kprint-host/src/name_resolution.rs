@@ -72,11 +72,16 @@ impl PluginNameResolutionMaps {
       if associations.is_some() && !additive {
         plugin_name_maps.association_indexes.push(index);
       }
-      plugin_name_maps.has_additive |= additive;
+      let additive_associations = match plugin.file_matching.additive_associations.as_slice() {
+        [] => None,
+        patterns => Some(get_patterns_as_glob_matcher(patterns, config_base_path)?),
+      };
+      plugin_name_maps.has_additive |= additive || additive_associations.is_some();
       plugin_name_maps.plugins.push(PluginEntry {
         name: plugin.name().to_string(),
         additive,
         associations,
+        additive_associations,
       });
     }
     Ok(plugin_name_maps)
@@ -151,11 +156,12 @@ impl PluginNameResolutionMaps {
       .iter()
       .enumerate()
       .filter(|(index, plugin)| {
-        if plugin.additive {
+        let matches = if plugin.additive {
           self.matches_file(*index, file_path, file_name, extension)
         } else {
           claiming_plugins.contains(*index)
-        }
+        };
+        matches || self.matches_additive_associations(*index, file_path)
       })
       .map(|(_, plugin)| plugin.name.as_str())
       .collect()
@@ -205,6 +211,11 @@ impl PluginNameResolutionMaps {
     matches_default && self.is_not_associations_excluded(index, file_path)
   }
 
+  fn matches_additive_associations(&self, index: usize, file_path: &Path) -> bool {
+    let plugin = &self.plugins[index];
+    plugin.additive_associations.as_ref().is_some_and(|matcher| matcher.matches(file_path)) && self.is_not_associations_excluded(index, file_path)
+  }
+
   fn matches_associations(&self, index: usize, file_path: &Path) -> bool {
     self.plugins[index].associations.as_ref().is_some_and(|matcher| matcher.matches(file_path))
   }
@@ -247,6 +258,7 @@ struct PluginEntry {
   /// The plugin's `associations` matcher, which adds to its default file
   /// matching. A negated pattern excludes a file it would match by default.
   associations: Option<GlobMatcher>,
+  additive_associations: Option<GlobMatcher>,
 }
 
 /// The plugins claiming a file, as indexes into [`PluginNameResolutionMaps`]'s

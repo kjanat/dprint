@@ -4673,7 +4673,7 @@ text2"
       vec![
         concat!(
           "Error formatting /file1.txt. Message: Formatting not stable. Bailed after 5 tries. ",
-          "This indicates a bug in the plugin where it formats the file differently each time."
+          "The test-plugin plugin formats the file differently each time, which is a bug in it."
         )
         .to_string()
       ]

@@ -683,6 +683,7 @@ mod tests {
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([
               // the nested config file's ${configDir} points at its own directory...
@@ -703,10 +704,12 @@ mod tests {
     ConfigMapValue::PluginConfig(RawPluginConfig {
       locked: false,
       associations: None,
+      embedded: None,
       overrides: overrides
         .iter()
         .map(|(files, override_properties)| RawPluginConfigOverride {
           files: vec![files.to_string()],
+          embedded: None,
           properties: to_map(override_properties),
           origin: Default::default(),
         })
@@ -1024,6 +1027,7 @@ lineWidth = 80
         test.overrides,
         vec![RawPluginConfigOverride {
           files: vec!["*.d".to_string()],
+          embedded: None,
           properties: ConfigKeyMap::from([("prop".to_string(), ConfigKeyValue::from_i32(1))]),
 
           origin: Default::default(),
@@ -1310,6 +1314,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
@@ -1322,6 +1327,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
           }),
@@ -1379,6 +1385,7 @@ lineWidth = 80
         Some(&ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: None,
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(6))]),
         }))
@@ -1523,6 +1530,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
@@ -1535,6 +1543,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
           }),
@@ -1626,6 +1635,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
@@ -1638,6 +1648,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
           }),
@@ -1915,6 +1926,7 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: true,
           associations: None,
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([
             (String::from("prop"), ConfigKeyValue::from_i32(6)),
@@ -1961,6 +1973,7 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: true,
           associations: None,
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([
             (String::from("prop"), ConfigKeyValue::from_i32(7)),
@@ -2005,6 +2018,7 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: None,
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([
             (String::from("prop"), ConfigKeyValue::from_i32(6)),
@@ -2050,8 +2064,10 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: None,
+          embedded: None,
           overrides: vec![RawPluginConfigOverride {
             files: vec!["**/package.json".to_string()],
+            embedded: None,
             properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
 
             origin: Default::default(),
@@ -2102,15 +2118,18 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: None,
+          embedded: None,
           overrides: vec![
             RawPluginConfigOverride {
               files: vec!["**/*.json".to_string()],
+              embedded: None,
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(100))]),
 
               origin: Default::default(),
             },
             RawPluginConfigOverride {
               files: vec!["**/package.json".to_string()],
+              embedded: None,
               properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
 
               origin: Default::default(),
@@ -2195,12 +2214,56 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: Some(vec!["test".to_string()]),
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
         }),
       )]);
 
       assert_eq!(result.plugins.config, expected_config_map);
+    });
+  }
+
+  #[test]
+  fn merges_embedded_from_an_extended_config_by_extension() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/test.json",
+      r#"{ "test": { "embedded": { "cs": ["exec"], "sql": ["sql"] } } }"#.as_bytes(),
+    );
+    environment
+      .write_file(
+        PathBuf::from("/test.json"),
+        r#"{ "extends": "https://dprint.dev/test.json", "test": { "embedded": { "sql": [] } } }"#,
+      )
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/test.json", &environment).await.unwrap();
+      let Some(ConfigMapValue::PluginConfig(test)) = result.plugins.config.get("test") else {
+        panic!("{:?}", result.plugins.config);
+      };
+      assert_eq!(
+        test.embedded,
+        Some(IndexMap::from([("sql".to_string(), Vec::new()), ("cs".to_string(), vec!["exec".to_string()]),]))
+      );
+    });
+  }
+
+  #[test]
+  fn a_locked_config_rejects_embedded_from_a_config_extending_it() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file("https://dprint.dev/test.json", r#"{ "test": { "locked": true, "a": 1 } }"#.as_bytes());
+    environment
+      .write_file(
+        PathBuf::from("/test.json"),
+        r#"{ "extends": "https://dprint.dev/test.json", "test": { "embedded": { "cs": [] } } }"#,
+      )
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let err = get_result("/test.json", &environment).await.unwrap_err();
+      assert!(err.to_string().contains("The configuration for \"test\" was locked"), "{:#}", err);
     });
   }
 
@@ -2236,6 +2299,7 @@ lineWidth = 80
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: Some(vec!["test1".to_string(), "test2".to_string()]),
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
         }),
@@ -2645,6 +2709,7 @@ lineWidth = 80
             ConfigMapValue::PluginConfig(RawPluginConfig {
               locked: false,
               associations: None,
+              embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([
                 ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
@@ -2675,6 +2740,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
           }),
@@ -2714,6 +2780,7 @@ lineWidth = 80
           ConfigMapValue::PluginConfig(RawPluginConfig {
             locked: false,
             associations: None,
+            embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([
               // child wins on conflicts...
@@ -2822,6 +2889,7 @@ lineWidth = 80
             ConfigMapValue::PluginConfig(RawPluginConfig {
               locked,
               associations: None,
+              embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(indent_width))]),
             }),
@@ -4103,6 +4171,43 @@ lineWidth = 80
     }
 
     #[test]
+    fn only_runs_a_remote_array_or_object_command_when_playing_with_fire() {
+      let remote = r#"{
+        "exec": {
+          "commands": [
+            { "command": ["cargo", "fmt"], "exts": ["rs"] },
+            { "command": { "executable": "cargo", "args": ["fmt"], "env": { "PATH": "." } }, "exts": ["toml"] },
+            { "command": "cargo fmt", "setupCommand": ["cargo", "--version"], "exts": ["json"] },
+            { "command": "cargo fmt", "exts": ["md"] }
+          ]
+        }
+      }"#;
+      let resolve_allowing = |play_with_fire: &str| {
+        resolve(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": {} }} }}"#, REMOTE_URL, play_with_fire),
+          remote,
+        )
+        .unwrap()
+      };
+      let result = resolve_allowing(r#"["cargo"]"#);
+      assert_eq!(result.exec.properties.commands, vec!["cargo fmt".to_string()]);
+      assert_eq!(
+        result.messages,
+        vec![
+          concat!(
+            "Note: Ignored 3 exec command(s) in remote configuration (https://dprint.dev/exec.json) that aren't commands the exec plugin 0.7.3 reads, ",
+            "which only run with \"playWithFire\": true: command: the exec plugin 0.7.3 only reads a command line, ",
+            "setupCommand: the exec plugin 0.7.3 only reads a command line"
+          )
+          .to_string()
+        ]
+      );
+      let result = resolve_allowing("true");
+      assert_eq!(result.exec.properties.commands.len(), 4);
+      assert_eq!(result.messages, Vec::<String>::new());
+    }
+
+    #[test]
     fn doesnt_let_a_remote_command_read_files_under_a_program_list() {
       // the exec plugin reads a command's cacheKeyFiles on this machine when
       // the configuration is resolved, before anything runs, so a list of
@@ -4454,6 +4559,7 @@ lineWidth = 80
             ConfigMapValue::PluginConfig(RawPluginConfig {
               locked: false,
               associations: None,
+              embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/test && /dir/other"))]),
             }),
@@ -4463,6 +4569,7 @@ lineWidth = 80
             ConfigMapValue::PluginConfig(RawPluginConfig {
               locked: false,
               associations: None,
+              embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/origin"))]),
             }),
@@ -4472,6 +4579,7 @@ lineWidth = 80
             ConfigMapValue::PluginConfig(RawPluginConfig {
               locked: false,
               associations: None,
+              embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/final && ${configDir}/escaped"))]),
             }),

@@ -322,6 +322,7 @@ mod test {
       ConfigMapValue::PluginConfig(RawPluginConfig {
         locked: false,
         associations: None,
+        embedded: None,
         overrides: Vec::new(),
         properties: ConfigKeyMap::from([
           ("lineWidth".to_string(), ConfigKeyValue::from_i32(40)),
@@ -356,6 +357,7 @@ mod test {
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: true,
           associations: Some(vec!["test".to_string()]),
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(40))]),
         }),
@@ -365,6 +367,7 @@ mod test {
         ConfigMapValue::PluginConfig(RawPluginConfig {
           locked: false,
           associations: Some(vec!["other".to_string(), "test".to_string()]),
+          embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
         }),
@@ -386,8 +389,10 @@ mod test {
       ConfigMapValue::PluginConfig(RawPluginConfig {
         locked: false,
         associations: None,
+        embedded: None,
         overrides: vec![RawPluginConfigOverride {
           files: vec!["**/package.json".to_string(), "**/composer.json".to_string()],
+          embedded: None,
           properties: ConfigKeyMap::from([
             ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
             ("useTabs".to_string(), ConfigKeyValue::from_bool(false)),
@@ -410,14 +415,17 @@ mod test {
       ConfigMapValue::PluginConfig(RawPluginConfig {
         locked: false,
         associations: None,
+        embedded: None,
         overrides: vec![
           RawPluginConfigOverride {
             files: vec!["**/package.json".to_string()],
+            embedded: None,
             properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(4))]),
             origin: Default::default(),
           },
           RawPluginConfigOverride {
             files: vec!["**/special-package.json".to_string()],
+            embedded: None,
             properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
             origin: Default::default(),
           },

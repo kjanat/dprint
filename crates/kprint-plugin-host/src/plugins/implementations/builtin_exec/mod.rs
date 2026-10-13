@@ -38,7 +38,7 @@ use super::in_process::InProcessPlugin;
 /// commands for a file, or what it does with their output.
 /// `handler::test::a_change_in_formatting_bumps_the_cache_revision` fails when
 /// what it makes of a set of files changes.
-const CACHE_REVISION: u32 = 1;
+const CACHE_REVISION: u32 = 2;
 
 pub static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
   name: "exec",
@@ -77,9 +77,6 @@ impl Default for ExecFormatter {
   }
 }
 
-/// Whether dprint serves the reference with the built-in exec rather than
-/// running the exec process plugin it refers to.
-pub use kprint_config::exec::exec_command_program;
 /// Whether dprint serves the reference with the built-in exec rather than
 /// running the exec process plugin it refers to.
 pub use kprint_config::exec::is_builtin_exec_reference;
@@ -141,7 +138,11 @@ mod test {
       }],
     });
     assert_eq!(validate_with_schema(&schema, &config), Ok(()));
-    let result = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
+    let result = configuration::Configuration::resolve(
+      serde_json::from_value(config.clone()).unwrap(),
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
     assert_eq!(result.diagnostics, vec![]);
     assert_eq!(result.config.timeout, 60);
     assert_eq!(result.config.setup_timeout, 600);
@@ -235,7 +236,11 @@ mod test {
       ),
     ] {
       assert!(validate_with_schema(&schema, &config).is_err(), "{}", config);
-      let result = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
+      let result = configuration::Configuration::resolve(
+        serde_json::from_value(config.clone()).unwrap(),
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert_eq!(
         result.diagnostics,
         vec![kprint_configuration::ConfigurationDiagnostic {
@@ -272,7 +277,11 @@ mod test {
       json!({ "command": "fmt", "exts": "txt", "unknown": true }),
     ] {
       let config = json!({ "commands": [command] });
-      let resolved = configuration::Configuration::resolve(serde_json::from_value(config.clone()).unwrap(), &Default::default());
+      let resolved = configuration::Configuration::resolve(
+        serde_json::from_value(config.clone()).unwrap(),
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert_eq!(
         validate_with_schema(&schema, &config).is_ok(),
         resolved.diagnostics.is_empty(),

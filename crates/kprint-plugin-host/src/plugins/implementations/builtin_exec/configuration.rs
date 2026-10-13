@@ -1,21 +1,26 @@
-use globset::GlobMatcher;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::ConfigurationDiagnostic;
 use kprint_configuration::GlobalConfiguration;
 use kprint_configuration::RECOMMENDED_GLOBAL_CONFIGURATION;
 use kprint_configuration::ResolveConfigurationResult;
+use kprint_discovery::GlobMatcher;
+use kprint_discovery::get_patterns_as_glob_matcher;
 use serde::Serialize;
 use serde::Serializer;
 use sha2::Digest;
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fs::read_to_string;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::input::Associations;
 use super::input::ExecCommandInput;
 use super::input::ExecConfigInput;
+use super::input::Invocation;
+use super::input::InvocationInput;
 use super::input::default_serve;
 use super::input::default_setup_timeout;
 use super::input::default_stdin;
@@ -23,6 +28,7 @@ use super::input::default_timeout;
 use super::input::default_workers;
 use super::template::uses_variable;
 use super::template::validate_template;
+use crate::environment::CanonicalizedPathBuf;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,10 +55,11 @@ pub struct CommandConfiguration {
   pub executable: String,
   /// Executable arguments to add
   pub args: Vec<String>,
+  #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+  pub env: BTreeMap<String, String>,
   pub cwd: PathBuf,
   pub stdin: bool,
-  #[serde(serialize_with = "serialize_glob")]
-  pub associations: Option<GlobMatcher>,
+  pub associations: Option<CommandAssociations>,
   pub file_extensions: Vec<String>,
   pub file_names: Vec<String>,
   pub cache_key_files_hash: Option<String>,
@@ -76,6 +83,8 @@ pub struct SetupCommand {
   pub executable: String,
   /// Executable arguments to add
   pub args: Vec<String>,
+  #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+  pub env: BTreeMap<String, String>,
 }
 
 impl CommandConfiguration {
@@ -94,10 +103,23 @@ impl CommandConfiguration {
   }
 }
 
-fn serialize_glob<S: Serializer>(value: &Option<GlobMatcher>, s: S) -> Result<S::Ok, S::Error> {
-  match value {
-    Some(value) => s.serialize_str(value.glob().glob()),
-    None => s.serialize_none(),
+/// A command's `associations` glob, which matches paths relative to the
+/// configuration's directory like dprint's own `associations` do.
+#[derive(Clone)]
+pub struct CommandAssociations {
+  pub glob: String,
+  matcher: Arc<GlobMatcher>,
+}
+
+impl CommandAssociations {
+  pub fn matches(&self, path: &Path) -> bool {
+    self.matcher.matches(path)
+  }
+}
+
+impl Serialize for CommandAssociations {
+  fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&self.glob)
   }
 }
 
@@ -107,7 +129,8 @@ impl Configuration {
   /// schema describes), and that is resolved to what formatting runs with.
   /// A value that isn't what it may be is a diagnostic saying where, and
   /// nothing more is resolved from it.
-  pub fn resolve(config: ConfigKeyMap, global_config: &GlobalConfiguration) -> ResolveConfigurationResult<Configuration> {
+  /// A command's `associations` are relative to `base_dir`.
+  pub fn resolve(config: ConfigKeyMap, global_config: &GlobalConfiguration, base_dir: &CanonicalizedPathBuf) -> ResolveConfigurationResult<Configuration> {
     let (input, mut diagnostics) = match kprint_config::from_values::<ExecConfigInput>(config) {
       Ok(input) => (input, Vec::new()),
       Err(err) => (
@@ -144,7 +167,7 @@ impl Configuration {
     match input.commands {
       Some(commands) => {
         for (i, command) in commands.into_iter().enumerate() {
-          let (command_config, command_diagnostics) = resolve_command(command, input.cwd.as_deref());
+          let (command_config, command_diagnostics) = resolve_command(command, input.cwd.as_deref(), base_dir);
           diagnostics.extend(command_diagnostics.into_iter().map(|mut diagnostic| {
             diagnostic.property_name = format!("{}[{}].{}", names.commands, i, diagnostic.property_name);
             diagnostic
@@ -180,23 +203,34 @@ impl Configuration {
 }
 
 /// Resolves one command. A diagnostic's property is the command's.
-fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
+fn resolve_command(
+  command: ExecCommandInput,
+  root_cwd: Option<&str>,
+  base_dir: &CanonicalizedPathBuf,
+) -> (Option<CommandConfiguration>, Vec<ConfigurationDiagnostic>) {
   let names = ExecCommandInput::property_names();
   let mut diagnostics = Vec::new();
-  let mut parts = split_command(&command.command);
-  if parts.is_empty() {
+  let Some(invocation) = command.command.resolve() else {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: names.command.clone(),
       message: "Expected to find a command name.".to_string(),
     });
     return (None, diagnostics);
-  }
+  };
 
-  for arg in parts.iter().skip(1) {
+  for arg in &invocation.args {
     if let Err(err) = validate_template(arg) {
       diagnostics.push(ConfigurationDiagnostic {
         property_name: names.command.clone(),
         message: format!("Invalid template in argument '{}': {}", arg, err),
+      });
+    }
+  }
+  for (name, value) in &invocation.env {
+    if let Err(err) = validate_template(value) {
+      diagnostics.push(ConfigurationDiagnostic {
+        property_name: names.command.clone(),
+        message: format!("Invalid template in environment variable '{}': {}", name, err),
       });
     }
   }
@@ -230,9 +264,11 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
     None => None,
   };
 
-  let setup_command = command.setup_command.and_then(|raw| resolve_setup_command(&raw, &mut diagnostics));
+  let setup_command = command
+    .setup_command
+    .and_then(|setup_command| resolve_setup_command(setup_command, &mut diagnostics));
   let stdin = command.stdin.unwrap_or_else(default_stdin);
-  let serve = resolve_serve(&command.serve, command.workers, stdin, &parts, &mut diagnostics);
+  let serve = resolve_serve(&command.serve, command.workers, stdin, &invocation, &mut diagnostics);
 
   let associations = match command.associations {
     None => None,
@@ -249,24 +285,24 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
       }
     },
   };
-  let associations = associations.and_then(|glob| {
-    let mut builder = globset::GlobBuilder::new(&glob);
-    builder.case_insensitive(cfg!(windows));
-    match builder.build() {
-      Ok(glob) => Some(glob.compile_matcher()),
-      Err(err) => {
-        diagnostics.push(ConfigurationDiagnostic {
-          message: format!("Error parsing associations glob: {:#}", err),
-          property_name: names.associations.clone(),
-        });
-        None
-      }
+  let associations = associations.and_then(|glob| match get_patterns_as_glob_matcher(std::slice::from_ref(&glob), base_dir) {
+    Ok(matcher) => Some(CommandAssociations {
+      glob,
+      matcher: Arc::new(matcher),
+    }),
+    Err(err) => {
+      diagnostics.push(ConfigurationDiagnostic {
+        message: format!("Error parsing associations glob: {:#}", err),
+        property_name: names.associations.clone(),
+      });
+      None
     }
   });
 
   let config = CommandConfiguration {
-    executable: parts.remove(0),
-    args: parts,
+    executable: invocation.executable,
+    args: invocation.args,
+    env: invocation.env,
     setup_command,
     associations,
     cwd,
@@ -296,18 +332,13 @@ fn resolve_command(command: ExecCommandInput, root_cwd: Option<&str>) -> (Option
   (Some(config), diagnostics)
 }
 
-/// Splits a command into its program and arguments the way the exec plugin
-/// always has (with splitty 1.0.1):
-///
-/// - Parts are separated by spaces. Other whitespace (ex. a tab) is part of
-///   a part.
-/// - A part that starts with a quote (`"`) goes on to a quote followed by a
-///   space or the end, and doesn't include those quotes, so it may contain
-///   spaces. Without such a quote, it's the rest of the command as is.
-/// - Quotes anywhere else are kept, and empty parts (ex. `""`) are left out.
-pub use kprint_config::exec::split_command;
-
-fn resolve_serve(serve: &Option<bool>, workers: Option<u32>, stdin: bool, parts: &[String], diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<Serve> {
+fn resolve_serve(
+  serve: &Option<bool>,
+  workers: Option<u32>,
+  stdin: bool,
+  invocation: &Invocation,
+  diagnostics: &mut Vec<ConfigurationDiagnostic>,
+) -> Option<Serve> {
   let names = ExecCommandInput::property_names();
   if !serve.unwrap_or_else(default_serve) {
     if workers.is_some() {
@@ -324,10 +355,16 @@ fn resolve_serve(serve: &Option<bool>, workers: Option<u32>, stdin: bool, parts:
       message: "A served command gets the files on stdin, so \"stdin\" can't be false.".to_string(),
     });
   }
-  if parts.iter().skip(1).any(|arg| uses_variable(arg, "file_path")) {
+  if invocation
+    .args
+    .iter()
+    .chain(invocation.env.values())
+    .any(|value| uses_variable(value, "file_path"))
+  {
     diagnostics.push(ConfigurationDiagnostic {
       property_name: names.command.clone(),
-      message: "A served command formats every file, so its arguments can't use {{file_path}}. It gets each file's path in its request.".to_string(),
+      message: "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request."
+        .to_string(),
     });
   }
   let workers = match NonZeroUsize::new(workers.unwrap_or_else(default_workers) as usize) {
@@ -343,18 +380,18 @@ fn resolve_serve(serve: &Option<bool>, workers: Option<u32>, stdin: bool, parts:
   Some(Serve { workers })
 }
 
-fn resolve_setup_command(raw: &str, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
-  let mut parts = split_command(raw);
-  if parts.is_empty() {
+fn resolve_setup_command(setup_command: InvocationInput, diagnostics: &mut Vec<ConfigurationDiagnostic>) -> Option<SetupCommand> {
+  let Some(invocation) = setup_command.resolve() else {
     diagnostics.push(ConfigurationDiagnostic {
-      property_name: "setupCommand".to_string(),
+      property_name: ExecCommandInput::property_names().setup_command.clone(),
       message: "Expected to find a command name.".to_string(),
     });
     return None;
-  }
+  };
   Some(SetupCommand {
-    executable: parts.remove(0),
-    args: parts,
+    executable: invocation.executable,
+    args: invocation.args,
+    env: invocation.env,
   })
 }
 
@@ -401,7 +438,7 @@ mod tests {
     let resolved = Configuration::resolve(
       kprint_config::to_values(&ExecConfigInput {
         commands: Some(vec![ExecCommandInput {
-          command: "fmt".to_string(),
+          command: "fmt".into(),
           exts: Some(StringOrStrings::One("txt".to_string())),
           ..Default::default()
         }]),
@@ -409,6 +446,7 @@ mod tests {
       })
       .unwrap(),
       &GlobalConfiguration::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
     );
     assert_eq!(resolved.diagnostics, Vec::new());
     assert_eq!(schema["properties"]["timeout"]["default"], serde_json::json!(resolved.config.timeout));
@@ -441,7 +479,12 @@ mod tests {
       ("useTabs".to_string(), ConfigKeyValue::from_bool(true)),
     ]);
     let global_config = resolve_global_config(&mut global_config).config;
-    let config = Configuration::resolve(ConfigKeyMap::new(), &global_config).config;
+    let config = Configuration::resolve(
+      ConfigKeyMap::new(),
+      &global_config,
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    )
+    .config;
     assert_eq!(config.line_width, 80);
     assert_eq!(config.indent_width, 8);
     assert!(config.use_tabs);
@@ -453,7 +496,11 @@ mod tests {
       "cacheKey": "2",
       "timeout": 5
     }));
-    let result = Configuration::resolve(unresolved_config, &Default::default());
+    let result = Configuration::resolve(
+      unresolved_config,
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
     let config = result.config;
     assert_eq!(config.line_width, 120);
     assert_eq!(config.indent_width, 2);
@@ -496,7 +543,11 @@ mod tests {
         "command": "1"
       }]
     }));
-    let result = Configuration::resolve(unresolved_config, &Default::default());
+    let result = Configuration::resolve(
+      unresolved_config,
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
     let config = result.config;
     assert_eq!(config.commands[0].cwd, PathBuf::from("test-cwd"));
     assert_eq!(config.commands[1].cwd, PathBuf::from("test-cwd2"));
@@ -510,7 +561,12 @@ mod tests {
         "associations": ["**/*.rs"]
       }],
     }));
-    let mut config = Configuration::resolve(unresolved_config, &Default::default()).config;
+    let mut config = Configuration::resolve(
+      unresolved_config,
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    )
+    .config;
     assert!(config.commands.remove(0).associations.is_some());
 
     let unresolved_config = parse_config(json!({
@@ -519,7 +575,12 @@ mod tests {
         "associations": []
       }],
     }));
-    let mut config = Configuration::resolve(unresolved_config, &Default::default()).config;
+    let mut config = Configuration::resolve(
+      unresolved_config,
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    )
+    .config;
     assert!(config.commands.remove(0).associations.is_none());
 
     let unresolved_config = parse_config(json!({
@@ -563,6 +624,7 @@ mod tests {
     let result = Configuration::resolve(
       parse_config(json!({ "timeout": 5, "commands": [{ "command": "fmt", "exts": ["txt"], "cwd": 1 }] })),
       &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
     );
     assert_eq!(
       result.diagnostics,
@@ -581,7 +643,7 @@ mod tests {
     // the variable is `file_path`, which the configuration says before
     // anything is formatted
     let config: ConfigKeyMap = serde_json::from_value(serde_json::json!({ "commands": [{ "command": "cat {{filePath}}", "exts": ["txt"] }] })).unwrap();
-    let result = Configuration::resolve(config, &Default::default());
+    let result = Configuration::resolve(config, &Default::default(), &crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].property_name, "commands[0].command");
     assert!(
@@ -634,7 +696,7 @@ mod tests {
       ),
     ];
     for (command, parts) in cases {
-      assert_eq!(split_command(command), *parts, "{:?}", command);
+      assert_eq!(kprint_config::exec::split_command(command), *parts, "{:?}", command);
     }
   }
 
@@ -647,7 +709,11 @@ mod tests {
         "setupCommand": "rustup toolchain install nightly-2025-09-01",
       }],
     }));
-    let result = Configuration::resolve(unresolved_config, &Default::default());
+    let result = Configuration::resolve(
+      unresolved_config,
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
     assert!(result.diagnostics.is_empty());
     let setup = result.config.commands[0].setup_command.as_ref().unwrap();
     assert_eq!(setup.executable, "rustup");
@@ -682,6 +748,7 @@ mod tests {
       let result = Configuration::resolve(
         parse_config(json!({ "commands": [command, { "command": "fmt", "exts": ["md"] }] })),
         &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
       );
       assert_eq!(result.diagnostics, vec![]);
       result
@@ -711,7 +778,12 @@ mod tests {
       (
         json!({ "command": "fmt --path {{file_path}}", "exts": ["txt"], "serve": true }),
         "commands[0].command",
-        "A served command formats every file, so its arguments can't use {{file_path}}. It gets each file's path in its request.",
+        "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request.",
+      ),
+      (
+        json!({ "command": { "executable": "fmt", "env": { "FILE": "{{file_path}}" } }, "exts": ["txt"], "serve": true }),
+        "commands[0].command",
+        "A served command formats every file, so its arguments and environment can't use {{file_path}}. It gets each file's path in its request.",
       ),
     ] {
       run_diagnostics_test(
@@ -725,13 +797,119 @@ mod tests {
     let result = Configuration::resolve(
       parse_config(json!({ "commands": [{ "command": "fmt --width {{line_width}}", "exts": ["txt"], "serve": true }] })),
       &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
     );
     assert_eq!(result.diagnostics, vec![]);
   }
 
+  #[test]
+  fn resolves_a_command_and_setup_command_given_as_an_array_or_object() {
+    let result = Configuration::resolve(
+      parse_config(json!({
+        "commands": [{
+          "command": { "executable": "/opt/My Tools/fmt", "args": ["--emit", "", "a b"], "env": { "RUST_LOG": "warn" } },
+          "setupCommand": ["rustup", "component", "add", "rustfmt"],
+          "exts": ["rs"]
+        }, {
+          "command": ["my fmt", "--width", "{{line_width}}"],
+          "setupCommand": { "executable": "rustup", "env": { "RUSTUP_TOOLCHAIN": "stable" } },
+          "exts": ["txt"]
+        }]
+      })),
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
+    assert_eq!(result.diagnostics, vec![]);
+    let strings = |values: &[&str]| values.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+    let env = |name: &str, value: &str| BTreeMap::from([(name.to_string(), value.to_string())]);
+    let [rust, text] = &result.config.commands[..] else {
+      panic!("two commands");
+    };
+    assert_eq!(rust.executable, "/opt/My Tools/fmt");
+    assert_eq!(rust.args, strings(&["--emit", "", "a b"]));
+    assert_eq!(rust.env, env("RUST_LOG", "warn"));
+    let setup = rust.setup_command.as_ref().unwrap();
+    assert_eq!(
+      (setup.executable.as_str(), &setup.args, &setup.env),
+      ("rustup", &strings(&["component", "add", "rustfmt"]), &BTreeMap::new())
+    );
+    assert_eq!(
+      (text.executable.as_str(), &text.args, &text.env),
+      ("my fmt", &strings(&["--width", "{{line_width}}"]), &BTreeMap::new())
+    );
+    let setup = text.setup_command.as_ref().unwrap();
+    assert_eq!(
+      (setup.executable.as_str(), &setup.args, &setup.env),
+      ("rustup", &Vec::new(), &env("RUSTUP_TOOLCHAIN", "stable"))
+    );
+  }
+
+  #[test]
+  fn reports_a_command_without_a_program() {
+    for (command, property) in [
+      (json!({ "command": [], "exts": ["txt"] }), "commands[0].command"),
+      (json!({ "command": [""], "exts": ["txt"] }), "commands[0].command"),
+      (
+        json!({ "command": { "executable": "", "args": ["a"] }, "exts": ["txt"] }),
+        "commands[0].command",
+      ),
+      (json!({ "command": "fmt", "setupCommand": [], "exts": ["txt"] }), "commands[0].setupCommand"),
+      (
+        json!({ "command": "fmt", "setupCommand": { "executable": "" }, "exts": ["txt"] }),
+        "commands[0].setupCommand",
+      ),
+    ] {
+      run_diagnostics_test(
+        parse_config(json!({ "commands": [command] })),
+        vec![ConfigurationDiagnostic {
+          property_name: property.to_string(),
+          message: "Expected to find a command name.".to_string(),
+        }],
+      );
+    }
+  }
+
+  #[test]
+  fn reports_an_unknown_variable_in_a_commands_environment() {
+    let result = Configuration::resolve(
+      parse_config(json!({ "commands": [{ "command": { "executable": "fmt", "env": { "WIDTH": "{{lineWidth}}" } }, "exts": ["txt"] }] })),
+      &Default::default(),
+      &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+    );
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].property_name, "commands[0].command");
+    assert!(
+      result.diagnostics[0]
+        .message
+        .starts_with("Invalid template in environment variable 'WIDTH': Unknown variable '{{lineWidth}}'."),
+      "{}",
+      result.diagnostics[0].message
+    );
+  }
+
+  #[test]
+  fn a_commands_environment_is_part_of_its_resolved_configuration() {
+    let serialized = |command: serde_json::Value| {
+      let result = Configuration::resolve(
+        parse_config(json!({ "commands": [{ "command": command, "setupCommand": command, "exts": ["txt"] }] })),
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
+      assert_eq!(result.diagnostics, vec![]);
+      serde_json::to_value(result.config).unwrap()
+    };
+    let with_env = |value: &str| serialized(json!({ "executable": "fmt", "env": { "A": value } }));
+    assert_ne!(with_env("1"), with_env("2"));
+    assert_eq!(with_env("1")["commands"][0]["env"], json!({ "A": "1" }));
+    assert_eq!(with_env("1")["commands"][0]["setupCommand"]["env"], json!({ "A": "1" }));
+    let line = serialized(json!("fmt"));
+    assert_eq!(line, serialized(json!(["fmt"])));
+    assert_eq!(line["commands"][0].get("env"), None);
+  }
+
   #[track_caller]
   fn run_diagnostics_test(config: ConfigKeyMap, expected_diagnostics: Vec<ConfigurationDiagnostic>) {
-    let result = Configuration::resolve(config, &Default::default());
+    let result = Configuration::resolve(config, &Default::default(), &crate::environment::CanonicalizedPathBuf::new_for_testing("/"));
     assert_eq!(result.diagnostics, expected_diagnostics);
     assert!(!result.config.is_valid);
   }
@@ -752,7 +930,11 @@ mod tests {
           "command": "1"
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       let config = result.config;
       assert!(result.diagnostics.is_empty());
       assert_eq!(config.cache_key, "0");
@@ -767,7 +949,11 @@ mod tests {
           "command": "1"
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(result.diagnostics.is_empty());
       let config = result.config;
       assert_eq!(config.cache_key, "99");
@@ -783,7 +969,11 @@ mod tests {
           "cacheKeyFiles": ["./src/plugins/implementations/builtin_exec/testdata/one-line.txt"]
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(result.config.is_valid);
       assert_eq!(result.diagnostics, vec![]);
       assert_eq!(result.config.cache_key, "99c7b3af761ad02238e72bf5a60c94be2f41eec6637ec3ec1bfa853a3a1fb91225");
@@ -798,7 +988,11 @@ mod tests {
           "cacheKeyFiles": ["path/to/missing/file"]
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(!result.config.is_valid);
       assert_eq!(result.diagnostics.len(), 1);
       assert_eq!(result.diagnostics[0].property_name, "commands[0].cacheKeyFiles");
@@ -816,7 +1010,11 @@ mod tests {
           ]
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(result.diagnostics.is_empty());
       let config = result.config;
       assert_eq!(config.cache_key, "c7b3af761ad02238e72bf5a60c94be2f41eec6637ec3ec1bfa853a3a1fb91225");
@@ -834,7 +1032,11 @@ mod tests {
           ]
         }],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(result.diagnostics.is_empty());
       let config = result.config;
       assert_eq!(config.cache_key, "4321f2e747210582553e6ad8ef5b866d87c357a039cd09cdbdab6ebe33517c1a");
@@ -862,7 +1064,11 @@ mod tests {
           },
         ],
       }));
-      let result = Configuration::resolve(unresolved_config, &Default::default());
+      let result = Configuration::resolve(
+        unresolved_config,
+        &Default::default(),
+        &crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
+      );
       assert!(result.diagnostics.is_empty());
       let config = result.config;
       assert_eq!(config.cache_key, "51eaf161463bb6ba4957327330e27a80d039b7d2c0c27590ebdf844e7eca954a");

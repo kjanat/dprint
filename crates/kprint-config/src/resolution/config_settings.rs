@@ -281,7 +281,7 @@ pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -
         if let Some(target_obj) = target.get_mut(&key) {
           if let ConfigMapValue::PluginConfig(target_obj) = target_obj {
             // check for locked configuration
-            if obj.locked && (!target_obj.properties.is_empty() || !target_obj.overrides.is_empty()) {
+            if obj.locked && (!target_obj.properties.is_empty() || !target_obj.overrides.is_empty() || target_obj.embedded.is_some()) {
               bail!(
                 concat!(
                   "The configuration for \"{}\" was locked, but a parent configuration specified it. ",
@@ -307,6 +307,12 @@ pub(super) fn merge_config_map_into(target: &mut ConfigMap, source: ConfigMap) -
             // includes/excludes aren't inherited from other config.
             if target_obj.associations.is_none() {
               target_obj.associations = obj.associations;
+            }
+            if let Some(embedded) = obj.embedded {
+              let target_embedded = target_obj.embedded.get_or_insert_default();
+              for (extension, plugins) in embedded {
+                target_embedded.entry(extension).or_insert(plugins);
+              }
             }
           }
         } else {

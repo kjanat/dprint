@@ -558,6 +558,7 @@ mod test {
           id: kprint_plugin_types::FormatConfigId::from_raw(1),
           global: Default::default(),
           plugin: Default::default(),
+          base_dir: crate::environment::CanonicalizedPathBuf::new_for_testing("/"),
         }),
         override_config: Default::default(),
         on_host_format: Rc::new(|_| async { Ok(None) }.boxed_local()),

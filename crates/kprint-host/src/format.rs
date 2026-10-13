@@ -379,7 +379,7 @@ where
     })
     .await??;
 
-    let (start_instant, formatted_text) =
+    let (start_instant, formatted_text, _) =
       run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text).await?;
 
     let formatted_text = if ensure_stable_format.0 && formatted_text != file_text {
@@ -402,13 +402,15 @@ where
   ) -> Result<Vec<u8>> {
     log_debug!(environment, "Ensuring stable format: {}", file_path.display());
     let mut count = 0;
+    let mut changed_by: Vec<String>;
     loop {
       match run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &formatted_text).await {
-        Ok((_, next_pass_text)) => {
+        Ok((_, next_pass_text, next_changed_by)) => {
           if next_pass_text == formatted_text {
             return Ok(formatted_text);
           } else {
             formatted_text = next_pass_text;
+            changed_by = next_changed_by;
             log_debug!(environment, "Ensuring stable format failed on try {}: {}", count + 1, file_path.display());
           }
         }
@@ -425,13 +427,7 @@ where
       }
       count += 1;
       if count == 5 {
-        bail!(
-          concat!(
-            "Formatting not stable. Bailed after {} tries. This indicates a bug in the ",
-            "plugin where it formats the file differently each time."
-          ),
-          count
-        );
+        bail!("Formatting not stable. Bailed after {} tries. {}", count, unstable_reason(&changed_by));
       }
     }
   }
@@ -442,10 +438,11 @@ where
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
     file_text: &[u8],
-  ) -> Result<(Instant, Vec<u8>)> {
+  ) -> Result<(Instant, Vec<u8>, Vec<String>)> {
     let start_instant = Instant::now();
     let original_text = file_text;
     let mut file_text = Cow::Borrowed(file_text);
+    let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
     for (i, (plugin, initialized_plugin)) in plugins.iter().enumerate() {
       let start_instant = Instant::now();
@@ -455,7 +452,7 @@ where
           file_bytes: file_text.to_vec(),
           range: None,
           override_config: plugin.get_config_file_overrides_for_path(&file_path),
-          on_host_format: scope.create_host_format_callback(),
+          on_host_format: scope.create_host_format_callback(plugin.clone(), file_path.clone()),
           token: Arc::new(NullCancellationToken),
         })
         .await;
@@ -471,6 +468,9 @@ where
         },
       );
       if let Some(text) = format_text_result? {
+        if text != *file_text {
+          changed_by.push(plugin.info().config_key.clone());
+        }
         file_text = Cow::Owned(text)
       }
     }
@@ -492,7 +492,15 @@ where
       }
     }
 
-    Ok((start_instant, file_text.into_owned()))
+    Ok((start_instant, file_text.into_owned(), changed_by))
+  }
+}
+
+fn unstable_reason(changed_by: &[String]) -> String {
+  match changed_by {
+    [plugin] => format!("The {} plugin formats the file differently each time, which is a bug in it.", plugin),
+    [first @ .., last] => format!("{} and {} keep changing each other's output.", first.join(", "), last),
+    [] => "No plugin changed the file in the last try.".to_string(),
   }
 }
 

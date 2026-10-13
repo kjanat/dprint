@@ -64,11 +64,11 @@ use super::config_settings::merge_config_map_into;
 use crate::environment::ConfigEnvironment as Environment;
 use crate::plugins::EXEC_COMMANDS_RELEASE;
 use crate::plugins::PluginSourceReference;
-use crate::plugins::exec_command_program;
 use crate::plugins::exec_input::ExecCommandInput;
 use crate::plugins::exec_input::ExecCommandPropertyNames;
 use crate::plugins::exec_input::ExecConfigInput;
 use crate::plugins::exec_input::ExecPropertyNames;
+use crate::plugins::exec_input::InvocationInput;
 use crate::plugins::exec_input::PlayWithFire;
 use crate::plugins::is_builtin_exec_reference;
 use crate::plugins::is_exec_plugin_reference;
@@ -832,6 +832,17 @@ fn read_command(command: &ConfigKeyValue) -> Result<ExecCommandInput, ValueError
     }
   })?;
   let names = command_names();
+  let is_line = |invocation: Option<&InvocationInput>| invocation.is_none_or(|invocation| matches!(invocation, InvocationInput::Line(_)));
+  let not_lines = [
+    (&names.command, !is_line(Some(&command.command))),
+    (&names.setup_command, !is_line(command.setup_command.as_ref())),
+  ];
+  if let Some((name, _)) = not_lines.into_iter().find(|(_, not_line)| *not_line) {
+    return Err(ValueError {
+      path: name.clone(),
+      message: format!("the exec plugin {} only reads a command line", EXEC_COMMANDS_RELEASE),
+    });
+  }
   let served = [(&names.serve, command.serve.is_some()), (&names.workers, command.workers.is_some())];
   match served.into_iter().find(|(_, specified)| *specified) {
     Some((name, _)) => Err(ValueError {
@@ -864,7 +875,7 @@ fn command_programs(command: &ExecCommandInput) -> Vec<String> {
   [Some(&command.command), command.setup_command.as_ref()]
     .into_iter()
     .flatten()
-    .filter_map(|text| exec_command_program(text))
+    .filter_map(InvocationInput::program)
     .collect()
 }
 

@@ -578,6 +578,7 @@ mod test {
       .write_file(&ignored_file_path, "text")
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();
 
@@ -923,6 +924,7 @@ mod test {
       .write_file(&ignored_file_path, "text")
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();
 
@@ -973,6 +975,7 @@ mod test {
       .write_file("/scripts/notes", "text")
       .initialize()
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();
 
@@ -1060,6 +1063,7 @@ mod test {
       .write_file(file_path4, "")
       .write_file(file_path5, "")
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();
@@ -1170,6 +1174,7 @@ mod test {
       })
       .write_file(file_path, "")
       .build();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
 
     let stdin = environment.stdin_writer();
     let stdout = environment.stdout_reader();

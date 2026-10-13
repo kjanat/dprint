@@ -9,6 +9,7 @@ use crate::utils::PathSource;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RawPluginConfigOverride {
   pub files: Vec<String>,
+  pub embedded: Option<IndexMap<String, Vec<String>>>,
   pub properties: ConfigKeyMap,
   /// The configuration file it's from, so a diagnostic about one of its
   /// properties can say which file to change.
@@ -19,6 +20,7 @@ impl From<PluginOverride> for RawPluginConfigOverride {
   fn from(override_config: PluginOverride) -> Self {
     RawPluginConfigOverride {
       files: override_config.files.into(),
+      embedded: override_config.embedded.map(|embedded| embedded.0),
       properties: override_config.plugin.0,
       origin: Default::default(),
     }
@@ -42,6 +44,7 @@ impl Eq for ValueOrigin {}
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct RawPluginConfig {
   pub associations: Option<Vec<String>>,
+  pub embedded: Option<IndexMap<String, Vec<String>>>,
   pub locked: bool,
   pub overrides: Vec<RawPluginConfigOverride>,
   pub properties: ConfigKeyMap,
@@ -53,6 +56,7 @@ impl From<PluginTable> for RawPluginConfig {
   fn from(table: PluginTable) -> Self {
     RawPluginConfig {
       associations: table.associations.map(Into::into),
+      embedded: table.embedded.map(|embedded| embedded.0),
       locked: table.locked.unwrap_or(false),
       overrides: table
         .overrides

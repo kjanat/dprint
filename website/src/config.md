@@ -437,7 +437,7 @@ For multiple overrides, change it to an array:
 ```
 
 Each override must specify a `"files"` pattern or list of patterns. All other
-properties in the override are plugin configuration properties.
+properties in the override except `"embedded"` (see [Embedded Code](#embedded-code)) are plugin configuration properties.
 
 Note that `"overrides"` only changes configuration. It does not include files,
 exclude files, or associate files with a plugin. File discovery still uses the
@@ -446,6 +446,32 @@ the plugin's supported file names, file extensions, and `"associations"`.
 
 When multiple override blocks match the same file, they are applied in order and
 later values win.
+
+## Embedded Code
+
+Some plugins format code embedded in a file by handing it back to dprint, ex. the markdown plugin with the code blocks of a `.md` file. dprint formats that code with the plugin that formats the code's file extension. The plugin's `"embedded"` config names the plugins to format it with instead, by the code's file extension, in order. An empty array leaves that code as it is.
+
+```json
+{
+  "markdown": {
+    // C# code blocks are formatted with exec, and SQL code blocks are left as they are
+    "embedded": { "cs": ["exec"], "sql": [] },
+    "overrides": {
+      // except in README.md, whose TypeScript code blocks are left as they are too
+      "files": "README.md",
+      "embedded": { "ts": [] }
+    }
+  },
+  "exec": {
+    "commands": [{ "command": "dotnet csharpier --write-stdout", "exts": ["cs"] }]
+  }
+}
+```
+
+- The extension is the one the plugin gives the code. The markdown plugin gives it from the code block's tag (ex. `csharp` and `cs` are both `cs`), and its `"tags"` config maps other tags.
+- A plugin named in `"embedded"` must be in the configuration. It formats the code whatever file extensions it formats by default.
+- An override's `"embedded"` applies to the code in the files the override matches. The last matching override that names the code's file extension wins, otherwise the plugin's own `"embedded"` does.
+- `"extends"` merges `"embedded"` by file extension, with the extending config's entries taking precedence.
 
 ## Extending a Different Configuration File
 

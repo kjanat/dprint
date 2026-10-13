@@ -42,6 +42,7 @@ mod tests {
     let mut config_map = ConfigMap::new();
     let ts_plugin = RawPluginConfig {
       associations: None,
+      embedded: None,
       locked: false,
       overrides: Vec::new(),
       properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(40))]),
