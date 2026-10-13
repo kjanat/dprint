@@ -65,7 +65,7 @@ serde_json          = { version = "1.0.140", features = ["preserve_order"] }
 serde_path_to_error = "=0.1.20"
 sha2                = "=0.10.9"
 signal-hook         = "=0.4.5"
-similar             = "2.7.0"
+similar             = "3.2.0"
 syn                 = "1.0"
 sys_traits          = "=0.1.28"
 sysinfo             = { version = "=0.39.6", default-features = false }
