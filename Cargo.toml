@@ -66,7 +66,7 @@ serde_path_to_error = "=0.1.20"
 sha2                = "=0.10.9"
 signal-hook         = "=0.4.5"
 similar             = "2.7.0"
-syn                 = "1.0"
+syn                 = "3.0"
 sys_traits          = "=0.1.28"
 sysinfo             = { version = "=0.39.6", default-features = false }
 tar                 = "=0.4.46"
