@@ -20,7 +20,7 @@ jobs:
       - parallel:
           - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
           - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-          - uses: kjanat/runner@ad30f34c7352d89884b6d03febd9b16b4807ed56 # v0.27.1
+          - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # v0.28.0
       - name: Do it all
         working-directory: website
         run: runner install -s playground:build playground:test build:ci
