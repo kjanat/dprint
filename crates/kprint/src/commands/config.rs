@@ -996,9 +996,6 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
     },
   )
   .await?;
-  // the plugins the registry says are distributed on npm — their config
-  // entries move over to an npm specifier instead of a url
-  let npm_info_plugins = Rc::new(get_npm_info_plugins(environment).await);
   let mut plugin_responses = HashMap::new();
   let mut updates_per_scope = HashMap::with_capacity(scopes.len());
   // for `--dry-run`: the would-be config text per scope (plugin urls bumped),
@@ -1025,11 +1022,7 @@ pub async fn update_plugins_config_file<TEnvironment: Environment>(
       environment,
       plugin_resolver,
       config.plugins.sources.clone(),
-      PluginUpdateContext {
-        npm_info_plugins: npm_info_plugins.clone(),
-        config_dir,
-        age_cutoff,
-      },
+      PluginUpdateContext { config_dir, age_cutoff },
     )
     .await?;
 
@@ -1350,8 +1343,6 @@ struct PluginUpdateError {
 /// What a config file's plugins may update to beyond their own update urls.
 #[derive(Clone)]
 struct PluginUpdateContext {
-  /// The info file's npm distributed plugins, keyed by plugin name.
-  npm_info_plugins: Rc<HashMap<String, InfoFilePluginInfo>>,
   /// The directory the config file being updated lives in, stored on new npm
   /// references for later resolution.
   config_dir: Option<CanonicalizedPathBuf>,
@@ -1482,7 +1473,7 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
 
     // the plugin may have moved to npm, in which case the entry goes to its
     // package at the registry's latest version instead of following its url
-    if let Some((npm, plugin_kind)) = npm_package_for_update(&plugin_reference, plugin.info().name.as_str(), latest.as_ref(), &context) {
+    if let Some((npm, plugin_kind)) = npm_package_for_update(&plugin_reference, latest.as_ref()) {
       match npm.resolve_latest(environment, plugin_kind, context.npm_options(old_had_checksum)).await {
         // a package lagging the plugin's releases isn't checked for here: there's
         // no package version in the config yet, so the only comparison available
@@ -1563,9 +1554,7 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
 }
 
 /// Reads the plugin's own latest.json. Returns `None` when the plugin doesn't
-/// declare an update url (the caller decides whether that's worth a warning,
-/// since the plugin may still move to npm) or when the read failed, which is
-/// warned about here.
+/// declare an update url or when the read failed, which is warned about here.
 async fn read_plugin_latest_info(environment: &impl Environment, plugin: &PluginWrapper) -> Option<PluginUpdateUrlInfo> {
   let update_url = plugin.info().update_url.as_ref()?;
   let result = match Url::parse(update_url) {
@@ -1587,47 +1576,17 @@ async fn read_plugin_latest_info(environment: &impl Environment, plugin: &Plugin
 
 /// The npm package a config entry should move to, if any.
 ///
-/// Only an entry served from where the registry publishes moves — a local path
-/// or a self-hosted copy of a plugin stays where the user put it. The plugin's
-/// own latest.json is preferred over the info file, which covers plugins whose
-/// latest.json doesn't name the package (or that declare no update url).
-fn npm_package_for_update<'a>(
-  plugin_reference: &PluginSourceReference,
-  plugin_name: &str,
-  latest: Option<&'a PluginUpdateUrlInfo>,
-  context: &'a PluginUpdateContext,
-) -> Option<(&'a PluginNpmInfo, PluginKind)> {
+/// The installed plugin's own latest.json must explicitly name the package.
+/// Registry entries cannot establish identity by plugin name and origin:
+/// independent publishers may share both on hosts such as plugins.dprint.dev.
+/// Local paths and copies hosted on another origin are not migrated.
+fn npm_package_for_update<'a>(plugin_reference: &PluginSourceReference, latest: Option<&'a PluginUpdateUrlInfo>) -> Option<(&'a PluginNpmInfo, PluginKind)> {
   let PathSource::Remote(remote_source) = &plugin_reference.path_source else {
     return None;
   };
-  if let Some(latest) = latest
-    && let Some(npm) = &latest.npm
-    && is_same_origin(&remote_source.url, &latest.url)
-  {
-    return Some((npm, latest.plugin_kind()));
-  }
-  let info_plugin = context.npm_info_plugins.get(plugin_name)?;
-  let npm = info_plugin.npm.as_ref()?;
-  is_same_origin(&remote_source.url, &info_plugin.url).then_some((npm, info_plugin.plugin_kind()))
-}
-
-/// The info file's plugins that are distributed on npm, keyed by plugin name.
-///
-/// Failing to read the info file only means no plugin moves to npm — they
-/// still update via their own update urls — so it's logged and ignored.
-async fn get_npm_info_plugins(environment: &impl Environment) -> HashMap<String, InfoFilePluginInfo> {
-  match read_info_file(environment).await {
-    Ok(info) => info
-      .latest_plugins
-      .into_iter()
-      .filter(|plugin| plugin.npm.is_some())
-      .map(|plugin| (plugin.name.clone(), plugin))
-      .collect(),
-    Err(err) => {
-      log_debug!(environment, "Failed reading the plugin info file. {:#}", err);
-      HashMap::new()
-    }
-  }
+  let latest = latest?;
+  let npm = latest.npm.as_ref()?;
+  is_same_origin(&remote_source.url, &latest.url).then_some((npm, latest.plugin_kind()))
 }
 
 /// Whether going from `old_version` to `new_version` would move backwards.
@@ -1649,13 +1608,12 @@ fn is_version_downgrade(old_version: &str, new_version: &str) -> bool {
   }
 }
 
-/// Whether a config's plugin url and the info file's url are served from the
-/// same place. Plugins are matched to the info file by name, so this keeps a
-/// self-hosted build of a plugin from being moved to the registry's npm
-/// package.
-fn is_same_origin(config_url: &Url, info_url: &str) -> bool {
-  match Url::parse(info_url) {
-    Ok(info_url) => info_url.origin() == config_url.origin(),
+/// Keeps a copy hosted on another origin from following an npm migration
+/// declared in the plugin's own update metadata. This is an additional guard,
+/// not proof that two independently published plugins have the same identity.
+fn is_same_origin(config_url: &Url, update_url: &str) -> bool {
+  match Url::parse(update_url) {
+    Ok(update_url) => update_url.origin() == config_url.origin(),
     Err(_) => false,
   }
 }
@@ -5811,22 +5769,89 @@ text",
   }
 
   #[test]
-  fn config_update_moves_url_plugin_to_npm() {
-    // the info file says the plugin is distributed on npm, so the url entry
-    // moves to its package at the npm registry's version
-    let environment = npm_info_file_builder(&["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"])
+  fn config_update_preserves_the_publisher_when_registry_names_collide() {
+    let old_url = "https://plugins.dprint.dev/kjanat/test-plugin-0.1.0.wasm";
+    let new_url = "https://plugins.dprint.dev/kjanat/test-plugin-0.2.0.wasm";
+    let environment = npm_info_file_builder(&[old_url])
+      .add_remote_file_bytes(old_url, crate::test_helpers::WASM_PLUGIN_0_1_0_BYTES.to_vec())
+      .add_remote_file_bytes(new_url, crate::test_helpers::WASM_PLUGIN_BYTES.to_vec())
+      .add_remote_file(
+        "https://plugins.dprint.dev/dprint/test-plugin/latest.json",
+        &json!({ "schemaVersion": 1, "url": new_url, "version": "0.2.0" }).to_string(),
+      )
       .initialize()
       .build();
 
-    run_test_cli(vec!["config", "update"], &environment).unwrap();
+    run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
 
     let dprint_json = environment.read_file("/dprint.json").unwrap();
-    assert!(dprint_json.contains("\"npm:@dprint/test-plugin@0.3.0\""), "got: {dprint_json}");
-    assert!(!dprint_json.contains("plugins.dprint.dev"), "got: {dprint_json}");
+    assert!(dprint_json.contains(new_url), "got: {dprint_json}");
+    assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
     assert_eq!(
-      environment.take_stderr_messages(),
-      vec!["Updating test-plugin 0.1.0 to npm:@dprint/test-plugin@0.3.0...",]
+      environment.remote_file_download_count("https://registry.npmjs.org/@dprint/test-plugin/-/test-plugin-0.3.0.tgz"),
+      0
     );
+    assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0..."]);
+  }
+
+  #[test]
+  fn config_update_requires_npm_in_the_plugins_own_metadata() {
+    // Even the same directory and plugin name in info.json cannot authorize a
+    // migration when the installed plugin's metadata has no valid npm package.
+    for npm in [json!(null), json!({}), json!({ "name": "" })] {
+      let environment = npm_info_file_builder(&["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"])
+        .add_remote_file(
+          "https://plugins.dprint.dev/dprint/test-plugin/latest.json",
+          &json!({
+            "schemaVersion": 1,
+            "url": "https://plugins.dprint.dev/test-plugin.wasm",
+            "version": "0.2.0",
+            "npm": npm,
+          })
+          .to_string(),
+        )
+        .initialize()
+        .build();
+
+      run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+
+      let dprint_json = environment.read_file("/dprint.json").unwrap();
+      assert!(dprint_json.contains("\"https://plugins.dprint.dev/test-plugin.wasm\""), "got: {dprint_json}");
+      assert!(!dprint_json.contains("npm:"), "got: {dprint_json}");
+      assert_eq!(
+        environment.remote_file_download_count(&crate::test_helpers::npm_latest_version_url("@dprint/test-plugin")),
+        0
+      );
+      assert_eq!(environment.take_stderr_messages(), vec!["Updating test-plugin 0.1.0 to 0.2.0..."]);
+    }
+  }
+
+  #[test]
+  fn config_update_does_not_use_registry_npm_when_update_metadata_is_unavailable() {
+    let update_url = "https://plugins.dprint.dev/dprint/test-plugin/latest.json";
+    for invalid_metadata in [None, Some(b"invalid json".as_slice())] {
+      let environment = npm_info_file_builder(&["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"])
+        .initialize()
+        .build();
+      match invalid_metadata {
+        Some(bytes) => environment.add_remote_file_bytes(update_url, bytes.to_vec()),
+        None => environment.remove_remote_file(update_url),
+      }
+      let before = environment.read_file("/dprint.json").unwrap();
+
+      run_test_cli(vec!["config", "update", "--yes"], &environment).unwrap();
+
+      assert_eq!(environment.read_file("/dprint.json").unwrap(), before);
+      assert_eq!(
+        environment.remote_file_download_count(&crate::test_helpers::npm_latest_version_url("@dprint/test-plugin")),
+        0
+      );
+      let stderr = environment.take_stderr_messages();
+      assert!(
+        stderr.iter().any(|message| message.contains("Failed reading plugin latest info.")),
+        "got: {stderr:?}"
+      );
+    }
   }
 
   #[test]
@@ -5862,7 +5887,10 @@ text",
       "https://plugins.dprint.dev/test-plugin-0.1.0.wasm@{}",
       crate::utils::get_sha256_checksum(crate::test_helpers::WASM_PLUGIN_0_1_0_BYTES)
     );
-    let environment = npm_info_file_builder(&[&old_entry]).initialize().build();
+    let environment = npm_info_file_builder(&[&old_entry])
+      .add_remote_file("https://plugins.dprint.dev/dprint/test-plugin/latest.json", &test_plugin_latest_json(true))
+      .initialize()
+      .build();
 
     run_test_cli(vec!["config", "update"], &environment).unwrap();
 
@@ -5902,6 +5930,7 @@ text",
   #[test]
   fn config_update_dry_run_previews_an_npm_move() {
     let environment = npm_info_file_builder(&["https://plugins.dprint.dev/test-plugin-0.1.0.wasm"])
+      .add_remote_file("https://plugins.dprint.dev/dprint/test-plugin/latest.json", &test_plugin_latest_json(true))
       .initialize()
       .build();
     let before = environment.read_file("/dprint.json").unwrap();
@@ -6467,8 +6496,7 @@ text",
 
   #[test]
   fn config_update_only_moves_plugins_from_the_latest_files_origin() {
-    // same guard as the info file's, on the branch that reads the plugin's own
-    // latest.json: a self-hosted build still resolves the official latest.json
+    // a self-hosted build still resolves the official latest.json
     // through the update url baked into it, and that must not relocate it
     let mut builder = TestEnvironmentBuilder::new();
     let environment = add_npm_test_plugin_package(&mut builder, "0.3.0")
@@ -6532,9 +6560,8 @@ text",
   }
 
   #[test]
-  fn config_update_only_moves_plugins_from_the_info_files_origin() {
-    // plugins are matched to the info file by name, so a self-hosted build that
-    // happens to share a name isn't dragged onto the registry's npm package
+  fn config_update_does_not_move_a_self_hosted_plugin_to_the_registrys_npm_package() {
+    // A registry name collision must not migrate a self-hosted plugin either.
     let environment = npm_info_file_builder(&["https://example.com/test-plugin-0.1.0.wasm"])
       .add_remote_file_bytes(
         "https://example.com/test-plugin-0.1.0.wasm",
@@ -6583,6 +6610,16 @@ text",
 
     let environment = TestEnvironmentBuilder::new()
       .add_remote_process_plugin()
+      .add_remote_file(
+        "https://plugins.dprint.dev/dprint/test-process-plugin/latest.json",
+        &json!({
+          "schemaVersion": 1,
+          "url": "https://plugins.dprint.dev/test-process.json",
+          "version": "0.1.0",
+          "npm": { "name": "@dprint/test-process" },
+        })
+        .to_string(),
+      )
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
           name: "test-process-plugin".to_string(),
@@ -6621,6 +6658,16 @@ text",
   fn config_update_keeps_a_process_plugin_on_its_url_when_the_move_is_declined() {
     let environment = TestEnvironmentBuilder::new()
       .add_remote_process_plugin()
+      .add_remote_file(
+        "https://plugins.dprint.dev/dprint/test-process-plugin/latest.json",
+        &json!({
+          "schemaVersion": 1,
+          "url": "https://plugins.dprint.dev/test-process.json",
+          "version": "0.1.0",
+          "npm": { "name": "@dprint/test-process" },
+        })
+        .to_string(),
+      )
       .with_info_file(|info| {
         info.add_plugin(TestInfoFilePlugin {
           name: "test-process-plugin".to_string(),
