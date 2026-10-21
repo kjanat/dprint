@@ -1,7 +1,7 @@
 [
   {
     "target": "x86_64-unknown-freebsd",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "freebsd-vm",
     "test": true
   },
@@ -31,20 +31,20 @@
   },
   {
     "target": "x86_64-unknown-linux-gnu",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "zigbuild",
     "test": true,
     "glibc": "2.17"
   },
   {
     "target": "x86_64-unknown-linux-musl",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cargo",
     "test": false
   },
   {
     "target": "aarch64-unknown-linux-gnu",
-    "runner": "ubuntu-24.04-arm",
+    "runner": "ubuntu-26.04-arm",
     "build": "zigbuild",
     "test": true,
     "glibc": "2.17",
@@ -52,51 +52,51 @@
   },
   {
     "target": "aarch64-unknown-linux-musl",
-    "runner": "ubuntu-24.04-arm",
+    "runner": "ubuntu-26.04-arm",
     "build": "cargo",
     "test": false,
     "master_only": true
   },
   {
     "target": "riscv64gc-unknown-linux-gnu",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   },
   {
     "target": "loongarch64-unknown-linux-gnu",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   },
   {
     "target": "loongarch64-unknown-linux-musl",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   },
   {
     "target": "powerpc64le-unknown-linux-gnu",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   },
   {
     "target": "powerpc64le-unknown-linux-musl",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "musl-image",
     "test": false,
     "image": "ghcr.io/rust-cross/rust-musl-cross:powerpc64le-musl"
   },
   {
     "target": "aarch64-linux-android",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   },
   {
     "target": "x86_64-linux-android",
-    "runner": "ubuntu-22.04",
+    "runner": "ubuntu-26.04",
     "build": "cross",
     "test": false
   }
