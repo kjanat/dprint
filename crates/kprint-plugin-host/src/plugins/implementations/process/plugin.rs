@@ -78,7 +78,8 @@ fn write_executable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::process::Command::new("sh")
       .args([
         "-c",
-        r#"set -e; temp="$1.$$"; trap 'rm -f "${temp}"' EXIT; trap 'exit 1' HUP INT TERM; mkdir -p "$(dirname "$1")"; cat > "${temp}"; chmod +x "${temp}"; mv -f "${temp}" "$1""#,
+        // `mv` moves the file into a directory at the path rather than failing
+        r#"set -e; temp="$1.$$"; trap 'rm -f "${temp}"' EXIT; trap 'exit 1' HUP INT TERM; mkdir -p "$(dirname "$1")"; cat > "${temp}"; chmod +x "${temp}"; if [ -d "$1" ]; then echo "$1 is a directory" >&2; exit 1; fi; mv -f "${temp}" "$1""#,
         "sh",
       ])
       .arg(path)
@@ -268,12 +269,12 @@ mod test {
   #[test]
   fn removes_the_temporary_file_when_writing_fails() {
     let dir = tempfile::tempdir().unwrap();
+    // a directory where the file goes fails it after the temporary file is
+    // written, for any user (unlike permissions, which root bypasses)
     let target = dir.path().join("target");
-    assert!(Command::new("mkdir").arg("-m").arg("555").arg(&target).status().unwrap().success());
-    let result = write_executable(&target, b"#!/bin/sh\nexit 0\n");
-    assert!(Command::new("chmod").arg("755").arg(&target).status().unwrap().success());
-    let message = result.unwrap_err().to_string();
-    assert!(message.contains("Permission denied"), "{message}");
+    assert!(Command::new("mkdir").arg(&target).status().unwrap().success());
+    let message = write_executable(&target, b"#!/bin/sh\nexit 0\n").unwrap_err().to_string();
+    assert!(message.contains("is a directory"), "{message}");
     assert_eq!(dir_entries(dir.path()), "target\n");
     assert_eq!(dir_entries(&target), "");
   }
