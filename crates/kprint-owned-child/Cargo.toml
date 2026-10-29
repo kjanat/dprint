@@ -18,6 +18,7 @@ winapi = { workspace = true, features = [
   "handleapi",
   "jobapi",
   "jobapi2",
+  "libloaderapi",
   "processthreadsapi",
   "synchapi",
   "tlhelp32",

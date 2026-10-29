@@ -88,6 +88,23 @@ impl OwnedChild {
     Self::spawn_with(command, false)
   }
 
+  /// Spawns the command as an owned child like [`OwnedChild::spawn`], from a
+  /// thread that runs as long as this process does, which the child is tied
+  /// to on Linux. So it can be called from a thread that ends before the
+  /// child should (ex. a blocking one of an async runtime, so that spawning
+  /// doesn't block the runtime's thread). It blocks until the child is
+  /// spawned.
+  pub fn spawn_from_owner_thread(command: Command) -> io::Result<Self> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    return owner_thread::spawn(command);
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+      // only Linux ties a child to the thread that spawned it
+      let mut command = command;
+      Self::spawn(&mut command)
+    }
+  }
+
   fn spawn_with(command: &mut Command, tied_to_owner: bool) -> io::Result<Self> {
     let mut spawning = Spawning::start()?;
     sys::prepare(command, tied_to_owner);
@@ -154,6 +171,14 @@ impl OwnedChild {
     sys::wait(&mut self.child, true)?.ok_or_else(|| io::Error::other("The process exited without a status."))
   }
 
+  /// Something that waits for the child to exit on another thread (ex. a
+  /// blocking one), while this stays where it is, so that it's still killed
+  /// right away when dropped. Once it says the child exited, get its status
+  /// with [`OwnedChild::try_wait`].
+  pub fn exit_waiter(&self) -> io::Result<ExitWaiter> {
+    sys::ExitWaiter::new(&self.child).map(ExitWaiter)
+  }
+
   /// The child's exit status, when it exited. What it started keeps running
   /// until this is killed or dropped, and on unix the child isn't reaped
   /// until then (see [`OwnedChild::wait`]).
@@ -188,6 +213,59 @@ impl Drop for OwnedChild {
     // also when the child exited on its own, as it may have left processes
     // running (ex. a shell's background commands)
     let _ = self.kill();
+  }
+}
+
+/// The thread that spawns the children of
+/// [`OwnedChild::spawn_from_owner_thread`]. It's started the first time one is
+/// spawned and never ends, so the children tied to it live until they're
+/// killed or this process exits.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod owner_thread {
+  use std::io;
+  use std::process::Command;
+  use std::sync::OnceLock;
+  use std::sync::mpsc;
+
+  use super::OwnedChild;
+
+  type Request = (Command, mpsc::Sender<io::Result<OwnedChild>>);
+
+  pub fn spawn(command: Command) -> io::Result<OwnedChild> {
+    static REQUESTS: OnceLock<io::Result<mpsc::Sender<Request>>> = OnceLock::new();
+    let requests = REQUESTS.get_or_init(|| {
+      let (sender, receiver) = mpsc::channel::<Request>();
+      std::thread::Builder::new().name("dprint-owned-child-spawner".to_string()).spawn(move || {
+        for (mut command, reply) in receiver {
+          // the one asking for it may have stopped waiting, in which case
+          // dropping the child kills it
+          let _ignore = reply.send(OwnedChild::spawn(&mut command));
+        }
+      })?;
+      Ok(sender)
+    });
+    let requests = requests
+      .as_ref()
+      .map_err(|err| io::Error::new(err.kind(), format!("Could not start the thread that spawns owned processes. {}", err)))?;
+    let (reply, spawned) = mpsc::channel();
+    requests
+      .send((command, reply))
+      .map_err(|_| io::Error::other("The thread that spawns owned processes stopped."))?;
+    spawned
+      .recv()
+      .map_err(|_| io::Error::other("The thread that spawns owned processes stopped."))?
+  }
+}
+
+/// Waits for an [`OwnedChild`] to exit without owning it (see
+/// [`OwnedChild::exit_waiter`]).
+pub struct ExitWaiter(sys::ExitWaiter);
+
+impl ExitWaiter {
+  /// Whether the child exited within the timeout. Blocks the thread until
+  /// then, so call it from one that may block.
+  pub fn wait_timeout(&self, timeout: std::time::Duration) -> io::Result<bool> {
+    self.0.wait_timeout(timeout)
   }
 }
 
@@ -470,6 +548,59 @@ mod sys {
     }
   }
 
+  /// Waits for a process to exit by its id, so that it's waited for on
+  /// another thread while its `Child` is used and killed where it is. It
+  /// polls without reaping, as unix has no way to wait for a process with a
+  /// timeout. Once the `Child` is reaped, the id may be another process's,
+  /// so a wait that outlives it ends within its timeout at most.
+  pub struct ExitWaiter(libc::pid_t);
+
+  impl ExitWaiter {
+    pub fn new(child: &Child) -> io::Result<Self> {
+      Ok(Self(child.id() as libc::pid_t))
+    }
+
+    /// Whether the process exited within the timeout.
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> io::Result<bool> {
+      let deadline = std::time::Instant::now() + timeout;
+      let mut delay = std::time::Duration::from_micros(100);
+      loop {
+        if self.has_exited()? {
+          return Ok(true);
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+          return Ok(false);
+        }
+        std::thread::sleep(delay.min(deadline - now));
+        delay = (delay * 2).min(std::time::Duration::from_millis(5));
+      }
+    }
+
+    /// Whether the process exited, without reaping it. One that's no longer
+    /// this process's child was reaped (ex. by [`OwnedChild::kill`] while
+    /// this waits), so it exited.
+    fn has_exited(&self) -> io::Result<bool> {
+      loop {
+        // SAFETY: an all zero siginfo_t is valid, and is what's left when
+        // there was nothing to report
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: a plain system call with a pointer to the struct it fills in
+        let result = unsafe { libc::waitid(libc::P_PID, self.0 as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) };
+        if result == 0 {
+          // SAFETY: waitid filled in the child's exit, or nothing
+          return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+          Some(libc::EINTR) => continue,
+          Some(libc::ECHILD) => return Ok(true),
+          _ => return Err(err),
+        }
+      }
+    }
+  }
+
   pub fn kill_all() {
     for id in lock_groups().iter() {
       // SAFETY: a plain system call
@@ -493,32 +624,84 @@ mod sys {
   use std::process::Command;
   use std::process::ExitStatus;
 
+  use std::sync::OnceLock;
+
   use winapi::shared::minwindef::BOOL;
   use winapi::shared::minwindef::DWORD;
   use winapi::shared::minwindef::FALSE;
+  use winapi::shared::minwindef::FARPROC;
   use winapi::shared::minwindef::LPVOID;
+  use winapi::shared::winerror::WAIT_TIMEOUT;
   use winapi::um::handleapi::CloseHandle;
+  use winapi::um::handleapi::DuplicateHandle;
   use winapi::um::handleapi::INVALID_HANDLE_VALUE;
   use winapi::um::jobapi::IsProcessInJob;
   use winapi::um::jobapi2::AssignProcessToJobObject;
   use winapi::um::jobapi2::CreateJobObjectW;
   use winapi::um::jobapi2::SetInformationJobObject;
   use winapi::um::jobapi2::TerminateJobObject;
+  use winapi::um::libloaderapi::GetModuleHandleW;
+  use winapi::um::libloaderapi::GetProcAddress;
   use winapi::um::processthreadsapi::GetCurrentProcess;
   use winapi::um::processthreadsapi::OpenThread;
   use winapi::um::processthreadsapi::ResumeThread;
   use winapi::um::processthreadsapi::TerminateProcess;
+  use winapi::um::synchapi::WaitForSingleObject;
   use winapi::um::tlhelp32::CreateToolhelp32Snapshot;
   use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
   use winapi::um::tlhelp32::THREADENTRY32;
   use winapi::um::tlhelp32::Thread32First;
   use winapi::um::tlhelp32::Thread32Next;
   use winapi::um::winbase::CREATE_SUSPENDED;
+  use winapi::um::winbase::WAIT_FAILED;
+  use winapi::um::winbase::WAIT_OBJECT_0;
   use winapi::um::winnt::HANDLE;
   use winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   use winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
   use winapi::um::winnt::JobObjectExtendedLimitInformation;
+  use winapi::um::winnt::SYNCHRONIZE;
   use winapi::um::winnt::THREAD_SUSPEND_RESUME;
+
+  /// ntdll's `NtResumeProcess`, which resumes every thread of a process.
+  type NtResumeProcess = unsafe extern "system" fn(process: HANDLE) -> i32;
+  /// ntdll's `RtlNtStatusToDosError`, which gives the Win32 error of a status.
+  type RtlNtStatusToDosError = unsafe extern "system" fn(status: i32) -> u32;
+
+  /// The ntdll functions that resume a process by its handle. They're
+  /// exported by ntdll on every Windows since XP, but aren't documented, so
+  /// they're looked up rather than linked: without them, dprint still starts
+  /// and resumes the process the documented way.
+  struct NtResume {
+    resume_process: NtResumeProcess,
+    status_to_error: RtlNtStatusToDosError,
+  }
+
+  fn nt_resume() -> Option<&'static NtResume> {
+    static NT_RESUME: OnceLock<Option<NtResume>> = OnceLock::new();
+    NT_RESUME
+      .get_or_init(|| {
+        let ntdll_name = "ntdll.dll".encode_utf16().chain([0]).collect::<Vec<u16>>();
+        // SAFETY: ntdll is loaded in every process, and stays loaded, and the
+        // names are nul terminated
+        unsafe {
+          let ntdll = GetModuleHandleW(ntdll_name.as_ptr());
+          if ntdll.is_null() {
+            return None;
+          }
+          let resume_process = GetProcAddress(ntdll, c"NtResumeProcess".as_ptr());
+          let status_to_error = GetProcAddress(ntdll, c"RtlNtStatusToDosError".as_ptr());
+          if resume_process.is_null() || status_to_error.is_null() {
+            return None;
+          }
+          // SAFETY: the exports have these signatures
+          Some(NtResume {
+            resume_process: std::mem::transmute::<FARPROC, NtResumeProcess>(resume_process),
+            status_to_error: std::mem::transmute::<FARPROC, RtlNtStatusToDosError>(status_to_error),
+          })
+        }
+      })
+      .as_ref()
+  }
 
   pub fn prepare(command: &mut Command, _tied_to_owner: bool) {
     // created suspended, so it can't run (and start processes) before it's in
@@ -592,7 +775,7 @@ mod sys {
           }
           return Err(err);
         }
-        resume_process(child.id())?;
+        resume_process(child)?;
         Ok(Self(job))
       }
     }
@@ -612,8 +795,30 @@ mod sys {
 
   /// Resumes the threads of a process that was created suspended, which is
   /// its primary thread. (Rust's `Child` keeps that thread's handle, but only
-  /// gives it out on nightly.)
-  fn resume_process(process_id: DWORD) -> io::Result<()> {
+  /// gives it out on nightly.) This goes by the process's handle, as finding
+  /// its thread otherwise takes a snapshot of every thread on the system,
+  /// which costs a lot for each of the many short children of a hot path.
+  fn resume_process(child: &Child) -> io::Result<()> {
+    #[cfg(test)]
+    if super::test::resumes_by_thread_snapshot() {
+      return resume_process_threads(child.id());
+    }
+    let Some(nt_resume) = nt_resume() else {
+      return resume_process_threads(child.id());
+    };
+    // SAFETY: the child's process handle is open, with every access right
+    let status = unsafe { (nt_resume.resume_process)(child.as_raw_handle() as HANDLE) };
+    if status < 0 {
+      // SAFETY: a plain conversion of the status
+      let code = unsafe { (nt_resume.status_to_error)(status) };
+      return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    Ok(())
+  }
+
+  /// Resumes the threads of a process by its id, finding them in a snapshot
+  /// of every thread on the system (see `resume_process`).
+  fn resume_process_threads(process_id: DWORD) -> io::Result<()> {
     // SAFETY: the snapshot and thread handles are open where they're used, and
     // the entry has the size it says
     unsafe {
@@ -637,6 +842,46 @@ mod sys {
         return Err(io::Error::other("Could not find the process's thread to start it."));
       }
       Ok(())
+    }
+  }
+
+  /// Waits for a process to exit by a handle of its own, so that it's waited
+  /// for on another thread while its `Child` is used and killed where it is.
+  /// The handle keeps the process's id from being given to another process.
+  pub struct ExitWaiter(Handle);
+
+  impl ExitWaiter {
+    pub fn new(child: &Child) -> io::Result<Self> {
+      let mut handle: HANDLE = std::ptr::null_mut();
+      // SAFETY: the child's process handle is open, and the duplicate is
+      // written to `handle`, which closes it when dropped
+      let duplicated = unsafe {
+        DuplicateHandle(
+          GetCurrentProcess(),
+          child.as_raw_handle() as HANDLE,
+          GetCurrentProcess(),
+          &mut handle,
+          SYNCHRONIZE,
+          FALSE,
+          0,
+        )
+      };
+      if duplicated == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Handle::new(handle).map(Self)
+    }
+
+    /// Whether the process exited within the timeout.
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> io::Result<bool> {
+      let millis = DWORD::try_from(timeout.as_millis()).unwrap_or(DWORD::MAX - 1);
+      // SAFETY: the handle is open until this is dropped
+      match unsafe { WaitForSingleObject(self.0.0, millis) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        other => Err(io::Error::other(format!("Unexpected result waiting for the process: {}", other))),
+      }
     }
   }
 
@@ -720,6 +965,32 @@ mod test {
     /// Whether killing a group on this thread fails, the way the OS refusing
     /// to would (the syscall is the only thing left out).
     static FAIL_KILLING_GROUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  }
+
+  thread_local! {
+    /// Whether spawning on this thread resumes the child the way it's done
+    /// without ntdll's `NtResumeProcess`.
+    #[cfg(windows)]
+    static RESUME_BY_THREAD_SNAPSHOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  }
+
+  #[cfg(windows)]
+  pub fn resumes_by_thread_snapshot() -> bool {
+    RESUME_BY_THREAD_SNAPSHOT.with(|resume| resume.get())
+  }
+
+  #[cfg(windows)]
+  #[test]
+  fn starts_a_child_without_nt_resume_process() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    RESUME_BY_THREAD_SNAPSHOT.with(|resume| resume.set(true));
+    let child = OwnedChild::spawn(&mut heartbeat.command_starting_it());
+    RESUME_BY_THREAD_SNAPSHOT.with(|resume| resume.set(false));
+    let child = child.unwrap();
+    assert!(heartbeat.is_beating());
+    drop(child);
+    assert!(heartbeat.stopped());
   }
 
   pub fn fail_killing_group() -> io::Result<()> {
@@ -947,6 +1218,36 @@ mod test {
   }
 
   #[test]
+  fn exit_waiter_waits_for_the_child_on_another_thread_while_it_stays_owned() {
+    let _serial = serial();
+    let heartbeat = Heartbeat::new();
+    let mut child = OwnedChild::spawn(&mut heartbeat.command_starting_it()).unwrap();
+    assert!(heartbeat.is_beating());
+    let waiter = child.exit_waiter().unwrap();
+    // still running
+    let start = Instant::now();
+    assert!(!waiter.wait_timeout(Duration::from_millis(200)).unwrap());
+    assert!(start.elapsed() >= Duration::from_millis(200));
+    // killed where it's owned while another thread waits, which ends the wait
+    // well before its timeout
+    let waiting = std::thread::spawn(move || {
+      let start = Instant::now();
+      (waiter.wait_timeout(Duration::from_secs(30)).unwrap(), start.elapsed())
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    child.kill().unwrap();
+    let (exited, waited) = waiting.join().unwrap();
+    assert!(exited);
+    assert!(waited < Duration::from_secs(5), "{:?}", waited);
+    assert!(heartbeat.stopped());
+
+    // and a child that exits on its own
+    let mut child = OwnedChild::spawn(&mut heartbeat.command_starting_it_and_exiting()).unwrap();
+    assert!(child.exit_waiter().unwrap().wait_timeout(Duration::from_secs(10)).unwrap());
+    assert!(child.try_wait().unwrap().is_some_and(|status| status.success()));
+  }
+
+  #[test]
   fn kills_what_an_exited_child_left_running() {
     let _serial = serial();
     let heartbeat = Heartbeat::new();
@@ -1089,5 +1390,22 @@ mod test {
     assert!(sleep_is_running("4357"));
     kill_all_owned_children();
     assert!(wait_until(|| !sleep_is_running("4357")));
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn a_child_spawned_from_the_owner_thread_outlives_the_thread_that_asked() {
+    let _serial = serial();
+    let mut command = Command::new("sleep");
+    command.arg("4358");
+    let child = std::thread::spawn(move || OwnedChild::spawn_from_owner_thread(command).unwrap())
+      .join()
+      .unwrap();
+    // the asking thread is gone, while the child is still tied to the
+    // owner thread that spawned it
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(sleep_is_running("4358"));
+    drop(child);
+    assert!(wait_until(|| !sleep_is_running("4358")));
   }
 }
