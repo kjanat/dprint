@@ -16,6 +16,9 @@ ignored = ["libc"]
 [[bin]]
 name = "dprint"
 path = "src/main.rs"
+# it has no tests of its own, and its test harness wouldn't import the DLLs
+# that build.rs delay loads for it, which the linker warns about
+test = false
 
 [dependencies]
 kprint-async-runtime  = { workspace = true }
