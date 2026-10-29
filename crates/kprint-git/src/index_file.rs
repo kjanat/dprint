@@ -632,8 +632,9 @@ mod test {
       return;
     };
     let hook = repo.path(".git/fsmonitor-hook");
+    let hook_command = format!("sh {}", repo.shell_path(".git/fsmonitor-hook"));
     std::fs::write(&hook, "printf 'tok:1\\0/'\n").unwrap();
-    repo.git(&["config", "core.fsmonitor", &format!("sh {}", hook.display())]);
+    repo.git(&["config", "core.fsmonitor", &hook_command]);
     repo.git(&["config", "core.fsmonitorHookVersion", "2"]);
     for path in ["a", "b", "c", "sub/d"] {
       repo.write(path, path.as_bytes());

@@ -576,7 +576,7 @@ mod test {
     repo.git(&["add", "d*/t"]);
 
     let cache = git_cache(&repo, "--untracked-files=normal");
-    assert_eq!(cache.ident, format!("Location {}, system Linux", repo.root().display()).as_bytes());
+    assert_eq!(cache.ident, repo.untracked_cache_ident().as_bytes());
     assert_eq!(cache.dir_flags, DIR_SHOW_OTHER_DIRECTORIES | DIR_HIDE_EMPTY_DIRECTORIES);
     assert_eq!(cache.exclude_per_dir, b".gitignore");
     assert_eq!(untracked_of(&cache, ""), vec!["new.ts", "newdir/"]);

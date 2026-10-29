@@ -66,6 +66,26 @@ impl TempRepo {
     self.root.join(path)
   }
 
+  /// The path of a file in the repository for a command git runs with a
+  /// shell, which takes `\` for an escape, so with `/` separators.
+  pub fn shell_path(&self, path: &str) -> String {
+    self.path(path).to_string_lossy().replace('\\', "/")
+  }
+
+  /// The ident git writes in this repository's untracked cache: its work
+  /// tree as git has it (ex. with `/` separators and long names on Windows),
+  /// and `uname`'s system name, which Git for Windows gives as "Windows".
+  pub fn untracked_cache_ident(&self) -> String {
+    let work_tree = String::from_utf8(self.git(&["rev-parse", "--show-toplevel"])).unwrap();
+    let system = if cfg!(windows) {
+      "Windows".to_string()
+    } else {
+      let output = Command::new("uname").arg("-s").output().unwrap();
+      String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    format!("Location {}, system {}", work_tree.trim(), system)
+  }
+
   pub fn read(&self, path: &str) -> Vec<u8> {
     std::fs::read(self.root.join(path)).unwrap()
   }

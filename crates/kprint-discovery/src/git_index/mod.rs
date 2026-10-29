@@ -188,18 +188,18 @@ impl SplitFirstNul for Vec<u8> {
   }
 }
 
-/// Git puts `uname`'s `sysname` into the untracked cache's ident.
-fn system_name() -> Result<&'static str> {
-  Ok(match std::env::consts::OS {
-    "linux" | "android" => "Linux",
-    "macos" => "Darwin",
-    "freebsd" => "FreeBSD",
-    "netbsd" => "NetBSD",
-    "openbsd" => "OpenBSD",
-    "dragonfly" => "DragonFly",
-    "solaris" | "illumos" => "SunOS",
-    os => bail!("unknown system name for {}", os),
-  })
+/// Git puts `uname`'s `sysname` into the untracked cache's ident, so this
+/// gets it the same way.
+fn system_name() -> Result<String> {
+  // SAFETY: an all zero utsname is valid, and is what uname fills in
+  let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
+  // SAFETY: a plain system call with a pointer to the struct it fills in
+  if unsafe { libc::uname(&mut uts) } != 0 {
+    return Err(anyhow!("uname failed: {}", std::io::Error::last_os_error()));
+  }
+  // SAFETY: uname wrote a nul terminated string to sysname
+  let sysname = unsafe { std::ffi::CStr::from_ptr(uts.sysname.as_ptr()) };
+  Ok(sysname.to_string_lossy().into_owned())
 }
 
 fn maybe_read_file_bytes(environment: &impl Environment, path: impl AsRef<Path>) -> Result<Option<Vec<u8>>> {
@@ -728,7 +728,8 @@ mod test {
           .collect(),
         dirty_entries: Vec::new(),
         root,
-        ident: "Location /repo, system Linux".to_string(),
+        // git's, for this system (see `system_name`)
+        ident: format!("Location /repo, system {}", system_name().unwrap()),
         extra_extensions: Vec::new(),
         has_fsmonitor: true,
         has_daemon: true,
@@ -959,7 +960,7 @@ mod test {
   #[test]
   fn walks_when_the_untracked_cache_is_for_another_work_tree() {
     let mut fixture = Fixture::new();
-    fixture.ident = "Location /elsewhere, system Linux".to_string();
+    fixture.ident = format!("Location /elsewhere, system {}", system_name().unwrap());
     let environment = fixture.write_index();
     assert_walks_instead(&environment, default_options(&environment, "/repo"), "the untracked cache is for");
   }
@@ -1050,6 +1051,8 @@ mod test {
   fn builds_the_untracked_cache_ident() {
     if cfg!(target_os = "linux") {
       assert_eq!(system_name().unwrap(), "Linux");
+    } else if cfg!(target_os = "macos") {
+      assert_eq!(system_name().unwrap(), "Darwin");
     }
     assert_eq!(file_name_of(b"a/b/c"), b"c");
     assert_eq!(parent_of(b"a/b/c"), b"a/b");
@@ -1077,6 +1080,10 @@ mod test {
       let root = environment.canonicalize(dir.path()).unwrap().into_path_buf();
       let repo = RealRepo { _dir: dir, root, environment };
       repo.git(&["init", "-q"]);
+      // git turns it on for a case insensitive file system (ex. macOS'),
+      // where dprint doesn't use the index, and no path here differs only by
+      // case
+      repo.git(&["config", "core.ignoreCase", "false"]);
       let hook = repo.root.join(".git").join("fsmonitor-hook");
       repo.environment.write_file(&hook, "printf 'builtin:dprint-test:1\\0/'\n").unwrap();
       repo.git(&["config", "core.untrackedCache", "true"]);

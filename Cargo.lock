@@ -1519,6 +1519,7 @@ dependencies = [
  "kprint-host-api",
  "kprint-platform",
  "kprint-test-support",
+ "libc",
  "parking_lot",
  "pretty_assertions",
  "tempfile",

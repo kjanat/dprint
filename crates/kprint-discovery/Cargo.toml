@@ -21,3 +21,7 @@ kprint-git                  = { workspace = true, features = ["test-util"] }
 kprint-test-support         = { workspace = true }
 pretty_assertions.workspace = true
 tempfile.workspace          = true
+
+[target."cfg(unix)".dependencies]
+# uname, for the git index scan (see `git_index::system_name`)
+libc = { workspace = true }
