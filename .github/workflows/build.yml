@@ -73,6 +73,9 @@ jobs:
           arch: x86_64
           mem: 8192
           cpu: 2
+          # only packaging (release) uses what the VM builds, and copying all
+          # of target back (gigabytes) can drop the connection
+          copyback: ${{ inputs.profile == 'release' }}
           prepare: |
             set -eu
             pkg install -y curl git pkgconf
@@ -89,6 +92,13 @@ jobs:
             cargo build -p kprint -p test-process-plugin --locked --target "${target}" ${release}
             cargo test --locked --target "${target}" --all-features ${release}
             sh .github/scripts/freebsd-smoke.sh "target/${target}/${PROFILE}/dprint"
+            if [ "${PROFILE}" = release ]; then
+              # the binary is all packaging needs, so it's all that's copied back
+              mv "target/${target}/release/dprint" /tmp/dprint
+              rm -rf target
+              mkdir -p "target/${target}/release"
+              mv /tmp/dprint "target/${target}/release/dprint"
+            fi
 
       - name: Test shell installer
         if: inputs.profile == 'debug' && matrix.test && matrix.build != 'freebsd-vm'
