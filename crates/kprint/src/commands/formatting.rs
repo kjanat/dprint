@@ -2859,7 +2859,7 @@ text2"
     run_test_cli(vec!["fmt", "--", file_path], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path).unwrap(), "text1_formatted");
   }
 
   #[cfg(unix)]
@@ -3831,7 +3831,7 @@ text2"
     run_test_cli(vec!["fmt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file(&file_path1).unwrap(), "text1_formatted");
+    assert_eq!(environment.read_file(file_path1).unwrap(), "text1_formatted");
   }
 
   #[test]

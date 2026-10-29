@@ -78,46 +78,28 @@ fn is_process_active(process_id: u32) -> bool {
 mod test {
   use super::is_process_active;
   use kprint_owned_child::OwnedChild;
-  use std::path::PathBuf;
   use std::process::Command;
+  use std::process::Stdio;
 
   #[test]
   fn should_tell_when_process_active() {
-    let dprint_exe = get_dprint_exe();
-    // launch a long running process
-    let mut child = OwnedChild::spawn(
-      Command::new(dprint_exe)
-        .arg("editor-service")
-        .arg("--parent-pid")
-        .arg(std::process::id().to_string()),
-    )
-    .unwrap();
+    // launch a long running process, one every system has, so the test
+    // doesn't need anything built first
+    let mut command = if cfg!(windows) {
+      let mut command = Command::new("ping");
+      command.args(["-n", "600", "127.0.0.1"]);
+      command
+    } else {
+      let mut command = Command::new("sleep");
+      command.arg("600");
+      command
+    };
+    let mut child = OwnedChild::spawn(command.stdout(Stdio::null())).unwrap();
 
     let pid = child.id();
     assert!(is_process_active(pid));
     // also waits for it to exit
     child.kill().unwrap();
     assert!(!is_process_active(pid));
-  }
-
-  fn get_dprint_exe() -> PathBuf {
-    let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR").to_string()).join("../../target");
-    let profile_dir_name = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let exe_name = if cfg!(target_os = "windows") { "dprint.exe" } else { "dprint" };
-    let exe_path = target_dir.join(profile_dir_name).join(exe_name);
-    if exe_path.exists() {
-      return exe_path;
-    } else {
-      for dir in std::fs::read_dir(&target_dir).unwrap() {
-        let entry = dir.unwrap();
-        if entry.file_type().unwrap().is_dir() {
-          let exe_path = entry.path().join(profile_dir_name).join(exe_name);
-          if exe_path.exists() {
-            return exe_path;
-          }
-        }
-      }
-    }
-    panic!("Please run `cargo build` before running the tests.")
   }
 }

@@ -5,11 +5,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use anyhow::bail;
 use kprint_git::EntryKind;
+#[cfg(unix)]
 use kprint_git::FsmonitorData;
 use kprint_git::IndexEntry;
+#[cfg(unix)]
 use kprint_git::UntrackedCache;
 
 use crate::environment::DiscoveryEnvironment as Environment;
+#[cfg(unix)]
 use crate::git_repo::GitRepo;
 use crate::git_repo::find_repo;
 use crate::git_repo::read_index;
@@ -28,12 +31,18 @@ pub(crate) struct IndexDir {
 /// neither does dprint.
 #[derive(Debug)]
 pub struct RepoIndex {
+  // the repository, hash length, fsmonitor data and untracked cache are for
+  // the git index scan, which is unix only (see `git_index`)
+  #[cfg(unix)]
   pub(crate) repo: GitRepo,
   work_tree: DirPrefix,
+  #[cfg(unix)]
   pub(crate) hash_len: usize,
   /// Sorted by path, then by stage, like git's index.
   pub(crate) entries: Vec<IndexEntry>,
+  #[cfg(unix)]
   pub(crate) fsmonitor: Option<FsmonitorData>,
+  #[cfg(unix)]
   pub(crate) untracked_cache: Option<UntrackedCache>,
 }
 
@@ -58,13 +67,20 @@ impl RepoIndex {
     let Some(repo) = find_repo(environment, dir)? else {
       bail!("not in a git work tree");
     };
+    #[cfg(unix)]
     let (index, hash_len) = read_index(environment, &repo)?;
+    #[cfg(not(unix))]
+    let (index, _) = read_index(environment, &repo)?;
     Ok(RepoIndex {
       work_tree: DirPrefix::new(repo.work_tree.clone()),
+      #[cfg(unix)]
       repo,
+      #[cfg(unix)]
       hash_len,
       entries: index.entries,
+      #[cfg(unix)]
       fsmonitor: index.fsmonitor,
+      #[cfg(unix)]
       untracked_cache: index.untracked_cache,
     })
   }
@@ -73,14 +89,18 @@ impl RepoIndex {
   pub(crate) fn for_entries(work_tree: &Path, entries: Vec<IndexEntry>) -> Self {
     RepoIndex {
       work_tree: DirPrefix::new(work_tree.to_path_buf()),
+      #[cfg(unix)]
       repo: GitRepo {
         work_tree: work_tree.to_path_buf(),
         git_dir: work_tree.join(".git"),
         common_dir: work_tree.join(".git"),
       },
+      #[cfg(unix)]
       hash_len: 20,
       entries,
+      #[cfg(unix)]
       fsmonitor: None,
+      #[cfg(unix)]
       untracked_cache: None,
     }
   }
@@ -93,6 +113,7 @@ impl RepoIndex {
   }
 
   /// Whether the index has an entry for a path relative to the work tree.
+  #[cfg(any(unix, test))]
   pub(crate) fn has_entry(&self, path: &[u8]) -> bool {
     !self.entries_for(path).is_empty()
   }

@@ -75,16 +75,18 @@ pub fn path_to_slash_bytes(path: &Path) -> Cow<'_, [u8]> {
 #[derive(Debug, Clone)]
 pub(crate) struct DirPrefix {
   dir: PathBuf,
+  /// Only unix paths are compared as bytes.
+  #[cfg(unix)]
   is_plain: bool,
 }
 
 impl DirPrefix {
   pub fn new(dir: PathBuf) -> Self {
-    #[cfg(unix)]
-    let is_plain = has_plain_separators(std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str()), /* is relative */ false);
-    #[cfg(not(unix))]
-    let is_plain = false;
-    Self { dir, is_plain }
+    Self {
+      #[cfg(unix)]
+      is_plain: has_plain_separators(std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str()), /* is relative */ false),
+      dir,
+    }
   }
 
   pub fn strip<'a>(&self, path: &'a Path) -> Option<&'a Path> {

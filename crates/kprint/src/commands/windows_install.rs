@@ -15,7 +15,6 @@ mod test {
   use std::path::PathBuf;
 
   use crate::environment::TestEnvironment;
-  use crate::environment::*;
   use crate::test_helpers::run_test_cli;
 
   #[test]

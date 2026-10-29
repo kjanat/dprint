@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::environment::FileSystemEnvironment;
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::FormatConfig;
 use crate::plugins::InitializedPlugin;
@@ -49,7 +50,14 @@ pub fn get_test_safe_executable_path(version: &str, executable_file_path: PathBu
   let mut created = CREATED_TEMP_FILES.lock();
   if created.insert(temp_file.clone()) {
     let bytes = environment.read_file_bytes(&executable_file_path).unwrap();
-    write_executable(&temp_file, &bytes).unwrap();
+    // it's usually there from an earlier run already, and then something may
+    // still have it open (ex. a plugin of that run that's exiting, or a virus
+    // scanner), which on Windows fails writing it, so it's only written when
+    // it changed
+    let real_environment = crate::environment::NativeEnvironment::new(crate::environment::HeadlessServices, "test").unwrap();
+    if real_environment.read_file_bytes(&temp_file).ok().as_deref() != Some(bytes.as_slice()) {
+      write_executable(&temp_file, &bytes).unwrap();
+    }
   }
   temp_file
 }

@@ -26,14 +26,4 @@ tokio-util           = { workspace = true }
 libc = { workspace = true }
 
 [target."cfg(windows)".dependencies]
-winapi = { workspace = true, features = [
-  "handleapi",
-  "jobapi",
-  "jobapi2",
-  "processthreadsapi",
-  "synchapi",
-  "tlhelp32",
-  "winbase",
-  "winerror",
-  "winnt"
-] }
+winapi = { workspace = true, features = ["handleapi", "jobapi", "jobapi2", "processthreadsapi", "synchapi", "winbase", "winerror", "winnt"] }

@@ -453,6 +453,7 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
 
 /// The longest a git IPC server may take to answer before dprint gives up on
 /// it. The fsmonitor daemon waits for its own cookie file before answering.
+#[cfg(unix)]
 const GIT_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(unix)]

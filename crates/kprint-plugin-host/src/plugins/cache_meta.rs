@@ -318,8 +318,10 @@ mod test {
     let first = plugins_dir(&environment);
     environment.set_cpu_arch("aarch64");
     assert_ne!(plugins_dir(&environment), first);
-    assert!(first.to_string_lossy().contains("/v12/"));
-    assert!(first.to_string_lossy().contains("/wasmtime-43.0.2/"));
+    // by component, as the separator is the OS's
+    let has_component = |name: &str| first.components().any(|component| component.as_os_str() == name);
+    assert!(has_component("v12"));
+    assert!(has_component("wasmtime-43.0.2"));
     let mut meta = make_meta("signature");
     meta.info.name = "../../escape".to_string();
     meta.info.version = "../1.0".to_string();

@@ -564,7 +564,8 @@ impl<TEnvironment: Environment> Filter<'_, TEnvironment> {
     if self.options.discover_configs
       && let Some(config_file) = POSSIBLE_CONFIG_FILE_NAMES
         .iter()
-        .map(|file_name| path.join(file_name))
+        // joined like the scan joins them (see `scan::config_file`)
+        .map(|file_name| self.environment.dir_entry_path(&path, file_name.as_ref()))
         .filter(|config_file| Some(config_file) != self.options.current_config_path.as_ref())
         .filter(|config_file| self.environment.path_kind(config_file) == Some(PathKind::File))
         .find(|config_file| {

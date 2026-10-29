@@ -626,7 +626,9 @@ impl<'a, TEnvironment: Environment> DirConfigFileFinder<'a, TEnvironment> {
     }
     let result = POSSIBLE_CONFIG_FILE_NAMES
       .iter()
-      .map(|file_name| dir.join(file_name))
+      // joined like the scan joins them (see `scan::config_file`), so the same
+      // config file found either way is the same path
+      .map(|file_name| self.environment.dir_entry_path(dir, file_name.as_ref()))
       // the config file already in use doesn't create a new scope
       .filter(|path| Some(path.as_path()) != self.current_config_path.as_deref())
       .filter(|path| self.environment.path_is_file(path))
