@@ -214,16 +214,26 @@ pub async fn format_bytes(
     // killed with whatever it started (ex. the `node` process of an npm
     // installed command) once this returns, including on a timeout or
     // cancellation. Untied, since a command runs for every file and ends
-    // on its own once dprint is gone and its pipes close.
-    let mut child = OwnedChild::spawn_untied(
-      Command::new(executable)
-        .current_dir(&command.cwd)
-        .envs(&env)
-        .stdout(Stdio::piped())
-        .stdin(if command.stdin { Stdio::piped() } else { Stdio::null() })
-        .stderr(Stdio::piped())
-        .args(args),
-    )
+    // on its own once dprint is gone and its pipes close, which also lets it
+    // be spawned on a blocking thread (a tied child dies with the thread that
+    // spawned it on Linux). Spawning blocks for a while (on Windows, also to
+    // put the child in its job), and the files are formatted on one thread,
+    // so it'd otherwise hold up every other file being formatted.
+    let cwd = command.cwd.clone();
+    let stdin = if command.stdin { Stdio::piped() } else { Stdio::null() };
+    let mut child = kprint_async_runtime::spawn_blocking(move || {
+      OwnedChild::spawn_untied(
+        Command::new(executable)
+          .current_dir(cwd)
+          .envs(env)
+          .stdout(Stdio::piped())
+          .stdin(stdin)
+          .stderr(Stdio::piped())
+          .args(args),
+      )
+    })
+    .await
+    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?
     .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
 
     // capturing stdout, up to what the formatted file could be
@@ -675,17 +685,22 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
     setup_command,
     ..
   } = run;
-  let mut child = match OwnedChild::spawn(
-    Command::new(executable)
-      .current_dir(cwd)
-      .stdin(Stdio::null())
-      // a plugin must not write to stdout (it's the protocol channel)
-      .stdout(Stdio::null())
-      .stderr(Stdio::piped())
-      .args(&setup_command.args)
-      .envs(&setup_command.env),
-  ) {
-    Ok(child) => child,
+  let mut command = Command::new(executable);
+  command
+    .current_dir(cwd)
+    .stdin(Stdio::null())
+    // a plugin must not write to stdout (it's the protocol channel)
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped())
+    .args(&setup_command.args)
+    .envs(&setup_command.env);
+  // spawned on a blocking thread, as spawning blocks every file being
+  // formatted otherwise (see `format_bytes`), from the owner thread, as the
+  // blocking thread may end before the setup command does
+  let spawned = kprint_async_runtime::spawn_blocking(move || OwnedChild::spawn_from_owner_thread(command)).await;
+  let mut child = match spawned {
+    Ok(Ok(child)) => child,
+    Ok(Err(err)) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
     Err(err) => return SetupOutcome::Failed(format!("Cannot start setup command process: {}", err)),
   };
 
@@ -717,22 +732,28 @@ async fn run_setup_command_process(run: &SetupAttempt) -> SetupOutcome {
   }
 }
 
-/// Waits for a child that has closed its output streams to exit. It's polled
-/// rather than waited on from another thread so that the child stays owned by
-/// the caller, whose drop kills it.
+/// How long a blocking thread waits for a child to exit at a time. When the
+/// wait is dropped (the child is then killed), it ends within this.
+const EXIT_WAIT_SLICE: Duration = Duration::from_millis(100);
+
+/// Waits for a child that has closed its output streams to exit. It's waited
+/// for on a blocking thread by an [`kprint_owned_child::ExitWaiter`] rather
+/// than the child itself, so that the child stays owned by the caller, whose
+/// drop kills it right away. That's rather than polling it with timers, which
+/// on Windows may fire as late as the system's timer tick (~15.6ms by
+/// default), and which a busy formatting thread services late, for every
+/// file a command formats.
 async fn wait_for_exit(child: &mut OwnedChild, description: &str) -> Result<ExitStatus, FormatError> {
-  let mut delay = Duration::from_millis(1);
+  let wait_err = |err: std::io::Error| FormatError::new(format!("Error while waiting for {} to complete: {}", description, err));
+  let waiter = Arc::new(child.exit_waiter().map_err(wait_err)?);
   loop {
-    match child.try_wait() {
-      Ok(Some(status)) => return Ok(status),
-      Ok(None) => {
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(Duration::from_millis(50));
-      }
-      Err(err) => {
-        return Err(FormatError::new(format!("Error while waiting for {} to complete: {}", description, err)));
-      }
+    if let Some(status) = child.try_wait().map_err(wait_err)? {
+      return Ok(status);
     }
+    let waiter = waiter.clone();
+    kprint_async_runtime::spawn_blocking(move || waiter.wait_timeout(EXIT_WAIT_SLICE))
+      .await?
+      .map_err(wait_err)?;
   }
 }
 
@@ -887,8 +908,9 @@ mod test {
   }
 
   /// A formatter that right away starts a process that keeps the formatter's
-  /// output open, then exits. The process it started appends to a file about
-  /// every 100ms (unix) or second (Windows) as long as it runs.
+  /// output open, then exits once that process beat for the first time. The
+  /// process it started appends to a file about every 100ms (unix) or second
+  /// (Windows) as long as it runs.
   struct LingeringFormatter {
     dir: tempfile::TempDir,
   }
@@ -900,7 +922,10 @@ mod test {
       #[cfg(unix)]
       std::fs::write(
         dir.path().join("formatter.sh"),
-        format!("(while :; do echo x >> '{}'; sleep 0.1; done) &\n", heartbeat.display()),
+        format!(
+          "(while :; do echo x >> '{0}'; sleep 0.1; done) &\nwhile [ ! -s '{0}' ]; do sleep 0.05; done\n",
+          heartbeat.display()
+        ),
       )
       .unwrap();
       #[cfg(windows)]
@@ -916,7 +941,11 @@ mod test {
         .unwrap();
         std::fs::write(
           dir.path().join("formatter.cmd"),
-          format!("@echo off\r\nstart \"\" /b \"{}\"\r\n", script.display()),
+          format!(
+            "@echo off\r\nstart \"\" /b \"{}\"\r\n:wait\r\nif not exist \"{}\" (ping -n 1 127.0.0.1 >nul & goto wait)\r\n",
+            script.display(),
+            heartbeat.display()
+          ),
         )
         .unwrap();
       }
@@ -965,12 +994,15 @@ mod test {
     }
   }
 
+  // The timeouts leave a formatter seconds to start what it starts, which may
+  // take that long on Windows while every other test runs too.
+
   #[test]
   fn ends_a_timed_out_formatter_together_with_what_it_started() {
     let formatter = LingeringFormatter::new();
-    let (result, elapsed) = formatter.format(2, Arc::new(NullCancellationToken));
-    assert_eq!(result, Err("Child process has not returned a result within 2 seconds.".to_string()));
-    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    let (result, elapsed) = formatter.format(5, Arc::new(NullCancellationToken));
+    assert_eq!(result, Err("Child process has not returned a result within 5 seconds.".to_string()));
+    assert!(elapsed < Duration::from_secs(9), "{:?}", elapsed);
     assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
     assert!(formatter.stopped(), "the process the formatter started should have been killed");
   }
@@ -982,13 +1014,13 @@ mod test {
     std::thread::spawn({
       let token = token.clone();
       move || {
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(5));
         token.cancel();
       }
     });
     let (result, elapsed) = formatter.format(60, Arc::new(token));
     assert_eq!(result, Ok(None));
-    assert!(elapsed < Duration::from_secs(6), "{:?}", elapsed);
+    assert!(elapsed < Duration::from_secs(9), "{:?}", elapsed);
     assert!(formatter.heartbeat_len() > 0, "the formatter should have started the process");
     assert!(formatter.stopped(), "the process the formatter started should have been killed");
   }

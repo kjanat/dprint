@@ -17,7 +17,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use std::time::Instant;
 
 use kprint_owned_child::OwnedChild;
 use kprint_plugin_types::CancellationToken;
@@ -189,9 +188,11 @@ impl ServedCommands {
       _ = request.token.wait_cancellation() => return Ok(Served::Cancelled),
       permit = command.permits.clone().acquire_owned() => permit.map_err(|err| FormatError::new(err.to_string()))?,
     };
-    let worker = match command.idle.borrow_mut().pop() {
+    // taken out first, so the borrow ends before starting a worker awaits
+    let idle = command.idle.borrow_mut().pop();
+    let worker = match idle {
       Some(worker) => worker,
-      None => command.start().map_err(FormatError::new)?,
+      None => command.start().await.map_err(FormatError::new)?,
     };
 
     let (sender, receiver) = oneshot::channel();
@@ -279,17 +280,23 @@ impl ServedCommand {
     self.key.executable.display().to_string()
   }
 
-  fn start(&self) -> Result<Worker, String> {
-    let mut child = OwnedChild::spawn(
-      Command::new(&self.key.executable)
-        .current_dir(&self.key.cwd)
-        .args(&self.key.args)
-        .envs(&self.key.env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped()),
-    )
-    .map_err(|err| format!("Cannot start the served command '{}': {}", self.name(), err))?;
+  async fn start(&self) -> Result<Worker, String> {
+    let mut command = Command::new(&self.key.executable);
+    command
+      .current_dir(&self.key.cwd)
+      .args(&self.key.args)
+      .envs(&self.key.env)
+      .stdin(Stdio::piped())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped());
+    // spawned on a blocking thread, as spawning blocks every file being
+    // formatted otherwise, from the owner thread, as the blocking thread may
+    // end before the served command does
+    let spawned = kprint_async_runtime::spawn_blocking(move || OwnedChild::spawn_from_owner_thread(command))
+      .await
+      .map_err(|err| err.to_string())
+      .and_then(|spawned| spawned.map_err(|err| err.to_string()));
+    let mut child = spawned.map_err(|err| format!("Cannot start the served command '{}': {}", self.name(), err))?;
     let (Some(stdin), Some(stdout), Some(stderr)) = (child.take_stdin(), child.take_stdout(), child.take_stderr()) else {
       return Err(format!("The served command '{}' has no pipes to send it files over.", self.name()));
     };
@@ -343,14 +350,14 @@ impl Process {
   }
 }
 
+/// The child's exit status once it exits within [`EXIT_WAIT`], waited for on a
+/// blocking thread while the child stays here (see `wait_for_exit`).
 async fn exit_status_soon(child: &mut OwnedChild) -> Option<ExitStatus> {
-  let deadline = Instant::now() + EXIT_WAIT;
-  loop {
-    match child.try_wait() {
-      Ok(Some(status)) => return Some(status),
-      Ok(None) if Instant::now() < deadline => tokio::time::sleep(Duration::from_millis(10)).await,
-      _ => return None,
-    }
+  let waiter = child.exit_waiter().ok()?;
+  let exited = kprint_async_runtime::spawn_blocking(move || waiter.wait_timeout(EXIT_WAIT)).await;
+  match exited {
+    Ok(Ok(true)) => child.try_wait().ok().flatten(),
+    _ => None,
   }
 }
 

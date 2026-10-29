@@ -970,13 +970,10 @@ impl ProcessWorker {
   /// Describes how the worker exited once its output ended.
   fn exit_description(&mut self) -> String {
     // the worker closes its output when it exits, so this shouldn't take long
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-      match self.child.try_wait() {
-        Ok(Some(status)) => break Some(status),
-        Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-        _ => break None,
-      }
+    let exited = self.child.exit_waiter().and_then(|waiter| waiter.wait_timeout(Duration::from_secs(2)));
+    let status = match exited {
+      Ok(true) => self.child.try_wait().ok().flatten(),
+      Ok(false) | Err(_) => None,
     };
     let mut text = match status {
       Some(status) => status.to_string(),
