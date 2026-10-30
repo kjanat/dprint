@@ -56,6 +56,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": true
@@ -82,6 +114,19 @@
               }
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "additionalProperties": true
@@ -110,6 +155,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "preservePropertyOrder": {
               "$ref": "https://plugins.dprint.dev/kjanat/json-schema-sort/0.1.2/schema.json#/properties/preservePropertyOrder"
@@ -184,6 +242,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -211,6 +301,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "attributeLayout": {
               "$ref": "https://plugins.dprint.dev/kjanat/dprint-plugin-svg/v0.4.1/schema.json#/properties/attributeLayout"
@@ -604,6 +707,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -631,6 +766,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "indentWidth": {
               "$ref": "https://plugins.dprint.dev/kjanat/shfmt/1.1.1/schema.json#/properties/indentWidth"
@@ -749,6 +897,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -792,6 +972,19 @@
                 }
               ]
             },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
             "sortOrder": {
               "$ref": "https://plugins.dprint.dev/kjanat/dprint-plugin-sortpackagejson/0.2.1/schema.json#/properties/sortOrder"
             },
@@ -812,6 +1005,7 @@
             {
               "properties": {
                 "files": true,
+                "embedded": true,
                 "sortOrder": true,
                 "sortDependencies": true,
                 "sortScripts": true,
@@ -900,6 +1094,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/kjanat/dprint-plugin-sortpackagejson/0.2.1/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -1010,6 +1236,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "alignAssignment": {
               "$ref": "https://plugins.dprint.dev/kjanat/pwsh/0.2.0/schema.json#/properties/alignAssignment"
@@ -1293,8 +1532,1210 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
+    },
+    "plugin:toml": {
+      "$id": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json",
+      "$defs": {
+        "ArrayBracketSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "ArrayCommaSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "ArrayValuesOrder": {
+          "type": "string",
+          "enum": [
+            "ascending",
+            "descending",
+            "version-sort"
+          ]
+        },
+        "BlankLines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "BlankLinesLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "BoolDefaultTrue": {
+          "default": true,
+          "type": "boolean"
+        },
+        "CommentStyle": {
+          "description": "The style used to format comments.",
+          "oneOf": [
+            {
+              "description": "Normalize comment text according to Tombi's formatting rules.",
+              "type": "string",
+              "const": "normalize"
+            },
+            {
+              "description": "Preserve the original comment text while formatting its placement normally.",
+              "type": "string",
+              "const": "preserve"
+            }
+          ]
+        },
+        "DateTimeDelimiter": {
+          "description": "DateTime delimiter",
+          "oneOf": [
+            {
+              "description": "Example: `2021-01-01T00:00:00`",
+              "type": "string",
+              "const": "T"
+            },
+            {
+              "description": "Example: `2021-01-01 00:00:00`",
+              "type": "string",
+              "const": "space"
+            },
+            {
+              "description": "Preserve the source delimiter",
+              "type": "string",
+              "const": "preserve"
+            }
+          ]
+        },
+        "GlobPattern": {
+          "description": "Glob pattern used by config include/exclude lists.",
+          "type": "string",
+          "minLength": 1
+        },
+        "IndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ]
+        },
+        "IndentWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "InlineTableBraceSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "InlineTableCommaSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "KeyValueEqualsSignSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "LineEnding": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "lf",
+                "crlf"
+              ]
+            },
+            {
+              "description": "Automatically detects the line ending style from the source file.",
+              "type": "string",
+              "const": "auto"
+            }
+          ]
+        },
+        "LineWidth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "PatternAccessor": {
+          "title": "Accessor pattern",
+          "description": "To apply it to the Root Table, use `\"\"`.\n\nUse `[*]` to match any array element, or a numeric index such as `[1]`\nto match a specific tuple position.\n\n**Example**:\n  - `\"\"`\n  - `\"tool.*\"`\n  - `\"items[*].name\"`\n  - `\"items[1].name\"`",
+          "type": "string",
+          "minLength": 0
+        },
+        "RootSchema": {
+          "title": "The schema for the root table",
+          "type": "object",
+          "required": [
+            "include",
+            "path"
+          ],
+          "properties": {
+            "exclude": {
+              "title": "The file match pattern to exclude the schema",
+              "description": "The file match pattern to exclude the target from applying the schema.\nSupports glob pattern.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/GlobPattern"
+              }
+            },
+            "format": {
+              "title": "Schema-specific format options",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaFormatOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "include": {
+              "title": "The file match pattern of the schema",
+              "description": "The file match pattern to include the target to apply the schema.\nSupports glob pattern.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/GlobPattern"
+              }
+            },
+            "lint": {
+              "title": "Schema-specific lint options",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaLintOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "overrides": {
+              "title": "Schema-specific overrides",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/SchemaOverrideItem"
+              }
+            },
+            "path": {
+              "title": "The schema path",
+              "examples": [
+                "https://www.schemastore.org/cargo.json",
+                "https://www.schemastore.org/pyproject.json",
+                "tombi://www.schemastore.org/cargo.json",
+                "tombi://www.schemastore.org/pyproject.json",
+                "tombi://www.schemastore.org/tombi.json"
+              ],
+              "type": "string"
+            },
+            "strict": {
+              "title": "Enable strict schema validation",
+              "description": "If `additionalProperties` is not specified in the JSON Schema,\nthe strict mode treats it as `additionalProperties: false`,\nwhich is different from the JSON Schema specification.\nIf omitted, the global `schema.strict` setting is used.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BoolDefaultTrue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tomlVersion": {
+              "title": "The TOML version that the schema is available",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TomlVersion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaArrayValuesOrderRule": {
+          "title": "Schema-defined array values ordering",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "title": "Whether schema-defined array values ordering is enabled",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BoolDefaultTrue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaFormatOptions": {
+          "title": "Schema-specific format options",
+          "type": "object",
+          "properties": {
+            "rules": {
+              "title": "Schema-specific format rules",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaFormatRules"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaFormatRules": {
+          "title": "Schema-specific format rules",
+          "type": "object",
+          "properties": {
+            "arrayValuesOrder": {
+              "title": "Whether schema-defined array values ordering is enabled",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaArrayValuesOrderRule"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tableKeysOrder": {
+              "title": "Whether schema-defined table key ordering is enabled",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaTableKeysOrderRule"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "ascending"
+        },
+        "SchemaItem": {
+          "title": "Schema item",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootSchema"
+            },
+            {
+              "$ref": "#/$defs/SubSchema"
+            }
+          ]
+        },
+        "SchemaLintOptions": {
+          "title": "Schema-specific lint options",
+          "type": "object",
+          "properties": {
+            "rules": {
+              "title": "Schema-specific lint rules",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaLintRules"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaLintRules": {
+          "title": "Schema-specific lint rules",
+          "type": "object",
+          "properties": {
+            "deprecated": {
+              "title": "Deprecated",
+              "description": "Override the deprecated diagnostic level for this schema.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeverityLevelDefaultWarn"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaOverrideArrayValuesOrderRule": {
+          "title": "Override array values ordering for matched roots",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArrayValuesOrder"
+            },
+            {
+              "$ref": "#/$defs/SchemaArrayValuesOrderRule"
+            }
+          ]
+        },
+        "SchemaOverrideFormatOptions": {
+          "title": "Schema-specific override format options",
+          "type": "object",
+          "properties": {
+            "rules": {
+              "title": "Schema-specific override format rules",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideFormatRules"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaOverrideFormatRules": {
+          "title": "Schema-specific override format rules",
+          "type": "object",
+          "properties": {
+            "arrayValuesOrder": {
+              "title": "Override array values ordering for matched roots",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideArrayValuesOrderRule"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tableKeysOrder": {
+              "title": "Override table key ordering for matched roots",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideTableKeysOrderRule"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "ascending"
+        },
+        "SchemaOverrideItem": {
+          "title": "Schema-specific override item",
+          "type": "object",
+          "required": [
+            "targets"
+          ],
+          "properties": {
+            "format": {
+              "title": "Format options to override",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideFormatOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lint": {
+              "title": "Lint options to override",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideLintOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "targets": {
+              "title": "Accessor patterns to override",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/PatternAccessor"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaOverrideLintOptions": {
+          "title": "Schema-specific override lint options",
+          "type": "object",
+          "properties": {
+            "rules": {
+              "title": "Schema-specific override lint rules",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaOverrideLintRules"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaOverrideLintRules": {
+          "title": "Schema-specific override lint rules",
+          "type": "object",
+          "properties": {
+            "deprecated": {
+              "title": "Override deprecated diagnostics for matched roots",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SeverityLevelDefaultWarn"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SchemaOverrideTableKeysOrderRule": {
+          "title": "Override table key ordering for matched roots",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TableKeysOrder"
+            },
+            {
+              "$ref": "#/$defs/SchemaTableKeysOrderRule"
+            }
+          ]
+        },
+        "SchemaTableKeysOrderRule": {
+          "title": "Schema-defined table key ordering",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "title": "Whether schema-defined table key ordering is enabled",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BoolDefaultTrue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "SeverityLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn",
+            "error"
+          ]
+        },
+        "SeverityLevelDefaultWarn": {
+          "$ref": "#/$defs/SeverityLevel",
+          "default": "warn"
+        },
+        "StringQuoteStyle": {
+          "description": "The preferred quote character for strings.",
+          "oneOf": [
+            {
+              "description": "Prefer the double quote",
+              "type": "string",
+              "const": "double"
+            },
+            {
+              "description": "Prefer the single quote",
+              "type": "string",
+              "const": "single"
+            },
+            {
+              "description": "Preserve the source quote",
+              "type": "string",
+              "const": "preserve"
+            }
+          ]
+        },
+        "SubSchema": {
+          "title": "The schema for the sub value",
+          "type": "object",
+          "required": [
+            "include",
+            "path",
+            "root"
+          ],
+          "properties": {
+            "exclude": {
+              "title": "The file match pattern to exclude the sub schema",
+              "description": "The file match pattern to exclude the target from applying the sub schema.\nSupports glob pattern.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/GlobPattern"
+              }
+            },
+            "format": {
+              "title": "Schema-specific format options",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaFormatOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "include": {
+              "title": "The file match pattern of the sub schema",
+              "description": "The file match pattern to include the target to apply the sub schema.\nSupports glob pattern.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/GlobPattern"
+              }
+            },
+            "lint": {
+              "title": "Schema-specific lint options",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SchemaLintOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "overrides": {
+              "title": "Schema-specific overrides",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/SchemaOverrideItem"
+              }
+            },
+            "path": {
+              "title": "The sub schema path",
+              "type": "string"
+            },
+            "root": {
+              "title": "The accessors to apply the sub schema",
+              "examples": [
+                "tool.tombi",
+                "items[0].name"
+              ],
+              "type": "string",
+              "minLength": 1
+            },
+            "strict": {
+              "title": "Enable strict schema validation",
+              "description": "If `additionalProperties` is not specified in the JSON Schema,\nthe strict mode treats it as `additionalProperties: false`,\nwhich is different from the JSON Schema specification.\nThis setting takes precedence over the matching root schema setting.\nIf omitted, the matching root schema or global `schema.strict` setting is used.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BoolDefaultTrue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "x-tombi-table-keys-order": "schema"
+        },
+        "TableKeysOrder": {
+          "type": "string",
+          "enum": [
+            "ascending",
+            "descending",
+            "schema",
+            "version-sort"
+          ]
+        },
+        "TomlVersion": {
+          "title": "TOML version",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "v1.0.0",
+                "v1.1.0"
+              ]
+            },
+            {
+              "deprecated": true,
+              "type": "string",
+              "const": "v1.1.0-preview"
+            }
+          ]
+        },
+        "TrailingCommentSpaceWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "dprint-override": {
+          "type": "object",
+          "minProperties": 2,
+          "required": [
+            "files"
+          ],
+          "properties": {
+            "files": {
+              "description": "File patterns this override applies to.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "arrayBracketSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/arrayBracketSpaceWidth"
+            },
+            "arrayCommaSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/arrayCommaSpaceWidth"
+            },
+            "commentStyle": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/commentStyle"
+            },
+            "dateTimeDelimiter": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/dateTimeDelimiter"
+            },
+            "groupBlankLinesLimit": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/groupBlankLinesLimit"
+            },
+            "indentStyle": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/indentStyle"
+            },
+            "indentSubTables": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/indentSubTables"
+            },
+            "indentTableKeyValuePairs": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/indentTableKeyValuePairs"
+            },
+            "indentWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/indentWidth"
+            },
+            "inlineTableBraceSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/inlineTableBraceSpaceWidth"
+            },
+            "inlineTableCommaSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/inlineTableCommaSpaceWidth"
+            },
+            "keyQuoteStyle": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/keyQuoteStyle"
+            },
+            "keyValueEqualsSignAlignment": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/keyValueEqualsSignAlignment"
+            },
+            "keyValueEqualsSignSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/keyValueEqualsSignSpaceWidth"
+            },
+            "lineEnding": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/lineEnding"
+            },
+            "lineWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/lineWidth"
+            },
+            "schemas": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/schemas"
+            },
+            "stringQuoteStyle": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/stringQuoteStyle"
+            },
+            "tableBlankLines": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/tableBlankLines"
+            },
+            "tomlVersion": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/tomlVersion"
+            },
+            "trailingCommentAlignment": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/trailingCommentAlignment"
+            },
+            "trailingCommentSpaceWidth": {
+              "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/properties/trailingCommentSpaceWidth"
+            }
+          },
+          "allOf": [
+            {
+              "properties": {
+                "files": true,
+                "embedded": true,
+                "arrayBracketSpaceWidth": true,
+                "arrayCommaSpaceWidth": true,
+                "commentStyle": true,
+                "dateTimeDelimiter": true,
+                "groupBlankLinesLimit": true,
+                "indentStyle": true,
+                "indentSubTables": true,
+                "indentTableKeyValuePairs": true,
+                "indentWidth": true,
+                "inlineTableBraceSpaceWidth": true,
+                "inlineTableCommaSpaceWidth": true,
+                "keyQuoteStyle": true,
+                "keyValueEqualsSignAlignment": true,
+                "keyValueEqualsSignSpaceWidth": true,
+                "lineEnding": true,
+                "lineWidth": true,
+                "schemas": true,
+                "stringQuoteStyle": true,
+                "tableBlankLines": true,
+                "tomlVersion": true,
+                "trailingCommentAlignment": true,
+                "trailingCommentSpaceWidth": true
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "title": "dprint-plugin-tombi Configuration",
+      "description": "Validated Tombi options. Unset rules retain upstream defaults.",
+      "type": "object",
+      "properties": {
+        "arrayBracketSpaceWidth": {
+          "title": "The number of spaces inside the brackets of a single line array.",
+          "description": "```toml\nkey = [ 1, 2, 3 ]\n#      ^       ^  <- this\n```",
+          "default": 0,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArrayBracketSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "arrayCommaSpaceWidth": {
+          "title": "The number of spaces after the comma in a single line array.",
+          "description": "```toml\nkey = [ 1, 2, 3 ]\n#         ^  ^    <- this\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArrayCommaSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commentStyle": {
+          "title": "The style used to format comments",
+          "description": "- `normalize`: Normalize comment text according to Tombi's formatting rules.\n- `preserve`: Preserve the original comment text while formatting its placement normally.",
+          "default": "normalize",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommentStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dateTimeDelimiter": {
+          "title": "The delimiter between date and time",
+          "description": "In accordance with [RFC 3339](https://datatracker.ietf.org/doc/html/rfc3339), you can use `T` or space character between date and time.\n\n- `T`: Use `T` between date and time like `2001-01-01T00:00:00`\n- `space`: Use space between date and time like `2001-01-01 00:00:00`\n- `preserve`: Preserve the original delimiter.",
+          "default": "T",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DateTimeDelimiter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "groupBlankLinesLimit": {
+          "title": "The blank lines limit between groups.",
+          "description": "Consecutive groups remain separate for sorting purposes,\nand existing blank lines between them are preserved up to this limit.\n\n```toml\n# BEFORE\nkey1 = \"value1\"\nkey2 = \"value2\"\n\nkey3 = \"value3\"\n\n\nkey4 = \"value4\"\n\n# AFTER (`group-blank-lines-limit = 1`)\nkey1 = \"value1\"\nkey2 = \"value2\"\n\nkey3 = \"value3\"\n\nkey4 = \"value4\"\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlankLinesLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "indentStyle": {
+          "title": "The style of indentation",
+          "description": "Whether to use spaces or tabs for indentation.\n\n- `space`: Use spaces for indentation.\n- `tab`: Use tabs for indentation.",
+          "default": "space",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndentStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "indentSubTables": {
+          "title": "Whether to indent the sub-tables",
+          "description": "If `true`, the sub-table will be indented.\n\n```toml\n[table]\n    [table.sub-table]\n    key = \"value\"\n# ^^  <- this\n```",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "indentTableKeyValuePairs": {
+          "title": "Whether to indent the table key-value pairs",
+          "description": "If `true`, the table key-value pairs will be indented.\n\n```toml\n[table]\n    key = \"value\"\n# ^^  <- this\n```",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "indentWidth": {
+          "title": "The number of spaces per indentation level",
+          "description": "⚠️ **WARNING** ⚠️\\\nThis option is only used when the indentation style is `space`.",
+          "default": 2,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndentWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inlineTableBraceSpaceWidth": {
+          "title": "The number of spaces inside the brackets of a single line inline table.",
+          "description": "```toml\nkey = { a = 1, b = 2 }\n#      ^            ^  <- this\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineTableBraceSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inlineTableCommaSpaceWidth": {
+          "title": "The number of spaces after the comma in a single line inline table.",
+          "description": "```toml\nkey = { a = 1, b = 2 }\n#             ^  <- this\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineTableCommaSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keyQuoteStyle": {
+          "title": "The preferred quote character for keys",
+          "description": "Choose which quote style the formatter prefers for quoted keys.\nIf unspecified, `string-quote-style` is used.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringQuoteStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keyValueEqualsSignAlignment": {
+          "title": "Whether to align the equals sign in the key-value pairs.",
+          "description": "If `true`, the equals sign in the key-value pairs will be aligned.\n\n⚠️ **WARNING** ⚠️\\\nThis feature does **not** apply to key-value pairs inside single line inline tables.\n\n```toml\n# BEFORE\nkey = \"value1\"\nkey2 = \"value2\"\nkey3.key4 = \"value3\"\n\n# AFTER\nkey       = \"value1\"\nkey2      = \"value2\"\nkey3.key4 = \"value3\"\n```",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "keyValueEqualsSignSpaceWidth": {
+          "title": "The number of spaces around the equals sign in a key-value pair.",
+          "description": "```toml\nkey = \"value\"\n#  ^ ^  <- this\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeyValueEqualsSignSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lineEnding": {
+          "title": "The type of line ending",
+          "description": "In TOML, the line ending must be either `LF` or `CRLF`.\n\n- `lf`: Line Feed only (`\\n`), common on Linux and macOS as well as inside git repos.\n- `crlf`: Carriage Return Line Feed (`\\r\\n`), common on Windows.",
+          "default": "auto",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineEnding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lineWidth": {
+          "title": "The maximum line width",
+          "description": "The formatter will try to keep lines within this width when specified.\nIf omitted, there is no line-width limit.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schemas": {
+          "description": "Tombi's `[[schemas]]`, with camelCase keys (ex. `tomlVersion`): the\nschemas of the files they include, ahead of the ones built into Tombi.\nA schema can give its files a TOML version, ex. `v1.0.0` for\n`Cargo.toml`, which Cargo reads as TOML 1.0. Remote schemas aren't\nfetched, so only what an entry says itself applies to its files.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SchemaItem"
+          }
+        },
+        "stringQuoteStyle": {
+          "title": "The preferred quote character for strings",
+          "description": "Choose which quote style the formatter prefers for basic strings.",
+          "default": "double",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringQuoteStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tableBlankLines": {
+          "title": "The number of blank lines between tables.",
+          "description": "This applies when the formatter inserts spacing between table or array-of-table blocks.\n\n```toml\n# BEFORE\n[aaa]\nkey1 = \"value1\"\n[bbb]\nkey2 = \"value2\"\n\n# AFTER (`table-blank-lines = 2`)\n[aaa]\nkey1 = \"value1\"\n\n\n[bbb]\nkey2 = \"value2\"\n```\n\nTight parent/child table adjacency is controlled separately, so this does not apply\nwhen a child table follows a parent table that has no key-value pairs.\n\n```toml\n# BEFORE\n[aaa]\n\n[aaa.bbb]\n\n# AFTER\n[aaa]\n[aaa.bbb]\n```",
+          "default": 1,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlankLines"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tomlVersion": {
+          "description": "The TOML language version. Document directives may override it.",
+          "default": "v1.0.0",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TomlVersion"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "1.0.0",
+                "1.1.0"
+              ]
+            }
+          ]
+        },
+        "trailingCommentAlignment": {
+          "title": "Whether to align the trailing comments in the key-value pairs.",
+          "description": "If `true`, the trailing comments in value/key-value pairs will be aligned.\n\n**📝 NOTE 📝**\\\nThe trailing comments of table header are not targeted by alignment.\n\n```toml\n# BEFORE\nkey = \"value1\"  # comment 1\nkey2 = \"value2\"  # comment 2\nkey3.key4 = \"value3\"  # comment 3\n\n# AFTER\nkey = \"value1\"        # comment 1\nkey2 = \"value2\"       # comment 2\nkey3.key4 = \"value3\"  # comment 3\n```",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "trailingCommentSpaceWidth": {
+          "title": "The number of spaces before the trailing comment.",
+          "description": "```toml\nkey = \"value\"  # trailing comment\n#            ^^  <- this\n```",
+          "default": 2,
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrailingCommentSpaceWidth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "locked": {
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "description": "File patterns, one or more.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "description": "Overrides of a plugin's configuration, one or more.",
+              "anyOf": [
+                {
+                  "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/$defs/dprint-override"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/$defs/dprint-override"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": "ascending"
     },
     "plugin:typescript": {
       "$id": "https://plugins.dprint.dev/dprint/dprint-plugin-typescript/0.96.1/schema.json",
@@ -1320,6 +2761,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "lineWidth": {
               "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-typescript/0.96.1/schema.json#/properties/lineWidth"
@@ -3475,6 +4929,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -3502,6 +4988,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "lineWidth": {
               "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-json/0.25.2/schema.json#/properties/lineWidth"
@@ -3788,6 +5287,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -3815,6 +5346,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "lineWidth": {
               "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-markdown/0.26.0/schema.json#/properties/lineWidth"
@@ -4496,6 +6040,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -4523,6 +6099,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "lineWidth": {
               "$ref": "dprint-built-in:/exec/schema.json#/properties/lineWidth"
@@ -4556,6 +6145,7 @@
             {
               "properties": {
                 "files": true,
+                "embedded": true,
                 "lineWidth": true,
                 "indentWidth": true,
                 "useTabs": true,
@@ -4669,8 +6259,55 @@
             ],
             "properties": {
               "command": {
-                "description": "The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.",
-                "type": "string"
+                "description": "The command to format with: the program and its arguments. The file text is passed to it on stdin and the formatted text is read from its stdout. Arguments and environment values may use {{file_path}}, {{line_width}}, {{use_tabs}}, {{indent_width}}, {{cwd}} and {{timeout}}.",
+                "anyOf": [
+                  {
+                    "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
+                    "type": "string"
+                  },
+                  {
+                    "description": "The program and its arguments, each passed as is.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "description": "The program, its arguments and its environment variables.",
+                    "type": "object",
+                    "required": [
+                      "executable"
+                    ],
+                    "properties": {
+                      "executable": {
+                        "description": "The program to run.",
+                        "type": "string"
+                      },
+                      "args": {
+                        "description": "The program's arguments, each passed as is.",
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "env": {
+                        "description": "Environment variables to set for the program, over the ones dprint runs with.",
+                        "type": [
+                          "null",
+                          "object"
+                        ],
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
               },
               "exts": {
                 "description": "File extensions to format with this command.",
@@ -4766,10 +6403,78 @@
               },
               "setupCommand": {
                 "description": "A command to run once before this command formats its first file, ex. to install it. It's killed after \"setupTimeout\" seconds.",
-                "type": [
-                  "null",
-                  "string"
+                "anyOf": [
+                  {
+                    "anyOf": [
+                      {
+                        "description": "The program and its arguments, separated by spaces. A part in double quotes may contain spaces.",
+                        "type": "string"
+                      },
+                      {
+                        "description": "The program and its arguments, each passed as is.",
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "description": "The program, its arguments and its environment variables.",
+                        "type": "object",
+                        "required": [
+                          "executable"
+                        ],
+                        "properties": {
+                          "executable": {
+                            "description": "The program to run.",
+                            "type": "string"
+                          },
+                          "args": {
+                            "description": "The program's arguments, each passed as is.",
+                            "type": [
+                              "array",
+                              "null"
+                            ],
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "env": {
+                            "description": "Environment variables to set for the program, over the ones dprint runs with.",
+                            "type": [
+                              "null",
+                              "object"
+                            ],
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
+              },
+              "serve": {
+                "description": "Keeps the command running and sends it every file on stdin, one JSON line each: {\"path\", \"text\", \"lineWidth\", \"indentWidth\", \"useTabs\"}. It answers each with one line on stdout: {\"text\"} with the formatted text, or {\"error\"} with why the file can't be formatted. Its arguments and environment values can't use {{file_path}}.",
+                "default": false,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "workers": {
+                "description": "How many processes of a served command format files at once.",
+                "default": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
               }
             },
             "additionalProperties": false,
@@ -4860,6 +6565,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -4888,6 +6625,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "printWidth": {
               "$ref": "https://plugins.dprint.dev/g-plane/malva/v0.16.0/schema.json#/properties/printWidth"
@@ -5379,6 +7129,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -5406,6 +7188,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "printWidth": {
               "$ref": "https://plugins.dprint.dev/g-plane/markup_fmt/v0.27.5/schema.json#/properties/printWidth"
@@ -6082,6 +7877,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -6109,6 +7936,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "printWidth": {
               "$ref": "https://plugins.dprint.dev/g-plane/pretty_yaml/v0.6.0/schema.json#/properties/printWidth"
@@ -6348,6 +8188,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -6375,6 +8247,19 @@
                   }
                 }
               ]
+            },
+            "embedded": {
+              "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+              "type": [
+                "null",
+                "object"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "lineWidth": {
               "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-dockerfile/0.7.0/schema.json#/properties/lineWidth"
@@ -6484,6 +8369,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-dockerfile/0.7.0/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -6646,6 +8563,13 @@
         "type": "string"
       }
     },
+    "minimumDependencyAge": {
+      "description": "How long ago a version of an npm plugin must have been published for `dprint add` and `dprint config update` to select it: an ISO-8601 duration (ex. \"P3D\"), a number of minutes, a date or RFC3339 timestamp, or \"0\" for no minimum. The `--minimum-dependency-age` flag takes precedence.",
+      "type": [
+        "null",
+        "string"
+      ]
+    },
     "jsonSchemaSort": {
       "description": "The configuration of the jsonSchemaSort plugin.",
       "type": "object",
@@ -6693,6 +8617,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/kjanat/json-schema-sort/0.1.2/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -6762,6 +8718,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -6817,6 +8805,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/kjanat/shfmt/1.1.1/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -6886,6 +8906,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -6948,11 +9000,137 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
         {
           "$ref": "https://plugins.dprint.dev/kjanat/pwsh/0.2.0/schema.json"
+        }
+      ]
+    },
+    "toml": {
+      "description": "The configuration of the toml plugin.",
+      "type": "object",
+      "properties": {
+        "locked": {
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "description": "File patterns, one or more.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "description": "Overrides of a plugin's configuration, one or more.",
+              "anyOf": [
+                {
+                  "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/$defs/dprint-override"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json#/$defs/dprint-override"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "https://plugins.dprint.dev/kjanat/tombi/0.1.1/schema.json"
         }
       ]
     },
@@ -7003,6 +9181,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-typescript/0.96.1/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -7072,6 +9282,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -7127,6 +9369,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-markdown/0.26.0/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -7196,6 +9470,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -7251,6 +9557,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/g-plane/malva/v0.16.0/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
@@ -7320,6 +9658,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -7382,6 +9752,38 @@
               "type": "null"
             }
           ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -7437,6 +9839,38 @@
                   "items": {
                     "$ref": "https://plugins.dprint.dev/dprint/dprint-plugin-dockerfile/0.7.0/schema.json#/$defs/dprint-override"
                   }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
                 }
               ]
             },
