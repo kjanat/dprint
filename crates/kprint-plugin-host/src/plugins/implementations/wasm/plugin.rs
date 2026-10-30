@@ -83,6 +83,14 @@ enum ModuleLoad<T> {
   Failed { message: String, at: Instant },
 }
 
+/// What `choose_format_engine` chose for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Choice {
+  engine: FormatEngine,
+  /// The bytes of the files the run formats, which it chose for.
+  bytes_to_format: u64,
+}
+
 /// A module that's loaded the first time it's needed.
 struct LazyModule<T: Clone> {
   load: LoadModule<T>,
@@ -154,7 +162,7 @@ struct Formatting<TEnvironment: Environment> {
   format_rate_path: PathBuf,
   /// What `choose_format_engine` chose for this run. A process that formats
   /// without choosing first (ex. `dprint lsp`) has none.
-  chosen: Cell<Option<FormatEngine>>,
+  chosen: Cell<Option<Choice>>,
   environment: TEnvironment,
 }
 
@@ -178,6 +186,7 @@ impl<TEnvironment: Environment> Formatting<TEnvironment> {
       self
         .chosen
         .get()
+        .map(|choice| choice.engine)
         .or_else(|| engine_choice::forced(&self.environment))
         .unwrap_or(FormatEngine::Interpreter)
     }
@@ -266,11 +275,11 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
       })
     };
     log_debug!(self.environment, "{} formats {} bytes: {:?}", self.plugin_info.name, bytes_to_format, engine);
-    self.formatting.chosen.set(Some(engine));
+    self.formatting.chosen.set(Some(Choice { engine, bytes_to_format }));
   }
 
   fn compiles_to_format(&self) -> bool {
-    self.formatting.chosen.get() == Some(FormatEngine::Native) && !self.formatting.has_native_code()
+    self.formatting.chosen.get().map(|choice| choice.engine) == Some(FormatEngine::Native) && !self.formatting.has_native_code()
   }
 
   fn format_engine(&self) -> Option<FormatEngine> {
@@ -379,6 +388,8 @@ pub struct InitializedWasmPlugin<TEnvironment: Environment> {
   /// How long the plugin formats in the interpreter before it compiles in
   /// the background: about as long as compiling it takes.
   compile_after: Duration,
+  /// The size of the plugin's module, which compiling takes time for.
+  module_len: u64,
   environment: TEnvironment,
 }
 
@@ -409,7 +420,8 @@ impl<TEnvironment: Environment> Drop for InitializedWasmPlugin<TEnvironment> {
 
 impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
   fn new(name: String, interpreter: Arc<Interpreter>, formatting: Rc<Formatting<TEnvironment>>, environment: TEnvironment) -> Self {
-    let compile_after = engine_choice::compile_time(interpreter.module.wasm_len() as u64);
+    let module_len = interpreter.module.wasm_len() as u64;
+    let compile_after = engine_choice::compile_time(module_len);
     Self {
       name,
       interpreter,
@@ -419,6 +431,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
       interpreted: Default::default(),
       compiling_in_background: Cell::new(false),
       compile_after,
+      module_len,
       environment,
     }
   }
@@ -638,15 +651,33 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
   /// the interpreter until that took as long as compiling it would, then
   /// compiles in the background and formats natively once that's done. That
   /// costs at most about twice what knowing the future would.
+  ///
+  /// A run that chose the interpreter went by an earlier run's rate or a
+  /// default, which can be far off (ex. a plugin that sets up a lot for every
+  /// file formats a few KB for seconds). Once it measured enough, it compiles
+  /// in the background when interpreting the rest of its bytes at that rate
+  /// would take longer than compiling. Only
+  /// `DPRINT_WASM_FORMAT_ENGINE=interpreter` keeps it interpreting.
   fn compile_once_it_pays_off(&self) {
-    if self.formatting.chosen.get().is_some() || self.compiling_in_background.get() || self.formatting.has_native_code() {
+    if self.compiling_in_background.get() || self.formatting.has_native_code() {
       return;
     }
     if engine_choice::forced(&self.environment).is_some() {
       return;
     }
-    let interpreted = Duration::from_nanos(self.interpreted.lock().nanos);
-    if interpreted < self.compile_after {
+    let interpreted = *self.interpreted.lock();
+    let pays_off = match self.formatting.chosen.get() {
+      // it compiles anyway
+      Some(Choice {
+        engine: FormatEngine::Native, ..
+      }) => false,
+      Some(Choice {
+        engine: FormatEngine::Interpreter,
+        bytes_to_format,
+      }) => engine_choice::compiling_pays_off(self.module_len, bytes_to_format.saturating_sub(interpreted.bytes), &interpreted),
+      None => Duration::from_nanos(interpreted.nanos) >= self.compile_after,
+    };
+    if !pays_off {
       return;
     }
     self.compiling_in_background.set(true);
@@ -654,7 +685,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
       self.environment,
       "Compiling {} in the background after {}ms in the interpreter.",
       self.name,
-      interpreted.as_millis()
+      Duration::from_nanos(interpreted.nanos).as_millis()
     );
     let native = self.formatting.native.clone();
     let environment = self.environment.clone();
@@ -819,7 +850,54 @@ mod test {
   }
 
   #[tokio::test]
-  async fn a_chosen_engine_is_kept_for_the_run() {
+  async fn an_interpreter_chosen_from_an_estimate_compiles_once_interpreting_took_as_long() {
+    // ex. a plugin that formats a few KB for seconds, which the estimate from
+    // its bytes said to interpret
+    let environment = TestEnvironment::new();
+    let native_loads = Rc::new(Cell::new(0));
+    let load_native: LoadModule<WasmModule> = Box::new({
+      let native_loads = native_loads.clone();
+      move || {
+        native_loads.set(native_loads.get() + 1);
+        async move {
+          let compiled = crate::plugins::compile_wasm(WASM_PLUGIN_BYTES)?;
+          super::super::WasmModuleCreator::default().create_from_serialized(&compiled.bytes)
+        }
+        .boxed_local()
+      }
+    });
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(Some(Choice {
+        engine: FormatEngine::Interpreter,
+        bytes_to_format: 1024 * 1024,
+      })),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    let plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    // the files it formatted so far took 10s for a KB, so the rest of the
+    // megabyte would take far longer than compiling
+    *plugin.interpreted.lock() = FormatRate {
+      bytes: 1024,
+      nanos: 10_000_000_000,
+    };
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    while !formatting.native.is_loaded() {
+      tokio::task::yield_now().await;
+    }
+    assert_eq!(native_loads.get(), 1);
+    assert_eq!(formatting.engine(), FormatEngine::Native);
+  }
+
+  #[tokio::test]
+  async fn an_interpreter_chosen_from_an_estimate_is_kept_when_it_is_as_fast_as_estimated() {
     let environment = TestEnvironment::new();
     let load_native: LoadModule<WasmModule> = Box::new(|| async { Err(anyhow!("not compiled in this test")) }.boxed_local());
     let formatting = Rc::new(Formatting {
@@ -829,7 +907,47 @@ mod test {
       native_module_path: PathBuf::from("/plugin.cwasm"),
       native_exists: Cell::new(None),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
-      chosen: Cell::new(Some(FormatEngine::Interpreter)),
+      chosen: Cell::new(Some(Choice {
+        engine: FormatEngine::Interpreter,
+        // 1 MB left after the bytes it measured
+        bytes_to_format: 33 * 1024 * 1024,
+      })),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    // however long it interpreted, the ski rental of a run without a choice
+    // doesn't apply
+    plugin.compile_after = Duration::ZERO;
+    // a fast rate, measured over so many bytes that formatting one more file
+    // in this test (slow in a debug build) doesn't change it
+    *plugin.interpreted.lock() = FormatRate {
+      bytes: 32 * 1024 * 1024,
+      nanos: 32 * 1024 * 1024 * 100,
+    };
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    tokio::task::yield_now().await;
+    assert!(!plugin.compiling_in_background.get());
+    assert_eq!(formatting.engine(), FormatEngine::Interpreter);
+  }
+
+  #[tokio::test]
+  async fn a_forced_interpreter_is_kept_for_the_run() {
+    let environment = TestEnvironment::new();
+    environment.set_env_var("DPRINT_WASM_FORMAT_ENGINE", Some("interpreter"));
+    let load_native: LoadModule<WasmModule> = Box::new(|| async { Err(anyhow!("not compiled in this test")) }.boxed_local());
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(Some(Choice {
+        engine: FormatEngine::Interpreter,
+        bytes_to_format: 4,
+      })),
       environment: environment.clone(),
     });
     let log: LogFn = Arc::new(|_| {});
@@ -838,7 +956,7 @@ mod test {
     plugin.compile_after = Duration::ZERO;
     assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
     tokio::task::yield_now().await;
-    // the run chose to interpret, so it doesn't compile in the background
+    // the interpreter was asked for, so it doesn't compile in the background
     assert!(!plugin.compiling_in_background.get());
     assert_eq!(formatting.engine(), FormatEngine::Interpreter);
     drop(plugin);
@@ -858,7 +976,10 @@ mod test {
       native_module_path: PathBuf::from("/plugin.cwasm"),
       native_exists: Cell::new(None),
       format_rate_path: PathBuf::from("/plugin.rate.json"),
-      chosen: Cell::new(Some(FormatEngine::Interpreter)),
+      chosen: Cell::new(Some(Choice {
+        engine: FormatEngine::Interpreter,
+        bytes_to_format: 4,
+      })),
       environment: environment.clone(),
     });
     let log: LogFn = Arc::new(|_| {});

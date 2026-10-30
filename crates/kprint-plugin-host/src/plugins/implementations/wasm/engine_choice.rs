@@ -71,13 +71,30 @@ pub fn forced(environment: &impl Environment) -> Option<FormatEngine> {
 /// the module. `rate` is the plugin's measured rate in the interpreter, if
 /// it has one.
 pub fn choose(module_len: u64, bytes_to_format: u64, rate: Option<&FormatRate>) -> FormatEngine {
-  let interpreting = bytes_to_format.saturating_mul(interpreted_nanos_per_byte(rate));
-  let saved = interpreting - interpreting / NATIVE_SPEEDUP;
-  if saved > compile_nanos(module_len) {
+  if compiling_saves_time(module_len, bytes_to_format, interpreted_nanos_per_byte(rate)) {
     FormatEngine::Native
   } else {
     FormatEngine::Interpreter
   }
+}
+
+/// Whether a run that chose the interpreter should compile after all, now
+/// that it measured how fast the plugin formats (`measured`, once it's enough
+/// to go by): when interpreting the `remaining_bytes` at that rate would take
+/// longer than compiling the module. The choice went by an earlier run's
+/// rate or a default, which can be far off.
+pub fn compiling_pays_off(module_len: u64, remaining_bytes: u64, measured: &FormatRate) -> bool {
+  measured
+    .nanos_per_byte()
+    .is_some_and(|nanos_per_byte| compiling_saves_time(module_len, remaining_bytes, nanos_per_byte))
+}
+
+/// Whether native code formatting `bytes` saves more time than compiling the
+/// module takes, for a plugin that interprets at `nanos_per_byte`.
+fn compiling_saves_time(module_len: u64, bytes: u64, nanos_per_byte: u64) -> bool {
+  let interpreting = bytes.saturating_mul(nanos_per_byte);
+  let saved = interpreting - interpreting / NATIVE_SPEEDUP;
+  saved > compile_nanos(module_len)
 }
 
 /// About how long compiling a module of `module_len` bytes takes, in CPU
@@ -113,8 +130,13 @@ impl FormatRate {
   /// plugin formats also pay for translating its functions.
   const MIN_BYTES: u64 = 64 * 1024;
 
+  /// Or this much time: translating takes milliseconds, so a second of
+  /// formatting is mostly the plugin's own work, however few bytes that was
+  /// (ex. a plugin that sets up a lot for every file).
+  const MIN_NANOS: u64 = 1_000_000_000;
+
   pub fn nanos_per_byte(&self) -> Option<u64> {
-    (self.bytes >= Self::MIN_BYTES).then(|| self.nanos / self.bytes)
+    (self.bytes > 0 && (self.bytes >= Self::MIN_BYTES || self.nanos >= Self::MIN_NANOS)).then(|| self.nanos / self.bytes)
   }
 
   /// Adds what a run formatted.
@@ -179,6 +201,47 @@ mod test {
     };
     assert_eq!(few.nanos_per_byte(), None);
     assert_eq!(choose(4 * MB, MB, Some(&few)), choose(4 * MB, MB, None));
+  }
+
+  #[test]
+  fn a_rate_of_few_bytes_that_took_long_is_used() {
+    // ex. dprint-plugin-tombi, which sets up a schema store for every file:
+    // 39 files of 40 KB took 200s in the interpreter
+    let slow = FormatRate {
+      bytes: 40 * 1024,
+      nanos: 200_000_000_000,
+    };
+    assert_eq!(slow.nanos_per_byte(), Some(200_000_000_000 / (40 * 1024)));
+    // so formatting them again compiles, though the default rate wouldn't
+    assert_eq!(choose(4 * MB, 40 * 1024, None), FormatEngine::Interpreter);
+    assert_eq!(choose(4 * MB, 40 * 1024, Some(&slow)), FormatEngine::Native);
+    // a rate of nothing has no rate
+    assert_eq!(
+      FormatRate {
+        bytes: 0,
+        nanos: 2_000_000_000
+      }
+      .nanos_per_byte(),
+      None
+    );
+  }
+
+  #[test]
+  fn compiling_pays_off_for_what_is_left_at_the_measured_rate() {
+    let slow = FormatRate {
+      bytes: 1024,
+      nanos: 10_000_000_000,
+    };
+    // 38 KB left, at 10s a KB
+    assert!(compiling_pays_off(4 * MB, 38 * 1024, &slow));
+    // nothing left
+    assert!(!compiling_pays_off(4 * MB, 0, &slow));
+    // too little measured to go by
+    let short = FormatRate { bytes: 1024, nanos: 1_000_000 };
+    assert!(!compiling_pays_off(4 * MB, 38 * 1024, &short));
+    // at a rate the interpreter is fine for
+    let fast = FormatRate { bytes: MB, nanos: MB * 360 };
+    assert!(!compiling_pays_off(4 * MB, 38 * 1024, &fast));
   }
 
   #[test]
