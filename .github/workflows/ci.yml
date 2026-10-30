@@ -57,6 +57,9 @@ jobs:
         with: { persist-credentials: false }
       - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
       - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1
+      # the toml exec command runs tombi (see dprint.toml and mise.toml)
+      - uses: kjanat/setup-tombi@94a6834e289046705b32e6b8dc977c8b939e8b35 # v1
+        with: { version: latest }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with: { key: lint }
       - name: Check formatting with the current source
