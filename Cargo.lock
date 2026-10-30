@@ -1651,6 +1651,7 @@ dependencies = [
  "twox-hash",
  "url",
  "which",
+ "winapi",
  "winreg",
  "zip",
 ]

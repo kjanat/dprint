@@ -506,7 +506,7 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
 
 /// The longest a git IPC server may take to answer before dprint gives up on
 /// it. The fsmonitor daemon waits for its own cookie file before answering.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const GIT_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(unix)]
@@ -518,11 +518,96 @@ fn git_ipc_request(socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
   kprint_git::read_pkt_line_message(&mut stream)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn git_ipc_request(socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
+  use std::os::windows::io::AsRawHandle;
+  use winapi::um::ioapiset::CancelSynchronousIo;
+
+  let pipe = open_git_ipc_pipe(&git_ipc_pipe_name(socket_path)?)?;
+  // the exchange blocks, so it runs on a thread of its own whose blocking
+  // call is cancelled when the server doesn't answer in time
+  let (sender, receiver) = std::sync::mpsc::channel();
+  let message = message.to_vec();
+  let exchange = std::thread::spawn(move || {
+    let mut pipe = pipe;
+    let result = kprint_git::write_pkt_line_message(&mut pipe, &message).and_then(|()| kprint_git::read_pkt_line_message(&mut pipe));
+    let _ignore = sender.send(result);
+  });
+  let result = match receiver.recv_timeout(GIT_IPC_TIMEOUT) {
+    Ok(result) => result,
+    Err(_) => {
+      // until the cancelled call returns, as the thread may not have been in
+      // it yet
+      while receiver.recv_timeout(std::time::Duration::from_millis(10)).is_err() && !exchange.is_finished() {
+        // SAFETY: the thread's handle is open while its join handle is
+        unsafe {
+          CancelSynchronousIo(exchange.as_raw_handle() as winapi::um::winnt::HANDLE);
+        }
+      }
+      Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("the git IPC server didn't answer within {} seconds", GIT_IPC_TIMEOUT.as_secs()),
+      ))
+    }
+  };
+  let _ignore = exchange.join();
+  result
+}
+
+/// The name of the pipe git's Simple IPC server for `socket_path` listens on,
+/// like git's `initialize_pipe_name` (compat/simple-ipc/ipc-win32.c):
+/// `\\.\pipe\` and the path's real path, with the drive's `:` as `_`.
+#[cfg(windows)]
+fn git_ipc_pipe_name(socket_path: &Path) -> io::Result<std::ffi::OsString> {
+  let (Some(dir), Some(name)) = (socket_path.parent(), socket_path.file_name()) else {
+    return Err(io::Error::other(format!("{} isn't a path to a socket", socket_path.display())));
+  };
+  // there's no file for the socket on Windows, so only its directory resolves
+  let real_path = canonicalize_path(dir)?.into_path_buf().join(name);
+  let Some(real_path) = real_path.to_str() else {
+    return Err(io::Error::other(format!("{} isn't valid UTF-8", real_path.display())));
+  };
+  let real_path = real_path.replace('/', "\\");
+  let real_path = match real_path.as_bytes() {
+    [drive, b':', ..] if drive.is_ascii_alphabetic() => format!("{}_{}", *drive as char, &real_path[2..]),
+    _ => real_path,
+  };
+  Ok(format!(r"\\.\pipe\{}", real_path).into())
+}
+
+/// Opens the pipe, waiting for the server while every instance of it is busy
+/// (like git's `connect_to_server`).
+#[cfg(windows)]
+fn open_git_ipc_pipe(pipe_name: &std::ffi::OsStr) -> io::Result<std::fs::File> {
+  use std::os::windows::ffi::OsStrExt;
+  use winapi::shared::winerror::ERROR_PIPE_BUSY;
+  use winapi::um::namedpipeapi::WaitNamedPipeW;
+
+  let deadline = std::time::Instant::now() + GIT_IPC_TIMEOUT;
+  loop {
+    match std::fs::OpenOptions::new().read(true).write(true).open(pipe_name) {
+      Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+          return Err(io::Error::new(io::ErrorKind::TimedOut, "the git IPC server stayed busy"));
+        }
+        let wide_name = pipe_name.encode_wide().chain([0]).collect::<Vec<u16>>();
+        let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: the name is nul terminated
+        if unsafe { WaitNamedPipeW(wide_name.as_ptr(), millis) } == 0 {
+          return Err(io::Error::last_os_error());
+        }
+      }
+      result => return result,
+    }
+  }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn git_ipc_request(_socket_path: &Path, _message: &[u8]) -> io::Result<Vec<u8>> {
   Err(io::Error::new(
     io::ErrorKind::Unsupported,
-    "git IPC is only implemented for Unix domain sockets",
+    "git IPC is only implemented for Unix domain sockets and Windows named pipes",
   ))
 }
 
@@ -761,6 +846,25 @@ mod test {
     assert_eq!(get_cache_dir_internal(|_| Some("".to_string())).unwrap(), default_dir);
     assert_eq!(get_cache_dir_internal(|_| Some("  ".to_string())).unwrap(), default_dir);
     assert_eq!(get_cache_dir_internal(|_| None).unwrap(), default_dir);
+  }
+
+  /// Asks git's own fsmonitor daemon for changes over its pipe, which answers
+  /// a token it doesn't know with its own and that everything changed.
+  #[cfg(windows)]
+  #[test]
+  fn asks_the_fsmonitor_daemon_of_git_over_its_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(dir.path()).args(args).output();
+    let started =
+      git(&["init", "-q"]).is_ok_and(|output| output.status.success()) && git(&["fsmonitor--daemon", "start"]).is_ok_and(|output| output.status.success());
+    if !started {
+      return; // a git without the daemon
+    }
+    let git_dir = canonicalize_path(dir.path()).unwrap().into_path_buf().join(".git");
+    let result = git_ipc_request(&git_dir.join("fsmonitor--daemon.ipc"), b"builtin:unknown:0");
+    let _ignore = git(&["fsmonitor--daemon", "stop"]);
+    let response = result.unwrap();
+    assert!(response.starts_with(b"builtin:"), "{}", String::from_utf8_lossy(&response));
   }
 
   #[test]

@@ -44,4 +44,6 @@ sys_traits                  = { workspace = true, features = ["memory"] }
 tempfile.workspace          = true
 
 [target."cfg(windows)".dependencies]
+# the git IPC client (named pipes)
+winapi           = { workspace = true, features = ["ioapiset", "namedpipeapi", "winerror", "winnt"] }
 winreg.workspace = true
