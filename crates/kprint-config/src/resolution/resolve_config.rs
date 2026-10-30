@@ -4,6 +4,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use deno_terminal::colors;
+use kprint_discovery::expand_braces;
+use kprint_discovery::is_negated_glob;
+use kprint_discovery::non_negated_glob;
+use kprint_discovery::process_config_pattern;
 use thiserror::Error;
 
 use crate::PluginConfigFile;
@@ -481,6 +485,41 @@ fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &Confi
     log_warn!(environment, &get_warn_includes_message());
   }
 
+  // A path a negated exclude (ex. `!**/*.txt`) matches isn't checked against
+  // the gitignore, so remote configuration could otherwise get ignored files
+  // (ex. `.env`) formatted.
+  let excludes = &mut layer.settings.files.excludes;
+  let excludes_len = excludes.len();
+  excludes.retain(|pattern| !is_negated_glob(pattern)); // NEVER REMOVE THIS STATEMENT
+  if excludes.len() != excludes_len && (layer.origin.is_first_download || layer.origin.source.is_local()) {
+    log_warn!(environment, &get_warn_negated_excludes_message());
+  }
+
+  // An association reaching a parent directory (ex. `../.bashrc`) could match
+  // files outside the project to a plugin the remote configuration specifies.
+  // Negated ones are kept since they only narrow what a plugin matches.
+  let mut removed_associations = false;
+  for value in layer.settings.plugins.config.values_mut() {
+    let ConfigMapValue::PluginConfig(plugin) = value else {
+      continue;
+    };
+    let Some(associations) = &mut plugin.associations else {
+      continue;
+    };
+    let associations_len = associations.len();
+    associations.retain(|pattern| is_negated_glob(pattern) || !has_parent_dir_component(pattern)); // NEVER REMOVE THIS STATEMENT
+    if associations.len() != associations_len {
+      removed_associations = true;
+      // none left is the same as specifying none
+      if associations.is_empty() {
+        plugin.associations = None;
+      }
+    }
+  }
+  if removed_associations && (layer.origin.is_first_download || layer.origin.source.is_local()) {
+    log_warn!(environment, &get_warn_associations_message());
+  }
+
   // the exec plugin and its commands only run when local config allows it
   let plugins = remote_exec.take_from_remote_config(
     &mut layer.settings.plugins.config,
@@ -531,6 +570,31 @@ fn get_warn_includes_message() -> String {
   )
 }
 
+/// Whether a configuration pattern has a parent directory component in any
+/// of its brace expansions (ex. `../a`, `src/../../a` or `{src,..}/a`). One
+/// that can't be expanded is assumed to.
+fn has_parent_dir_component(pattern: &str) -> bool {
+  let pattern = process_config_pattern(pattern);
+  match expand_braces(non_negated_glob(&pattern)) {
+    Ok(expanded) => expanded.iter().any(|pattern| pattern.split('/').any(|component| component == "..")),
+    Err(_) => true,
+  }
+}
+
+fn get_warn_associations_message() -> String {
+  format!(
+    "{} Plugin 'associations' that reference a parent directory (..) are ignored for security reasons on remote configuration.",
+    colors::bold("Note: "),
+  )
+}
+
+fn get_warn_negated_excludes_message() -> String {
+  format!(
+    "{} Negated 'excludes' (ex. !**/*.txt) are ignored for security reasons on remote configuration.",
+    colors::bold("Note: "),
+  )
+}
+
 fn get_warn_non_wasm_plugins_message() -> String {
   format!(
     "{} Non-wasm plugins are ignored for security reasons on remote configuration.",
@@ -558,6 +622,16 @@ mod tests {
   use pretty_assertions::assert_eq;
 
   use super::*;
+
+  #[test]
+  fn should_get_if_pattern_has_parent_dir_component() {
+    for pattern in ["../a", "src/../../a", "{src,..}/a", "!../a", "/../a", r"..\a", "{unclosed"] {
+      assert!(has_parent_dir_component(pattern), "{pattern}");
+    }
+    for pattern in ["a", "**/*.json", "{src,.github}/a", "..a/b", "a../b", ".github/.bashrc"] {
+      assert!(!has_parent_dir_component(pattern), "{pattern}");
+    }
+  }
 
   async fn get_result(url: &str, environment: &impl Environment) -> Result<ResolvedConfig, ResolveConfigError> {
     let args = crate::options::SessionOptions {
