@@ -92,7 +92,6 @@ pub struct DirScanOutput {
 /// Finds the files to format in [`options.start_dir`][`DirScanOptions::start_dir`], from git's index when it
 /// can and by walking the directory otherwise.
 pub fn scan_dir<TEnvironment: Environment>(environment: &TEnvironment, options: DirScanOptions) -> Result<DirScanOutput> {
-  #[cfg(unix)]
   if let Some(output) = crate::git_index::scan_with_git_index(environment, &options)? {
     return Ok(output);
   }

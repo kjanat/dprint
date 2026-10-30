@@ -9,12 +9,8 @@ pub use glob::*;
 pub use glob_matcher::*;
 pub use glob_pattern::*;
 pub use glob_utils::*;
-// for the git index scan, which is unix only (see `git_index`)
-#[cfg(unix)]
+// for the git index scan (see `git_index`)
 pub(crate) use scan::DirScanGitIgnore;
-#[cfg(unix)]
 pub(crate) use scan::DirScanOptions;
-#[cfg(unix)]
 pub(crate) use scan::DirScanOutput;
-#[cfg(unix)]
 pub(crate) use scan::walk_dir;

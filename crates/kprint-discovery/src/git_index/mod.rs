@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,7 +103,7 @@ impl Snapshot {
     if untracked_cache.dirs.is_empty() {
       bail!("the untracked cache is empty");
     }
-    let ident = format!("Location {}, system {}", repo.work_tree.display(), system_name()?);
+    let ident = format!("Location {}, system {}", git_path_display(&repo.work_tree), system_name()?);
     if untracked_cache.ident != ident.as_bytes() {
       bail!("the untracked cache is for {:?}", String::from_utf8_lossy(&untracked_cache.ident));
     }
@@ -201,8 +200,23 @@ impl SplitFirstNul for Vec<u8> {
   }
 }
 
+/// A path as git writes it, ex. in the untracked cache's ident: with `/`
+/// separators on Windows too.
+fn git_path_display(path: &Path) -> String {
+  let path = path.display().to_string();
+  if cfg!(windows) { path.replace('\\', "/") } else { path }
+}
+
+/// Git puts `uname`'s `sysname` into the untracked cache's ident, which Git
+/// for Windows gives as "Windows".
+#[cfg(windows)]
+fn system_name() -> Result<String> {
+  Ok("Windows".to_string())
+}
+
 /// Git puts `uname`'s `sysname` into the untracked cache's ident, so this
 /// gets it the same way.
+#[cfg(unix)]
 fn system_name() -> Result<String> {
   // SAFETY: an all zero utsname is valid, and is what uname fills in
   let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
@@ -291,7 +305,7 @@ impl<'a, TEnvironment: Environment> Discovery<'a, TEnvironment> {
     let start = options
       .start_dir
       .strip_prefix(snapshot.work_tree())
-      .map(|path| path.as_os_str().as_bytes().to_vec())
+      .map(|path| crate::utils::path_to_slash_bytes(path).into_owned())
       .unwrap_or_default();
     Self {
       environment,
@@ -385,7 +399,7 @@ impl<'a, TEnvironment: Environment> Discovery<'a, TEnvironment> {
               let Some(name) = dir_path.file_name() else {
                 continue;
               };
-              let name = name.as_bytes();
+              let name = name_bytes(name)?;
               if name == b".git" {
                 continue;
               }
@@ -396,7 +410,7 @@ impl<'a, TEnvironment: Environment> Discovery<'a, TEnvironment> {
               }
             }
             DirEntry::File { name, .. } => {
-              let file_path = join(&path, name.as_bytes());
+              let file_path = join(&path, name_bytes(&name)?);
               if !self.snapshot.index.has_entry(&file_path) {
                 self.untracked_files.push(file_path);
               }
@@ -490,9 +504,29 @@ fn work_tree_path(work_tree: &Path, relative: &[u8]) -> PathBuf {
   let mut path = PathBuf::with_capacity(work_tree.as_os_str().len() + 1 + relative.len());
   path.push(work_tree);
   if !relative.is_empty() {
-    path.push(OsStr::from_bytes(relative));
+    #[cfg(unix)]
+    path.push(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(relative));
+    // the index's paths are UTF-8 with `/` separators, and so are the ones
+    // made from listed names (see `name_bytes`), so with the OS's separators
+    #[cfg(not(unix))]
+    for component in relative.split(|byte| *byte == b'/') {
+      path.push(String::from_utf8_lossy(component).as_ref());
+    }
   }
   path
+}
+
+/// A listed file name as git has it in the index: its bytes, which on
+/// Windows are its UTF-8. A name that isn't UTF-8 there can't be in the
+/// index, so the directory is walked instead.
+fn name_bytes(name: &OsStr) -> Result<&[u8]> {
+  #[cfg(unix)]
+  return Ok(std::os::unix::ffi::OsStrExt::as_bytes(name));
+  #[cfg(not(unix))]
+  name
+    .to_str()
+    .map(str::as_bytes)
+    .ok_or_else(|| anyhow!("{} isn't valid UTF-8", name.to_string_lossy()))
 }
 
 /// Checks directories and files like a walk does.
@@ -1092,16 +1126,19 @@ mod test {
     assert_eq!(join(b"a", b"c"), b"a/c");
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   type RealEnvironment = crate::environment::RealEnvironment;
 
   /// A real git repository. A hook replaces the fsmonitor daemon, so git
   /// writes a token into the index.
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   struct RealRepo {
     _dir: tempfile::TempDir,
     root: PathBuf,
     environment: RealEnvironment,
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   impl RealRepo {
     /// `None` without a git CLI.
     fn new(index_version: &str) -> Option<Self> {
@@ -1145,7 +1182,7 @@ mod test {
         .git(args)
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| PathBuf::from(OsStr::from_bytes(path)))
+        .map(|path| PathBuf::from(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path)))
         .collect()
     }
 
@@ -1226,6 +1263,7 @@ mod test {
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   fn reads_a_real_git_index() {
     for index_version in ["2", "4"] {
@@ -1268,6 +1306,7 @@ mod test {
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   fn matches_tracked_ignored_files_and_configs() {
     let Some(repo) = RealRepo::new("2") else {
@@ -1306,8 +1345,10 @@ mod test {
   }
 
   /// A xorshift generator, so a failing seed reproduces.
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   struct Rng(u64);
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   impl Rng {
     fn below(&mut self, bound: usize) -> usize {
       self.0 ^= self.0 << 13;
@@ -1325,10 +1366,13 @@ mod test {
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   const FILE_NAMES: &[&str] = &[
     "a", "b", "foo", "bar.log", "x.txt", "y.rs", "Ab", ".hidden", "[x]", "a b", "#c", "!d", "e*f", "g?h", "deep", "logs", "z.LOG",
   ];
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   const DIR_NAMES: &[&str] = &["a", "src", "build", "logs", "x", "[d]", "sp ace", "node", ".dot", "deep", "foo"];
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   const PATTERNS: &[&str] = &[
     "a",
     "foo",
@@ -1367,6 +1411,7 @@ mod test {
     "*/deep",
   ];
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   fn random_pattern(rng: &mut Rng) -> String {
     match rng.below(20) {
       0 => "# a comment".to_string(),
@@ -1390,6 +1435,7 @@ mod test {
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   fn random_tree(rng: &mut Rng, repo: &RealRepo, dir: &str, depth: usize, files: &mut Vec<String>) {
     let join = |name: &str| if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
     for _ in 0..1 + rng.below(4) {
@@ -1416,6 +1462,7 @@ mod test {
 
   /// Builds a random repository, runs `git status`, changes files, and compares
   /// the walk and the index scan with `git ls-files`.
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   fn check_against_git(seed: u64) {
     let Some(repo) = RealRepo::new(if seed.is_multiple_of(2) { "2" } else { "4" }) else {
       return;
@@ -1474,6 +1521,7 @@ mod test {
     assert_eq!(scanned, expected, "seed {seed}: the index scan differs from git\n{gitignores}");
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   fn matches_git_ls_files() {
     for seed in 1..=40 {
@@ -1482,6 +1530,7 @@ mod test {
   }
 
   /// `cargo test -p kprint-discovery --release -- --ignored matches_git_ls_files_in_many_repositories`
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   #[ignore = "creates thousands of git repositories"]
   fn matches_git_ls_files_in_many_repositories() {
@@ -1490,19 +1539,23 @@ mod test {
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   struct Daemon<'a>(&'a RealRepo);
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   impl Drop for Daemon<'_> {
     fn drop(&mut self) {
       self.0.git_succeeds(&["fsmonitor--daemon", "stop"]);
     }
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   fn median(mut times: Vec<std::time::Duration>) -> std::time::Duration {
     times.sort();
     times[times.len() / 2]
   }
 
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   fn time(runs: usize, mut run: impl FnMut()) -> std::time::Duration {
     run();
     median(
@@ -1517,6 +1570,7 @@ mod test {
   }
 
   /// `cargo test -p kprint-discovery --release -- --ignored --nocapture compares_speed_with_git`
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   #[ignore = "creates a repository with 110000 files"]
   fn compares_speed_with_git() {

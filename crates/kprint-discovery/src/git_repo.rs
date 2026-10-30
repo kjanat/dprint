@@ -61,8 +61,7 @@ pub(crate) fn repo_ignores_case(environment: &impl Environment, repo: &GitRepo) 
 /// A repository's index, read with a config dprint understands.
 pub(crate) struct ReadIndex {
   pub index: IndexFile,
-  /// For the git index scan, which is unix only (see `git_index`).
-  #[cfg(unix)]
+  /// For the git index scan (see `git_index`).
   pub hash_len: usize,
   /// How the repository compares paths (`core.ignoreCase`).
   pub case: PathCase,
@@ -86,7 +85,6 @@ pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Resu
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
       return Ok(ReadIndex {
         index: IndexFile::default(),
-        #[cfg(unix)]
         hash_len,
         case,
       });
@@ -94,12 +92,7 @@ pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Resu
     Err(err) => return Err(err.into()),
   };
   let index = parse_index(&bytes, hash_len).with_context(|| format!("reading {}", index_path.display()))?;
-  Ok(ReadIndex {
-    index,
-    #[cfg(unix)]
-    hash_len,
-    case,
-  })
+  Ok(ReadIndex { index, hash_len, case })
 }
 
 #[cfg(test)]

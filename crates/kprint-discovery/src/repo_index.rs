@@ -5,14 +5,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use anyhow::bail;
 use kprint_git::EntryKind;
-#[cfg(unix)]
 use kprint_git::FsmonitorData;
 use kprint_git::IndexEntry;
-#[cfg(unix)]
 use kprint_git::UntrackedCache;
 
 use crate::environment::DiscoveryEnvironment as Environment;
-#[cfg(unix)]
 use crate::git_repo::GitRepo;
 use crate::git_repo::find_repo;
 use crate::git_repo::read_index;
@@ -33,11 +30,9 @@ pub(crate) struct IndexDir {
 #[derive(Debug)]
 pub struct RepoIndex {
   // the repository, hash length, fsmonitor data and untracked cache are for
-  // the git index scan, which is unix only (see `git_index`)
-  #[cfg(unix)]
+  // the git index scan (see `git_index`)
   pub(crate) repo: GitRepo,
   work_tree: DirPrefix,
-  #[cfg(unix)]
   pub(crate) hash_len: usize,
   /// How the repository compares paths, which every lookup does too.
   pub(crate) case: PathCase,
@@ -45,9 +40,7 @@ pub struct RepoIndex {
   /// ignores case, by the folded path first (see `PathCase::sort_cmp`), so
   /// that a path's entries are next to each other for its lookups.
   pub(crate) entries: Vec<IndexEntry>,
-  #[cfg(unix)]
   pub(crate) fsmonitor: Option<FsmonitorData>,
-  #[cfg(unix)]
   pub(crate) untracked_cache: Option<UntrackedCache>,
 }
 
@@ -80,14 +73,9 @@ impl RepoIndex {
         repo.work_tree.display()
       );
     }
-    #[cfg(unix)]
     let (entries, new_positions) = sort_entries(read.index.entries, read.case);
-    #[cfg(not(unix))]
-    let (entries, _) = sort_entries(read.index.entries, read.case);
-    #[cfg(unix)]
     let mut fsmonitor = read.index.fsmonitor;
     // the dirty entries are positions in git's order
-    #[cfg(unix)]
     if let (Some(fsmonitor), Some(new_positions)) = (&mut fsmonitor, &new_positions) {
       for position in &mut fsmonitor.dirty_entries {
         if let Some(new_position) = new_positions.get(*position) {
@@ -97,15 +85,11 @@ impl RepoIndex {
     }
     Ok(RepoIndex {
       work_tree: DirPrefix::new(repo.work_tree.clone()),
-      #[cfg(unix)]
       repo,
-      #[cfg(unix)]
       hash_len: read.hash_len,
       case: read.case,
       entries,
-      #[cfg(unix)]
       fsmonitor,
-      #[cfg(unix)]
       untracked_cache: read.index.untracked_cache,
     })
   }
@@ -121,18 +105,14 @@ impl RepoIndex {
     RepoIndex {
       case,
       work_tree: DirPrefix::new(work_tree.to_path_buf()),
-      #[cfg(unix)]
       repo: GitRepo {
         work_tree: work_tree.to_path_buf(),
         git_dir: work_tree.join(".git"),
         common_dir: work_tree.join(".git"),
       },
-      #[cfg(unix)]
       hash_len: 20,
       entries,
-      #[cfg(unix)]
       fsmonitor: None,
-      #[cfg(unix)]
       untracked_cache: None,
     }
   }
@@ -146,7 +126,6 @@ impl RepoIndex {
   }
 
   /// Whether the index has an entry for a path relative to the work tree.
-  #[cfg(any(unix, test))]
   pub(crate) fn has_entry(&self, path: &[u8]) -> bool {
     !self.entries_for(path).is_empty()
   }
@@ -154,7 +133,6 @@ impl RepoIndex {
   /// The index's spellings of `path`, and of a directory at `path`, that
   /// differ from it but are the same to the repository (see `PathCase`).
   /// Git also takes a path the fsmonitor daemon reports as these.
-  #[cfg(unix)]
   pub(crate) fn other_spellings(&self, path: &[u8]) -> Vec<Vec<u8>> {
     let mut spellings: Vec<Vec<u8>> = Vec::new();
     if self.case == PathCase::Exact {

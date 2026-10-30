@@ -1,6 +1,5 @@
 #[macro_use]
 extern crate kprint_platform;
-#[cfg(unix)]
 mod git_index;
 mod git_repo;
 mod gitignore;
