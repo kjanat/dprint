@@ -1418,7 +1418,7 @@
     "https://esm.sh/json5@2.2.3": "13758d23e57a88c7448f62ea1bc6e8ef9be09be041d7f6de612bb8cb335ec331",
     "https://esm.sh/json5@2.2.3/denonext/json5.mjs": "e92f247136c4293d510068444ca724572ae85eecaf1799c322d11f4448ee87a1",
     "https://esm.sh/lz-string@1.5.0": "dea8909e240e2de1893fbd1b5740570560bae6ceda48e584b57d6728b51910fc",
-    "https://esm.sh/lz-string@1.5.0/denonext/lz-string.mjs": "da6534c823ee0bc2dd45b0c95fbd106f2b6a2db9791a5ac885ad60c61313cedd",
+    "https://esm.sh/lz-string@1.5.0/denonext/lz-string.mjs": "f78a7f5bd28b50ba96fd7bd0ecf8cdeffef3a9f0ec430519e6a993b887fb0e9b",
     "https://esm.sh/monaco-editor@0.57.0": "e224cc556397fb1beeccd7cacb76c716bd731e953870c511a572dec3101a3ecf",
     "https://esm.sh/monaco-editor@0.57.0/denonext/esm/vs/editor/editor.api.mjs": "f6c2ef1d2a377d2f770117e1335b8b64bb2d6f480b44a48db190c2064ceee9b6",
     "https://esm.sh/monaco-editor@0.57.0/denonext/esm/vs/languages/definitions/abap/abap.mjs": "2036d816162c71e2a695eda5d8db959c7bbfa8cf76128ed804d32479e7707a7f",

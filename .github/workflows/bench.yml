@@ -49,7 +49,10 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
       - name: Typecheck the bench script
         working-directory: corpus
-        run: deno check --frozen .github/scripts/bench.ts
+        # the workspace's nodeModulesDir is manual
+        run: |
+          deno install --frozen --entrypoint .github/scripts/bench.ts
+          deno check --frozen .github/scripts/bench.ts
       - name: Rehearse the report with the fixture
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
