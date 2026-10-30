@@ -40,7 +40,8 @@ jobs:
           IFS=.- read -r a b c _ <<<"${v}";
           [[ "${RELEASE_KIND}" = minor ]] && b=$((b+1)) c=0 || c=$((c+1));
           v="${a}.${b}.${c}${RELEASE_SUFFIX:+-${RELEASE_SUFFIX}}";
-          yq -i ".package.version = \"${v}\"" "${f}";
+          sed -i -E "0,/^version( *)= *\"[^\"]*\"/s//version\1= \"${v}\"/" "${f}";
+          [[ "$(yq .package.version "${f}")" = "${v}" ]];
           cargo update --workspace;
           git add .;
           git commit -m "${v}";
