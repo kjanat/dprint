@@ -146,6 +146,10 @@ pub struct TestEnvironment {
   staged_files: Arc<Mutex<Vec<PathBuf>>>,
   dirty_files: Arc<Mutex<Vec<PathBuf>>>,
   global_gitignore_path: Arc<Mutex<Option<PathBuf>>>,
+  /// What git would say `core.ignoreCase` is per work tree (see
+  /// `VcsEnvironment::git_ignore_case`). Unset ones read the repository's
+  /// config, as without git.
+  git_ignore_case: Arc<Mutex<HashMap<PathBuf, bool>>>,
   git_ipc_responses: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
   git_ipc_requests: Arc<Mutex<Vec<GitIpcRequest>>>,
   stdout_messages: Arc<Mutex<Vec<String>>>,
@@ -205,6 +209,7 @@ impl TestEnvironment {
       staged_files: Default::default(),
       dirty_files: Default::default(),
       global_gitignore_path: Default::default(),
+      git_ignore_case: Default::default(),
       git_ipc_responses: Default::default(),
       git_ipc_requests: Default::default(),
       stdout_messages: Default::default(),
@@ -433,6 +438,11 @@ impl TestEnvironment {
   }
   pub fn set_global_gitignore_path(&self, path: impl AsRef<Path>) {
     *self.global_gitignore_path.lock() = Some(path.as_ref().to_path_buf());
+  }
+  /// Has git say `core.ignoreCase` is `value` for the work tree, as when it's
+  /// set outside of the repository's config (ex. globally).
+  pub fn set_git_ignore_case(&self, work_tree: impl AsRef<Path>, value: bool) {
+    self.git_ignore_case.lock().insert(work_tree.as_ref().to_path_buf(), value);
   }
   pub fn set_git_ipc_response(&self, socket_path: impl AsRef<Path>, response: impl Into<Vec<u8>>) {
     self.git_ipc_responses.lock().insert(socket_path.as_ref().to_path_buf(), response.into());
@@ -857,6 +867,10 @@ impl kprint_platform::environment::VcsEnvironment for TestEnvironment {
 
   fn global_gitignore_path(&self) -> Option<PathBuf> {
     self.global_gitignore_path.lock().clone()
+  }
+
+  fn git_ignore_case(&self, work_tree: &Path) -> Option<bool> {
+    self.git_ignore_case.lock().get(work_tree).copied()
   }
 
   fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {

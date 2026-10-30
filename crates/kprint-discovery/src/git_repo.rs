@@ -48,6 +48,16 @@ pub(crate) fn find_repo(environment: &impl Environment, dir: &Path) -> Result<Op
   Ok(None)
 }
 
+/// Whether a repository compares paths ignoring case: what git says, from
+/// every config it reads, otherwise the repository's own `core.ignoreCase`.
+pub(crate) fn repo_ignores_case(environment: &impl Environment, repo: &GitRepo) -> Result<bool> {
+  if let Some(ignore_case) = environment.git_ignore_case(&repo.work_tree) {
+    return Ok(ignore_case);
+  }
+  let config = environment.maybe_read_file(repo.common_dir.join("config"))?;
+  Ok(config.is_some_and(|text| parse_repo_config(&text).ignore_case))
+}
+
 /// A repository's index, read with a config dprint understands.
 pub(crate) struct ReadIndex {
   pub index: IndexFile,
@@ -64,7 +74,7 @@ pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Resu
   if config.bare || config.has_work_tree_setting || config.has_includes || config.has_worktree_config {
     bail!("the repository config is bare, moves the work tree or has includes");
   }
-  let case = PathCase::from_ignore_case(config.ignore_case);
+  let case = PathCase::from_ignore_case(environment.git_ignore_case(&repo.work_tree).unwrap_or(config.ignore_case));
   let hash_len = match config.object_format.as_deref() {
     None | Some("sha1") => 20,
     Some("sha256") => 32,

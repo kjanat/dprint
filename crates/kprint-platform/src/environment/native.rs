@@ -445,6 +445,46 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
     CACHED_GLOBAL_GITIGNORE_PATH.get_or_init(|| self.resolve_global_gitignore_path()).clone()
   }
 
+  fn git_ignore_case(&self, work_tree: &Path) -> Option<bool> {
+    static CACHED: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Option<bool>>>> = std::sync::Mutex::new(None);
+    if let Some(cached) = CACHED
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .as_ref()
+      .and_then(|cache| cache.get(work_tree))
+    {
+      return *cached;
+    }
+    let output = Command::new("git")
+      .arg("-C")
+      .arg(work_tree)
+      .args(["config", "--type=bool", "--get", "core.ignoreCase"])
+      .output();
+    let ignore_case = match output {
+      Ok(output) => match output.status.code() {
+        Some(0) => match String::from_utf8_lossy(&output.stdout).trim() {
+          "true" => Some(true),
+          "false" => Some(false),
+          _ => None,
+        },
+        // set nowhere, which git takes as false
+        Some(1) => Some(false),
+        // ex. git doesn't trust the repository, so it didn't read its config
+        _ => None,
+      },
+      Err(err) => {
+        log_debug!(self, "Not asking git for core.ignoreCase in {}: {}", work_tree.display(), err);
+        None
+      }
+    };
+    CACHED
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .get_or_insert_with(Default::default)
+      .insert(work_tree.to_path_buf(), ignore_case);
+    ignore_case
+  }
+
   fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>> {
     log_debug!(self, "Sending git IPC request to {}", socket_path.display());
     git_ipc_request(socket_path, message)

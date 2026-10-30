@@ -287,6 +287,12 @@ pub trait VcsEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   /// path is not guaranteed to exist; the caller handles a missing file when
   /// reading it. Returns `None` only when no path can be resolved at all.
   fn global_gitignore_path(&self) -> Option<PathBuf>;
+  /// Asks git for `core.ignoreCase` in the repository at `work_tree`, from
+  /// every config git reads (system, global, the repository's, includes, `-c`
+  /// and `GIT_CONFIG_*`). `None` when git can't say (ex. it isn't installed,
+  /// or doesn't trust the repository), so the caller reads the repository's
+  /// own config instead.
+  fn git_ignore_case(&self, work_tree: &Path) -> Option<bool>;
   /// Sends `message` to the git Simple IPC server at `socket_path` and returns
   /// the response.
   fn git_ipc_request(&self, socket_path: &Path, message: &[u8]) -> io::Result<Vec<u8>>;

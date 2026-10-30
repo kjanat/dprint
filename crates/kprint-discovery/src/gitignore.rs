@@ -84,19 +84,19 @@ impl DirGitIgnores {
   }
 }
 
-/// Whether the patterns of a directory's entries match ignoring case: what
-/// its repository's `core.ignoreCase` says at a repository root, otherwise
-/// what its parent's say.
+/// Whether the patterns of a directory's entries match ignoring case: at a
+/// repository root, what `core.ignoreCase` is for it (see
+/// `git_repo::repo_ignores_case`), otherwise what its parent's say.
 fn ignores_case(environment: &impl Environment, dir_path: &Path, is_repo_root: bool, parent: Option<&Arc<DirGitIgnores>>) -> bool {
   if !is_repo_root {
     return parent.is_some_and(|parent| parent.ignore_case);
   }
-  let config = crate::git_repo::find_repo(environment, dir_path).and_then(|repo| match repo {
-    Some(repo) => Ok(environment.maybe_read_file(repo.common_dir.join("config"))?),
-    None => Ok(None),
+  let ignore_case = crate::git_repo::find_repo(environment, dir_path).and_then(|repo| match repo {
+    Some(repo) => crate::git_repo::repo_ignores_case(environment, &repo),
+    None => Ok(false),
   });
-  match config {
-    Ok(config) => config.is_some_and(|text| kprint_git::parse_repo_config(&text).ignore_case),
+  match ignore_case {
+    Ok(ignore_case) => ignore_case,
     Err(err) => {
       log_debug!(environment, "Not reading the git config for {}: {:#}", dir_path.display(), err);
       false
@@ -329,6 +329,26 @@ mod test {
     // a repository of its own, which doesn't
     assert!(is_ignored("/repo/nested/debug.log", false));
     assert!(!is_ignored("/repo/nested/Debug.LOG", false));
+  }
+
+  #[test]
+  fn ignores_case_as_git_says_from_all_of_its_config() {
+    let is_ignored = |env: TestEnvironment, path: &str| {
+      let path = PathBuf::from(path);
+      GitIgnoreTree::new(env, GitIgnoreTreeOptions::default())
+        .get_resolved_git_ignore_for_file(&path)
+        .is_some_and(|gitignore| gitignore.is_ignored(&path, false))
+    };
+    // set outside of the repository's config (ex. globally)
+    let env = TestEnvironment::new();
+    env.mk_dir_all("/repo/.git").unwrap();
+    env.write_file("/repo/.gitignore", "*.log\n").unwrap();
+    env.set_git_ignore_case("/repo", true);
+    assert!(is_ignored(env, "/repo/Debug.LOG"));
+    // and overriding the repository's config (ex. with `-c`)
+    let env = ignore_case_environment();
+    env.set_git_ignore_case("/repo", false);
+    assert!(!is_ignored(env, "/repo/Debug.LOG"));
   }
 
   #[test]
