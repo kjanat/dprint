@@ -519,8 +519,8 @@ mod test {
       concat!(
         "Formatting these files would compile 2 plugins, more than the limit of 1. ",
         "Set DPRINT_MAX_PLUGIN_COMPILES to a higher number to allow it. Plugins:\n",
-        "  test-plugin 0.2.0 (4 bytes)\n",
-        "  test-plugin 0.1.0 (4 bytes)"
+        "  test-plugin 0.2.0: 4 bytes in 1 file (file.txt)\n",
+        "  test-plugin 0.1.0: 4 bytes in 1 file (sub/file.txt)"
       )
     );
     // nothing was compiled or formatted
@@ -539,7 +539,7 @@ mod test {
     let mut messages = crate::test_helpers::normalize_compile_times(environment.take_stderr_messages());
     assert_eq!(
       messages.remove(0),
-      "Compiling 2 plugins to native code to format these files:\n  test-plugin 0.2.0 (4 bytes)\n  test-plugin 0.1.0 (4 bytes)"
+      "Compiling 2 plugins to native code for the files they format:\n  test-plugin 0.2.0: 4 bytes in 1 file (file.txt)\n  test-plugin 0.1.0: 4 bytes in 1 file (sub/file.txt)"
     );
     // Starts and completions may interleave, but each plugin keeps its timing.
     messages.sort();
@@ -605,7 +605,7 @@ mod test {
     assert_eq!(environment.read_file("/file.txt").unwrap(), "text_formatted");
     assert_eq!(environment.read_file("/sub/file.txt").unwrap(), "text_formatted");
     assert_eq!(environment.take_wasm_compile_deadlines().len(), 2);
-    assert!(environment.take_stderr_messages()[0].starts_with("Compiling 2 plugins to native code to format these files:"));
+    assert!(environment.take_stderr_messages()[0].starts_with("Compiling 2 plugins to native code for the files they format:"));
     environment.take_stdout_messages();
   }
 
@@ -675,7 +675,7 @@ mod test {
     assert_eq!(
       crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
       vec![
-        "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 (300.0 KB)",
+        "Compiling 1 plugin to native code for the files it formats:\n  test-plugin 0.2.0: 300.0 KB in 1 file (file.txt)",
         "Compiling test-plugin 0.2.0",
         "Compiled test-plugin 0.2.0 in <elapsed>",
       ]
@@ -718,7 +718,7 @@ mod test {
     assert_eq!(
       crate::test_helpers::normalize_compile_times(environment.take_stderr_messages()),
       vec![
-        "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 (300.0 KB)",
+        "Compiling 1 plugin to native code for the files it formats:\n  test-plugin 0.2.0: 300.0 KB in 1 file (file.txt)",
         "Compiling test-plugin 0.2.0",
         "Compiled test-plugin 0.2.0 in <elapsed>",
       ]

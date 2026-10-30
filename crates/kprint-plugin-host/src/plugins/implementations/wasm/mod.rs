@@ -12,6 +12,7 @@ pub use compile_worker::COMPILE_WORKER_ARG;
 pub use compile_worker::CompileControl;
 pub use compile_worker::compile_supervised;
 pub use compile_worker::run_compile_worker;
+pub use engine_choice::FormatEngine;
 use instance::*;
 pub use interpreter::InterpretedModule;
 pub use load_instance::WASM_PLUGIN_THREAD_STACK_SIZE;

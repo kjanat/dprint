@@ -4237,7 +4237,7 @@ text2"
     let compiling = |bytes| {
       vec![
         format!(
-          "Compiling 1 plugin to native code to format these files:\n  test-plugin 0.2.0 ({} bytes)",
+          "Compiling 1 plugin to native code for the files it formats:\n  test-plugin 0.2.0: {} bytes in 1 file (file.txt)",
           bytes
         ),
         "Compiling test-plugin 0.2.0".to_string(),

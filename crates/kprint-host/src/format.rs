@@ -3,6 +3,7 @@ use anyhow::bail;
 use kprint_async_runtime::future;
 use kprint_plugin_types::NullCancellationToken;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::environment::HostEnvironment as Environment;
 use crate::incremental::FileMetadata;
 use crate::incremental::IncrementalFile;
+use crate::plugins::FormatEngine;
 use crate::resolution::GetPluginResult;
 use crate::resolution::InitializedPluginWithConfig;
 use crate::resolution::InitializedPluginWithConfigFormatRequest;
@@ -33,6 +35,63 @@ struct TaskWork {
 }
 
 type InitializedPlugins = Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>;
+
+/// How long formatting a file takes before it's reported as slow.
+const SLOW_FORMAT: Duration = Duration::from_secs(10);
+
+/// Where formatting a file is, to say what's slow about it.
+#[derive(Clone, Copy)]
+enum FormatStage {
+  /// Waiting for the plugins of the file's group, which start before their
+  /// first file is formatted.
+  StartingPlugins,
+  Reading,
+  /// `plugin` (an index into the group's plugins) formats the file, in pass
+  /// `pass` (more than 1 when ensuring a stable format).
+  Formatting {
+    plugin: usize,
+    pass: usize,
+  },
+  /// Doing what the command does with the formatted text, ex. writing it.
+  Finishing,
+}
+
+impl FormatStage {
+  /// Ex. "dprint-plugin-typescript 0.95.0 (interpreted Wasm) is formatting it".
+  fn describe(self, plugins: &[Rc<PluginWithConfig>]) -> String {
+    match self {
+      FormatStage::StartingPlugins => format!(
+        "it's waiting for {} to start",
+        plugins.iter().map(|plugin| describe_plugin(plugin)).collect::<Vec<_>>().join(", ")
+      ),
+      FormatStage::Reading => "it's being read".to_string(),
+      FormatStage::Formatting { plugin, pass } => {
+        let plugin = plugins
+          .get(plugin)
+          .map(|plugin| describe_plugin(plugin))
+          .unwrap_or_else(|| "a plugin".to_string());
+        if pass > 1 {
+          format!("{} is formatting it again (pass {}) to ensure a stable format", plugin, pass)
+        } else {
+          format!("{} is formatting it", plugin)
+        }
+      }
+      FormatStage::Finishing => "the formatted text is being handled (ex. written)".to_string(),
+    }
+  }
+}
+
+/// Ex. "dprint-plugin-typescript 0.95.0 (interpreted Wasm)": an interpreted
+/// plugin formats several times slower than its native code.
+fn describe_plugin(plugin: &PluginWithConfig) -> String {
+  let engine = match plugin.plugin.format_engine() {
+    Some(FormatEngine::Interpreter) => " (interpreted Wasm)",
+    Some(FormatEngine::Native) if plugin.plugin.compiles_to_format() => " (Wasm, compiling to native code)",
+    Some(FormatEngine::Native) => " (Wasm as native code)",
+    None => "",
+  };
+  format!("{} {}{}", plugin.name(), plugin.info().version, engine)
+}
 
 /// The plugins that format a group of files, which are initialized when the
 /// first of the files needs formatting. When every file is unchanged since the
@@ -207,22 +266,32 @@ where
             let scope = scope.clone();
             format_handles.push(kprint_async_runtime::spawn(async move {
               let long_format_token = CancellationToken::new();
+              let stage = Rc::new(Cell::new(FormatStage::StartingPlugins));
               kprint_async_runtime::spawn({
                 let long_format_token = long_format_token.clone();
                 let environment = environment.clone();
                 let file_path = file_path.clone();
+                let plugins = plugins.clone();
+                let stage = stage.clone();
                 async move {
+                  let start = Instant::now();
                   tokio::select! {
-                    _ = long_format_token.cancelled() => {
-                      // exit
-                    }
-                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                      log_warn!(environment, "WARNING: Formatting is slow for {}", file_path.display());
-                    }
+                    _ = long_format_token.cancelled() => return,
+                    _ = tokio::time::sleep(SLOW_FORMAT) => {}
                   }
+                  let display_path = file_path.strip_prefix(environment.cwd()).unwrap_or(&file_path).display().to_string();
+                  log_warn!(
+                    environment,
+                    "WARNING: Formatting {} is slow: after {}s, {}.",
+                    display_path,
+                    SLOW_FORMAT.as_secs(),
+                    stage.get().describe(&plugins.plugins)
+                  );
+                  long_format_token.cancelled().await;
+                  log_warn!(environment, "Finished formatting {} after {:.1}s.", display_path, start.elapsed().as_secs_f64());
                 }
               });
-              let result = run_for_file_path(environment, scope, plugins, &error_logger, file_path.clone(), ensure_stable_format, f).await;
+              let result = run_for_file_path(environment, scope, plugins, &error_logger, file_path.clone(), ensure_stable_format, &stage, f).await;
               long_format_token.cancel();
               if let Err(err) = result {
                 match err {
@@ -361,6 +430,7 @@ where
     error_logger: &ErrorCountLogger<TEnvironment>,
     file_path: PathBuf,
     ensure_stable_format: EnsureStableFormat,
+    stage: &Cell<FormatStage>,
     f: F,
   ) -> Result<(), RunForFilePathError>
   where
@@ -373,6 +443,7 @@ where
     };
 
     // it's a big perf improvement to do this work on a blocking thread
+    stage.set(FormatStage::Reading);
     let (file_path, file_text, environment) = kprint_async_runtime::spawn_blocking(move || {
       let file_text = environment.read_file_bytes(&file_path)?;
       Ok::<_, std::io::Error>((file_path, file_text, environment))
@@ -380,14 +451,15 @@ where
     .await??;
 
     let (start_instant, formatted_text, _) =
-      run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text).await?;
+      run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &file_text, stage, 1).await?;
 
     let formatted_text = if ensure_stable_format.0 && formatted_text != file_text {
-      get_stabilized_format_text(environment.clone(), scope, plugins, file_path.clone(), formatted_text).await?
+      get_stabilized_format_text(environment.clone(), scope, plugins, file_path.clone(), formatted_text, stage).await?
     } else {
       formatted_text
     };
 
+    stage.set(FormatStage::Finishing);
     kprint_async_runtime::spawn_blocking(move || f(file_path, file_text, formatted_text, start_instant, environment)).await??;
 
     Ok(())
@@ -399,12 +471,23 @@ where
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
     mut formatted_text: Vec<u8>,
+    stage: &Cell<FormatStage>,
   ) -> Result<Vec<u8>> {
     log_debug!(environment, "Ensuring stable format: {}", file_path.display());
     let mut count = 0;
     let mut changed_by: Vec<String>;
     loop {
-      match run_single_pass_for_file_path(environment.clone(), scope.clone(), plugins.clone(), file_path.clone(), &formatted_text).await {
+      match run_single_pass_for_file_path(
+        environment.clone(),
+        scope.clone(),
+        plugins.clone(),
+        file_path.clone(),
+        &formatted_text,
+        stage,
+        count + 2,
+      )
+      .await
+      {
         Ok((_, next_pass_text, next_changed_by)) => {
           if next_pass_text == formatted_text {
             return Ok(formatted_text);
@@ -438,6 +521,8 @@ where
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
     file_text: &[u8],
+    stage: &Cell<FormatStage>,
+    pass: usize,
   ) -> Result<(Instant, Vec<u8>, Vec<String>)> {
     let start_instant = Instant::now();
     let original_text = file_text;
@@ -445,6 +530,7 @@ where
     let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
     for (i, (plugin, initialized_plugin)) in plugins.iter().enumerate() {
+      stage.set(FormatStage::Formatting { plugin: i, pass });
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
         .format_text(InitializedPluginWithConfigFormatRequest {
