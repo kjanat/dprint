@@ -446,9 +446,13 @@ fn make_exec_config(
 ) -> Result<Option<PluginSourceReference>> {
   let exec_plugins = plugins.iter().filter(|plugin| is_exec_plugin_reference(plugin)).collect::<Vec<_>>();
   let uses_exec = !exec_plugins.is_empty();
-  // a list of programs is checked the way the exec plugin 0.7.3 reads its
-  // commands, so it's only for that version
-  let uncheckable_exec_plugin = exec_plugins.into_iter().find(|plugin| !knows_exec_plugin_commands(plugin)).cloned();
+  // a list of programs is checked the way the built-in exec (and the exec
+  // plugin 0.7.3) reads its commands, so a process plugin of another release
+  // can't be checked
+  let uncheckable_exec_plugin = exec_plugins
+    .into_iter()
+    .find(|plugin| !is_builtin_exec_reference(environment, plugin) && !knows_exec_plugin_commands(plugin))
+    .cloned();
   let mut exec_config = ConfigMap::new();
   let mut remote_plugin = None;
   let mut any_allowed = false;

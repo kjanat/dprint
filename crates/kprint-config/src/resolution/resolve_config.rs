@@ -3259,23 +3259,36 @@ lineWidth = 80
     }
 
     fn resolve(local_config: &str, remote_config: &str) -> Result<Resolved, String> {
-      resolve_with_base(
-        local_config,
-        remote_config,
-        r#"{ "exec": { "commands": [{ "command": "local-base", "exts": ["md"] }] } }"#,
-      )
+      resolve_with_base(local_config, remote_config, LOCAL_BASE)
     }
 
     /// Resolves the local configuration, which may extend `REMOTE_URL` and
     /// `./base.json`, with each of the three files in JSON and in TOML (see
     /// [`resolve_in_every_format`]).
     fn resolve_with_base(local_config: &str, remote_config: &str, base_config: &str) -> Result<Resolved, String> {
+      resolve_with_base_in(local_config, remote_config, base_config, |_| {})
+    }
+
+    /// Like `resolve_with_base`, with each environment set up first.
+    fn resolve_with_base_in(local_config: &str, remote_config: &str, base_config: &str, set_up: impl Fn(&TestEnvironment)) -> Result<Resolved, String> {
       let local_config = local_config.replace(REMOTE_URL, "<https://dprint.dev/exec>").replace("./base.json", "./<base>");
-      resolve_files(&[
-        ("dprint", local_config.as_str()),
-        ("base", base_config),
-        ("https://dprint.dev/exec", remote_config),
-      ])
+      resolve_files_in(
+        &[
+          ("dprint", local_config.as_str()),
+          ("base", base_config),
+          ("https://dprint.dev/exec", remote_config),
+        ],
+        set_up,
+      )
+    }
+
+    /// The base configuration `resolve` extends.
+    const LOCAL_BASE: &str = r#"{ "exec": { "commands": [{ "command": "local-base", "exts": ["md"] }] } }"#;
+
+    /// Runs the exec plugin a configuration references as the process plugin,
+    /// rather than the built-in exec.
+    fn use_the_exec_process_plugin(environment: &TestEnvironment) {
+      environment.set_env_var("DPRINT_BUILTIN_EXEC", Some("0"));
     }
 
     /// Resolves the file `dprint` of the files (see `resolve_in_every_format`).
@@ -3375,15 +3388,28 @@ lineWidth = 80
     }
 
     #[test]
-    fn treats_another_remote_exec_version_as_a_process_plugin() {
-      // the built-in exec only serves the version it was built from, so a remote
-      // configuration asking for another one asks for a process plugin
+    fn serves_a_remote_reference_to_another_exec_version_built_in() {
+      // every reference to the exec plugin is the built-in exec, so a remote
+      // configuration asking for another version doesn't ask for a process
+      // plugin
       let other_version = "npm:@dprint/exec@0.6.0/plugin.json@abc";
-      let result = resolve(
-        &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
-        &format!(r#"{{ "plugins": ["{}"] }}"#, other_version),
-      )
-      .unwrap();
+      let resolve_in = |plugin: &str, set_up: fn(&TestEnvironment)| {
+        resolve_with_base_in(
+          &format!(r#"{{ "extends": "{}", "exec": {{ "playWithFire": true }} }}"#, REMOTE_URL),
+          &format!(r#"{{ "plugins": ["{}"] }}"#, plugin),
+          LOCAL_BASE,
+          set_up,
+        )
+        .unwrap()
+      };
+      // it's what the release the built-in reads its configuration from is
+      let result = resolve_in(other_version, |_| {});
+      let served = resolve_in(EXEC_PLUGIN, |_| {});
+      assert_eq!(result.exec, served.exec);
+      assert_eq!(result.messages, served.messages);
+      assert!(!result.messages.contains(&get_warn_non_wasm_plugins_message()));
+      // as the process plugin, it is one
+      let result = resolve_in(other_version, use_the_exec_process_plugin);
       assert_eq!(result.plugins, Vec::<String>::new());
       assert_eq!(result.messages, vec![get_warn_non_wasm_plugins_message()]);
     }
@@ -3713,6 +3739,11 @@ lineWidth = 80
     /// JSON and in TOML (see [`resolve_in_every_format`]). Gives what the
     /// tests look at and the notes about the nested configuration.
     fn resolve_inheriting(ancestor: &str, base: &str, remote: &str, nested: &str) -> Resolved {
+      resolve_inheriting_in(ancestor, base, remote, nested, |_| {})
+    }
+
+    /// Like `resolve_inheriting`, with each environment set up first.
+    fn resolve_inheriting_in(ancestor: &str, base: &str, remote: &str, nested: &str, set_up: impl Fn(&TestEnvironment)) -> Resolved {
       let ancestor = ancestor.replace(REMOTE_URL, "<https://dprint.dev/exec>").replace("./base.json", "./<base>");
       resolve_in_every_format(
         &[
@@ -3722,6 +3753,7 @@ lineWidth = 80
           ("sub/dprint", nested),
         ],
         async |environment, paths| {
+          set_up(environment);
           let ancestor = resolve_local_config(paths.get("dprint"), environment).await;
           environment.take_stderr_messages();
           let result = resolve_local_descendant_config(paths.get("sub/dprint"), &ancestor, environment).await.unwrap();
@@ -3828,18 +3860,48 @@ lineWidth = 80
     );
 
     #[test]
-    fn only_checks_the_programs_of_remote_commands_for_the_exec_plugin_it_knows() {
+    fn checks_the_programs_of_remote_commands_for_every_exec_reference() {
+      // the built-in exec serves them all, and reads its commands like the
+      // exec plugin 0.7.3
+      for plugin in [EXEC_PLUGIN, "npm:@dprint/exec@0.8.0/plugin.json", "npm:@dprint/exec"] {
+        let result = resolve(
+          &format!(
+            r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": ["tombi"] }} }}"#,
+            REMOTE_URL, plugin
+          ),
+          &remote_config(""),
+        )
+        .unwrap();
+        assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()], "{}", plugin);
+        assert_eq!(result.plugins, vec![plugin.to_string()]);
+        // only the programs it doesn't allow are noted
+        assert_eq!(
+          result.messages,
+          vec![concat!(
+            "Note: Ignored 2 exec command(s) in remote configuration (https://dprint.dev/exec.json) ",
+            "that run programs not listed in \"playWithFire\": rustfmt, rustup, evil"
+          )],
+          "{}",
+          plugin
+        );
+      }
+    }
+
+    #[test]
+    fn only_checks_the_programs_of_remote_commands_for_the_exec_process_plugin_it_knows() {
       let resolve_using = |plugin: &str, play_with_fire: &str| {
-        resolve(
+        resolve_with_base_in(
           &format!(
             r#"{{ "extends": "{}", "plugins": ["{}"], "exec": {{ "playWithFire": {} }} }}"#,
             REMOTE_URL, plugin, play_with_fire
           ),
           &remote_config(""),
+          LOCAL_BASE,
+          use_the_exec_process_plugin,
         )
         .unwrap()
       };
-      // which reads its commands like the exec plugin 0.7.3
+      // the release that reads its commands like the built-in exec
       let result = resolve_using(EXEC_PLUGIN, r#"["tombi"]"#);
       assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
 
@@ -3850,29 +3912,39 @@ lineWidth = 80
         assert_eq!(result.plugins, vec![plugin.to_string()]);
       }
       let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", r#"["tombi"]"#);
-      assert_eq!(result.messages, vec![UNCHECKABLE_NOTE.to_string()]);
+      // the remote configuration's exec plugin is a process plugin too
+      assert_eq!(result.messages, vec![get_warn_non_wasm_plugins_message(), UNCHECKABLE_NOTE.to_string()]);
       // which "playWithFire": true doesn't need to
       let result = resolve_using("npm:@dprint/exec@0.8.0/plugin.json", "true");
       assert_eq!(result.exec.properties.commands, ALL_REMOTE_COMMANDS.to_vec());
     }
 
     #[test]
-    fn only_checks_the_programs_of_inherited_remote_commands_for_the_exec_plugin_it_knows() {
+    fn only_checks_the_programs_of_inherited_remote_commands_for_the_exec_process_plugin_it_knows() {
       // the ancestor uses another version of the exec plugin, and the nested
       // configuration only allows some programs
       let ancestor = format!(
         r#"{{ "extends": "{}", "plugins": ["npm:@dprint/exec@0.8.0/plugin.json"], "exec": {{ "playWithFire": true }} }}"#,
         REMOTE_URL
       );
-      let result = resolve_inheriting(
-        &ancestor,
-        "{}",
-        &remote_config(""),
-        r#"{ "inherit": true, "exec": { "playWithFire": ["tombi"] } }"#,
-      );
+      let resolve_in = |set_up: fn(&TestEnvironment)| {
+        resolve_inheriting_in(
+          &ancestor,
+          "{}",
+          &remote_config(""),
+          r#"{ "inherit": true, "exec": { "playWithFire": ["tombi"] } }"#,
+          set_up,
+        )
+      };
+      // as the process plugin
+      let result = resolve_in(use_the_exec_process_plugin);
       assert_eq!(result.exec, Exec::default());
       assert_eq!(result.plugins, vec!["npm:@dprint/exec@0.8.0/plugin.json".to_string()]);
       assert_eq!(result.messages, vec![UNCHECKABLE_NOTE.to_string()]);
+      // the built-in exec checks them
+      let result = resolve_in(|_| {});
+      assert_eq!(result.exec.properties.commands, vec!["tombi format -".to_string()]);
+      assert_eq!(result.messages, Vec::<String>::new());
     }
 
     /// A remote configuration with exec properties the exec plugin 0.7.3

@@ -14,7 +14,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
   </div>
 </div>
 
-The CLI has exec built in. When a config references version 0.7.3 of this plugin (ex. `npm:@dprint/exec@0.7.3/plugin.json` or `https://plugins.dprint.dev/exec-0.7.3.json`), the CLI formats with its built-in exec rather than downloading the plugin, so it works on every platform the CLI does (ex. FreeBSD). A reference to another version, or to none in particular (ex. `npm:@dprint/exec` resolved from `node_modules`), gets the plugin it asks for, downloaded and run as a separate process like before. So does a reference with a checksum other than 0.7.3's (of its npm package for an `npm:` reference, or of its `plugin.json` for a url), which then fails the checksum check like any plugin, so a checksum keeps pinning what it pins. To run the separate plugin process for 0.7.3 too, set `DPRINT_BUILTIN_EXEC=0`.
+The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `dprint config update` leaves such references alone. The built-in reads the configuration of release 0.7.3. To run the separate plugin process a reference names instead, set `DPRINT_BUILTIN_EXEC=0`.
 
 An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required:
 

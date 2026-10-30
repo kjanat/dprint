@@ -50,16 +50,17 @@ pub static BUILT_IN: BuiltInFormatter = BuiltInFormatter {
 /// Set to `0` to download and run the exec process plugin instead.
 const BUILTIN_EXEC_ENV_VAR: &str = "DPRINT_BUILTIN_EXEC";
 
-/// Creates the built-in exec when the reference is to an exec plugin release
-/// it serves.
+/// Creates the built-in exec when the reference is to the exec plugin, in any
+/// release.
 pub fn create_builtin_exec_plugin<TEnvironment: Environment>(environment: &TEnvironment, reference: &PluginSourceReference) -> Option<Box<dyn Plugin>> {
   if !is_builtin_exec_reference(environment, reference) {
     if is_exec_plugin_reference(reference) {
-      let reason = match legacy::served_release(reference) {
-        Ok(_) => format!("{}=0", BUILTIN_EXEC_ENV_VAR),
-        Err(reason) => reason,
-      };
-      log_debug!(environment, "Using the exec process plugin for {}: {}", reference.display(), reason);
+      log_debug!(
+        environment,
+        "Using the exec process plugin for {}: {}=0",
+        reference.display(),
+        BUILTIN_EXEC_ENV_VAR
+      );
     }
     return None;
   }
@@ -298,87 +299,90 @@ mod test {
     }
   }
 
+  /// References to the exec plugin in every form they're written in.
+  const EXEC_REFERENCES: &[&str] = &[
+    // npm, with or without a version or the package's file, and with any checksum
+    "npm:@dprint/exec@0.7.3/plugin.json",
+    "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+    "npm:@dprint/exec@0.7.3/plugin.json@abc",
+    "npm:@dprint/exec@0.6.0/plugin.json",
+    "npm:@dprint/exec@0.8.0/plugin.json@abc",
+    "npm:@dprint/exec@0.7.3",
+    "npm:@dprint/exec@0.7.3/plugin.wasm",
+    "npm:@dprint/exec",
+    // plugins.dprint.dev, in any release and the latest one
+    "https://plugins.dprint.dev/exec-0.7.3.json",
+    "https://plugins.dprint.dev/exec-0.7.3.json@a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa",
+    "https://plugins.dprint.dev/exec-0.5.0.json@abc",
+    "https://plugins.dprint.dev/exec-0.7.30.json",
+    "https://plugins.dprint.dev/dprint/exec-0.7.3.json",
+    "https://plugins.dprint.dev/dprint/dprint-plugin-exec/0.7.3/plugin.json",
+    "https://plugins.dprint.dev/dprint/dprint-plugin-exec/0.8.0/plugin.json",
+    "https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json",
+    "https://plugins.dprint.dev/dprint/exec/latest.json",
+    // GitHub releases
+    "https://github.com/dprint/dprint-plugin-exec/releases/download/0.5.0/plugin.json@abc",
+    "https://github.com/dprint/dprint-plugin-exec/releases/download/0.7.3/plugin.json",
+    "https://github.com/dprint/dprint-plugin-exec/releases/latest/download/plugin.json",
+    // the npm package from a CDN
+    "https://cdn.jsdelivr.net/npm/@dprint/exec@0.7.3/plugin.json",
+    "https://cdn.jsdelivr.net/npm/@dprint/exec/plugin.json",
+    "https://unpkg.com/@dprint/exec@0.8.0/plugin.json",
+  ];
+
   #[test]
-  fn serves_only_references_to_the_version_it_was_built_from() {
+  fn serves_every_reference_to_the_exec_plugin() {
     let environment = TestEnvironment::new();
-    let is_builtin = |text: &str| is_builtin_exec_reference(&environment, &parse_reference(text, &environment));
-    // the release whose references it serves, however it's referenced
-    assert_eq!(legacy::COMMANDS_RELEASE, "0.7.3");
-    assert!(is_builtin("npm:@dprint/exec@0.7.3/plugin.json"));
-    assert!(is_builtin(&format!("npm:@dprint/exec@0.7.3/plugin.json@{}", NPM_TARBALL_CHECKSUM)));
-    assert!(is_builtin("https://plugins.dprint.dev/exec-0.7.3.json"));
-    assert!(is_builtin(&format!("https://plugins.dprint.dev/exec-0.7.3.json@{}", PLUGIN_FILE_CHECKSUM)));
-    assert!(is_builtin("https://plugins.dprint.dev/dprint/dprint-plugin-exec/0.7.3/plugin.json"));
-    assert!(is_builtin(&format!(
-      "https://github.com/dprint/dprint-plugin-exec/releases/download/0.7.3/plugin.json@{}",
-      PLUGIN_FILE_CHECKSUM
-    )));
-    // other versions, older or newer, are what they ask for
-    assert!(!is_builtin("npm:@dprint/exec@0.6.0/plugin.json@abc"));
-    assert!(!is_builtin("npm:@dprint/exec@0.8.0/plugin.json@abc"));
-    assert!(!is_builtin("https://plugins.dprint.dev/exec-0.5.0.json@abc"));
-    assert!(!is_builtin("https://plugins.dprint.dev/exec-0.7.30.json@abc"));
-    assert!(!is_builtin("https://plugins.dprint.dev/dprint/dprint-plugin-exec/0.8.0/plugin.json"));
-    assert!(!is_builtin(
-      "https://github.com/dprint/dprint-plugin-exec/releases/download/0.5.0/plugin.json@abc"
-    ));
-    // and other files of the npm package, which are resolved as asked
-    assert!(!is_builtin("npm:@dprint/exec@0.7.3/alternate.json@abc"));
-    assert!(!is_builtin("npm:@dprint/exec@0.7.3/plugin.wasm@abc"));
-    assert!(!is_builtin("npm:@dprint/exec@0.7.3"));
-    // and so are references that don't name a version
-    assert!(!is_builtin("npm:@dprint/exec"));
-    assert!(!is_builtin("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json"));
-    assert!(!is_builtin("https://github.com/dprint/dprint-plugin-exec/releases/latest/download/plugin.json"));
-    // and they're still recognized as the exec plugin
-    assert!(is_exec_plugin_reference(&parse_reference(
-      "npm:@dprint/exec@0.8.0/plugin.json@abc",
-      &environment
-    )));
-    assert!(is_exec_plugin_reference(&parse_reference("npm:@dprint/exec", &environment)));
-    assert!(create_builtin_exec_plugin(&environment, &parse_reference("npm:@dprint/exec@0.8.0/plugin.json@abc", &environment)).is_none());
+    for text in EXEC_REFERENCES {
+      let reference = parse_reference(text, &environment);
+      assert!(is_exec_plugin_reference(&reference), "{}", text);
+      assert!(is_builtin_exec_reference(&environment, &reference), "{}", text);
+      assert!(create_builtin_exec_plugin(&environment, &reference).is_some(), "{}", text);
+    }
   }
 
-  /// The checksums of the exec plugin's 0.7.3 release: of its npm package's
-  /// tarball (as dprint's own configuration pins it) and of its plugin.json
-  /// (as plugins.dprint.dev and its GitHub release serve it).
-  const NPM_TARBALL_CHECKSUM: &str = "704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67";
-  const PLUGIN_FILE_CHECKSUM: &str = "a7898d5f1897e77bff474cec3d948c3ec3a7f455e32de2cc60c8adb9a5dd24aa";
+  #[test]
+  fn leaves_other_plugins_alone() {
+    let environment = TestEnvironment::new();
+    for text in [
+      "npm:@dprint/typescript@0.96.1",
+      "npm:@dprint/exec-other@0.1.0/plugin.json",
+      "https://plugins.dprint.dev/typescript-0.96.1.wasm",
+      "https://plugins.dprint.dev/kjanat/exec-0.1.0.json",
+      "https://plugins.dprint.dev/dprint/execute-0.1.0.json",
+      "https://example.com/exec-0.5.0.json",
+      "https://github.com/someone/dprint-plugin-exec/releases/download/0.5.0/plugin.json",
+      "https://cdn.jsdelivr.net/npm/@dprint/exec-other@0.1.0/plugin.json",
+      "./exec/plugin.json",
+    ] {
+      let reference = parse_reference(text, &environment);
+      assert!(!is_exec_plugin_reference(&reference), "{}", text);
+      assert!(create_builtin_exec_plugin(&environment, &reference).is_none(), "{}", text);
+    }
+  }
 
   #[test]
-  fn serves_only_references_pinning_the_checksum_of_the_release_it_was_built_from() {
+  fn knows_the_commands_of_the_release_it_reads() {
     let environment = TestEnvironment::new();
-    let is_builtin = |text: &str| is_builtin_exec_reference(&environment, &parse_reference(text, &environment));
-    // another checksum keeps the reference the integrity pin it is
-    assert!(!is_builtin("npm:@dprint/exec@0.7.3/plugin.json@abc"));
-    assert!(!is_builtin(
-      "npm:@dprint/exec@0.7.3/plugin.json@0000000000000000000000000000000000000000000000000000000000000000"
-    ));
-    assert!(!is_builtin("https://plugins.dprint.dev/exec-0.7.3.json@abc"));
-    // including the checksum of the other file of the release
-    assert!(!is_builtin(&format!("npm:@dprint/exec@0.7.3/plugin.json@{}", PLUGIN_FILE_CHECKSUM)));
-    assert!(!is_builtin(&format!("https://plugins.dprint.dev/exec-0.7.3.json@{}", NPM_TARBALL_CHECKSUM)));
-    // and checksums are compared as written, like when they're checked
-    assert!(!is_builtin(&format!(
-      "npm:@dprint/exec@0.7.3/plugin.json@{}",
-      NPM_TARBALL_CHECKSUM.to_uppercase()
-    )));
-    assert_eq!(
-      legacy::served_release(&parse_reference("npm:@dprint/exec@0.7.3/plugin.json@abc", &environment)).err(),
-      Some(format!(
-        "its checksum isn't the one of dprint-plugin-exec 0.7.3 ({}), so it's checked against the plugin it names.",
-        NPM_TARBALL_CHECKSUM
-      ))
-    );
+    let knows = |text: &str| knows_exec_plugin_commands(&parse_reference(text, &environment));
+    assert_eq!(legacy::COMMANDS_RELEASE, "0.7.3");
+    assert!(knows("npm:@dprint/exec@0.7.3/plugin.json"));
+    assert!(knows("https://plugins.dprint.dev/exec-0.7.3.json@abc"));
+    // as the process plugin, another release can read commands differently
+    assert!(!knows("npm:@dprint/exec@0.8.0/plugin.json"));
+    assert!(!knows("https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json"));
   }
 
   #[test]
   fn uses_the_process_plugin_when_disabled() {
     let environment = TestEnvironment::new();
     environment.set_env_var(BUILTIN_EXEC_ENV_VAR, Some("0"));
-    let reference = parse_reference("npm:@dprint/exec@0.7.3/plugin.json", &environment);
-    assert!(create_builtin_exec_plugin(&environment, &reference).is_none());
+    for text in EXEC_REFERENCES {
+      let reference = parse_reference(text, &environment);
+      assert!(create_builtin_exec_plugin(&environment, &reference).is_none(), "{}", text);
+    }
     environment.set_env_var(BUILTIN_EXEC_ENV_VAR, None);
+    let reference = parse_reference("npm:@dprint/exec@0.7.3/plugin.json", &environment);
     assert!(create_builtin_exec_plugin(&environment, &reference).is_some());
   }
 }
