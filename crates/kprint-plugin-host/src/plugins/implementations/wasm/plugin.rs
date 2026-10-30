@@ -385,6 +385,10 @@ pub struct InitializedWasmPlugin<TEnvironment: Environment> {
   /// Whether the plugin started compiling in the background because it
   /// formatted enough in the interpreter (see `compile_once_it_pays_off`).
   compiling_in_background: Cell<bool>,
+  /// That compile, which `shutdown` waits for: it writes the native code to
+  /// the cache once it's done, so a run that ends while it compiles would
+  /// otherwise leave the next run to compile again.
+  background_compile: RefCell<Option<kprint_async_runtime::JoinHandle<()>>>,
   /// How long the plugin formats in the interpreter before it compiles in
   /// the background: about as long as compiling it takes.
   compile_after: Duration,
@@ -430,6 +434,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
       formatting,
       interpreted: Default::default(),
       compiling_in_background: Cell::new(false),
+      background_compile: Default::default(),
       compile_after,
       module_len,
       environment,
@@ -690,11 +695,12 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
     let native = self.formatting.native.clone();
     let environment = self.environment.clone();
     let name = self.name.clone();
-    kprint_async_runtime::spawn(async move {
+    let compile = kprint_async_runtime::spawn(async move {
       if let Err(err) = native.get().await {
         log_debug!(environment, "Error compiling {} in the background: {:#}", name, err);
       }
     });
+    self.background_compile.replace(Some(compile));
   }
 }
 
@@ -762,7 +768,15 @@ impl<TEnvironment: Environment> InitializedPlugin for InitializedWasmPlugin<TEnv
   }
 
   async fn shutdown(&self) {
-    // do nothing
+    // let a compile started in the background finish, so its native code is
+    // in the cache for the next run
+    let compile = self.background_compile.borrow_mut().take();
+    if let Some(compile) = compile {
+      log_debug!(self.environment, "Waiting for {} to finish compiling in the background.", self.name);
+      if let Err(err) = compile.await {
+        log_debug!(self.environment, "Error waiting for {} to compile: {:#}", self.name, err);
+      }
+    }
   }
 }
 
@@ -847,6 +861,40 @@ mod test {
     assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
     assert_eq!(native_loads.get(), 1);
     assert!(plugin.pending_instances.borrow().iter().all(|instance| instance.engine == FormatEngine::Native));
+  }
+
+  #[tokio::test]
+  async fn shutting_down_waits_for_the_compile_in_the_background() {
+    // ex. `dprint fmt` finishing its files before the compile does, which
+    // would otherwise leave the next run to compile the plugin again
+    let environment = TestEnvironment::new();
+    let load_native: LoadModule<WasmModule> = Box::new(|| {
+      async move {
+        let compiled = crate::plugins::compile_wasm(WASM_PLUGIN_BYTES)?;
+        super::super::WasmModuleCreator::default().create_from_serialized(&compiled.bytes)
+      }
+      .boxed_local()
+    });
+    let formatting = Rc::new(Formatting {
+      native: Rc::new(LazyModule::new(load_native)),
+      load_cached_native: Box::new(|| async { Ok(None) }.boxed_local()),
+      invalid_native: Cell::new(false),
+      native_module_path: PathBuf::from("/plugin.cwasm"),
+      native_exists: Cell::new(None),
+      format_rate_path: PathBuf::from("/plugin.rate.json"),
+      chosen: Cell::new(None),
+      environment: environment.clone(),
+    });
+    let log: LogFn = Arc::new(|_| {});
+    let interpreter = Arc::new(Interpreter::new(InterpretedModule::new(WASM_PLUGIN_BYTES).unwrap(), log));
+    let mut plugin = InitializedWasmPlugin::new("test-plugin".to_string(), interpreter, formatting.clone(), environment.clone());
+    plugin.compile_after = Duration::ZERO;
+    assert_eq!(format_text(&plugin).await.unwrap(), Some(b"text_formatted".to_vec()));
+    assert!(plugin.compiling_in_background.get());
+    assert!(!formatting.native.is_loaded());
+
+    plugin.shutdown().await;
+    assert!(formatting.native.is_loaded());
   }
 
   #[tokio::test]
