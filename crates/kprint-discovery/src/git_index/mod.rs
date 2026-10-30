@@ -33,7 +33,6 @@ use crate::glob::DirScanOutput;
 use crate::glob::ExcludeMatchDetail;
 use crate::glob::GlobMatchesDetail;
 use crate::glob::walk_dir;
-use crate::path_case::PathCase;
 use crate::repo_index::RepoIndex;
 
 use kprint_git::DIR_HIDE_EMPTY_DIRECTORIES;
@@ -99,12 +98,6 @@ impl Snapshot {
       Some(index) => index.clone(),
       None => Arc::new(RepoIndex::read(environment, &options.start_dir)?),
     };
-    // the daemon's paths, the untracked cache's names and the fsmonitor data's
-    // entry positions (in git's order, which a folded index isn't sorted in)
-    // are compared exactly here, while git compares them ignoring case
-    if index.case == PathCase::Folded {
-      bail!("core.ignoreCase is set");
-    }
     let repo = &index.repo;
     let fsmonitor = index.fsmonitor.as_ref().ok_or_else(|| anyhow!("the index has no fsmonitor token"))?;
     let mut untracked_cache = index.untracked_cache.clone().ok_or_else(|| anyhow!("the index has no untracked cache"))?;
@@ -153,6 +146,13 @@ impl Snapshot {
         && let Some(dir) = untracked_cache.find(parent_of(path))
       {
         untracked_cache.invalidate_tree(dir);
+      }
+      // with core.ignoreCase, git also takes the path as the index's other
+      // spellings of it (the untracked cache's names are the file system's,
+      // which git compares exactly), see its `fsmonitor_refresh_callback`
+      for spelling in index.other_spellings(path) {
+        untracked_cache.invalidate_path(&spelling);
+        changed_paths.push(spelling);
       }
       changed_paths.push(path.to_vec());
     }
@@ -996,10 +996,28 @@ mod test {
   }
 
   #[test]
-  fn walks_when_the_repository_ignores_case() {
-    let environment = Fixture::new().write_index();
+  fn uses_the_index_like_git_when_the_repository_ignores_case() {
+    let mut fixture = Fixture::new();
+    // in git's order `Z.ts` is the second entry, which folding moves after
+    // the lowercase ones. It's dirty and deleted, so a dirty position that
+    // didn't move with it would list it although it's gone
+    fixture.entries.insert(1, TestEntry::file("Z.ts"));
+    fixture.dirty_entries = vec![1];
+    let environment = fixture.write_index();
     environment.write_file("/repo/.git/config", "[core]\n\tignorecase = true\n").unwrap();
-    assert_walks_instead(&environment, default_options(&environment, "/repo"), "core.ignoreCase");
+    // ignored when matching ignoring case, like git does, which is also why
+    // the untracked cache doesn't list it
+    write(&environment, "/repo/Y.LOG", "");
+    // deleted, which the daemon reports as the file system spelled it. Git
+    // also takes that as the index's spelling, otherwise it's still listed
+    environment.remove_file("/repo/a.ts").unwrap();
+    environment.set_git_ipc_response(SOCKET, b"builtin:test:2\0A.TS\0".to_vec());
+    let (files, _) = scan_like_walk(&environment, "/repo", "**/*.{ts,LOG}");
+    assert_eq!(
+      files,
+      // `sub` has a config file of its own
+      paths(&["/repo/new.ts", "/repo/newdir/d.ts", "/repo/src/b.ts"])
+    );
   }
 
   #[test]

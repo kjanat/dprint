@@ -73,8 +73,21 @@ impl RepoIndex {
       bail!("not in a git work tree");
     };
     let read = read_index(environment, &repo)?;
-    let mut entries = read.index.entries;
-    sort_entries(&mut entries, read.case);
+    #[cfg(unix)]
+    let (entries, new_positions) = sort_entries(read.index.entries, read.case);
+    #[cfg(not(unix))]
+    let (entries, _) = sort_entries(read.index.entries, read.case);
+    #[cfg(unix)]
+    let mut fsmonitor = read.index.fsmonitor;
+    // the dirty entries are positions in git's order
+    #[cfg(unix)]
+    if let (Some(fsmonitor), Some(new_positions)) = (&mut fsmonitor, &new_positions) {
+      for position in &mut fsmonitor.dirty_entries {
+        if let Some(new_position) = new_positions.get(*position) {
+          *position = *new_position;
+        }
+      }
+    }
     Ok(RepoIndex {
       work_tree: DirPrefix::new(repo.work_tree.clone()),
       #[cfg(unix)]
@@ -84,7 +97,7 @@ impl RepoIndex {
       case: read.case,
       entries,
       #[cfg(unix)]
-      fsmonitor: read.index.fsmonitor,
+      fsmonitor,
       #[cfg(unix)]
       untracked_cache: read.index.untracked_cache,
     })
@@ -96,8 +109,8 @@ impl RepoIndex {
   }
 
   #[cfg(test)]
-  pub(crate) fn for_entries_with_case(work_tree: &Path, mut entries: Vec<IndexEntry>, case: PathCase) -> Self {
-    sort_entries(&mut entries, case);
+  pub(crate) fn for_entries_with_case(work_tree: &Path, entries: Vec<IndexEntry>, case: PathCase) -> Self {
+    let (entries, _) = sort_entries(entries, case);
     RepoIndex {
       case,
       work_tree: DirPrefix::new(work_tree.to_path_buf()),
@@ -129,6 +142,31 @@ impl RepoIndex {
   #[cfg(any(unix, test))]
   pub(crate) fn has_entry(&self, path: &[u8]) -> bool {
     !self.entries_for(path).is_empty()
+  }
+
+  /// The index's spellings of `path`, and of a directory at `path`, that
+  /// differ from it but are the same to the repository (see `PathCase`).
+  /// Git also takes a path the fsmonitor daemon reports as these.
+  #[cfg(unix)]
+  pub(crate) fn other_spellings(&self, path: &[u8]) -> Vec<Vec<u8>> {
+    let mut spellings: Vec<Vec<u8>> = Vec::new();
+    if self.case == PathCase::Exact {
+      return spellings;
+    }
+    let mut add = |spelling: &[u8]| {
+      if spelling != path && !spellings.iter().any(|known| known == spelling) {
+        spellings.push(spelling.to_vec());
+      }
+    };
+    for entry in self.entries_for(path) {
+      add(&entry.path);
+    }
+    let case = self.case;
+    let start = self.entries.partition_point(|entry| sorts_before_dir_contents(&entry.path, path, case));
+    for entry in self.entries[start..].iter().take_while(|entry| is_below(&entry.path, path, case)) {
+      add(&entry.path[..path.len()]);
+    }
+    spellings
   }
 
   /// Whether git tracks a file or symlink at `path` in the work tree.
@@ -222,13 +260,27 @@ impl RepoIndex {
   }
 }
 
-/// Sorts entries for the repository's lookups: like git's index, by path
-/// then stage, with paths that are the same to the repository next to each
-/// other (see `PathCase::sort_cmp`).
-fn sort_entries(entries: &mut [IndexEntry], case: PathCase) {
-  if case == PathCase::Folded {
-    entries.sort_by(|a, b| case.sort_cmp(&a.path, &b.path).then(a.stage.cmp(&b.stage)));
+/// Sorts entries in git's order for the repository's lookups: by path then
+/// stage, with paths that are the same to the repository next to each other
+/// (see `PathCase::sort_cmp`). When that moved them, also gives each entry's
+/// new position by its position in git's order.
+fn sort_entries(entries: Vec<IndexEntry>, case: PathCase) -> (Vec<IndexEntry>, Option<Vec<usize>>) {
+  if case == PathCase::Exact {
+    return (entries, None);
   }
+  let mut order = (0..entries.len()).collect::<Vec<_>>();
+  order.sort_by(|a, b| {
+    case
+      .sort_cmp(&entries[*a].path, &entries[*b].path)
+      .then(entries[*a].stage.cmp(&entries[*b].stage))
+  });
+  let mut new_positions = vec![0; order.len()];
+  for (new_position, position) in order.iter().enumerate() {
+    new_positions[*position] = new_position;
+  }
+  let mut entries = entries.into_iter().map(Some).collect::<Vec<_>>();
+  let sorted = order.iter().filter_map(|position| entries[*position].take()).collect();
+  (sorted, Some(new_positions))
 }
 
 /// Whether `path` is below `dir`.
