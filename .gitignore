@@ -16,3 +16,4 @@ target
 /deployment/npm/verdaccio-storage
 /*.fsql
 /crates/*/temp/
+/deployment/docker/bin

@@ -13,8 +13,12 @@ interface Package {
 
 const args = parseArgs(Deno.args, {
   boolean: ["publish", "publish-only"],
+  // `zips`: a directory with the release zips (ex. a CI run's artifacts) to
+  // package instead of the release's. Targets without a zip there aren't
+  // packaged. `tag`: the npm dist-tag to publish to (ex. `nightly`).
+  string: ["zips", "tag"],
 });
-const packages: Package[] = [
+const allPackages: Package[] = [
   {
     zipFileName: "dprint-x86_64-unknown-freebsd.zip",
     os: "freebsd",
@@ -121,6 +125,17 @@ const scopeDir = outputDir.join("@kprint");
 const dprintDir = outputDir.join("kprint");
 const version = resolveVersion();
 
+const zipsDir = args.zips == null ? undefined : $.path(args.zips);
+// what was built, when only publishing it
+const packages = args["publish-only"]
+  ? allPackages.filter((pkg) => scopeDir.join(getPackageNameNoScope(pkg)).existsSync())
+  : zipsDir == null
+  ? allPackages
+  : allPackages.filter((pkg) => zipsDir.join(pkg.zipFileName).existsSync());
+if (packages.length === 0) {
+  throw new Error(args["publish-only"] ? `No packages in ${scopeDir}.` : `No release zips in ${zipsDir}.`);
+}
+
 $.logStep(`Publishing ${version}...`);
 
 if (!args["publish-only"]) {
@@ -180,8 +195,12 @@ if (!args["publish-only"]) {
       await $`mkdir -p ${pkgDir}`;
 
       // download and extract the zip file
-      const zipUrl = `${repositoryUrl}/releases/download/${version}/${pkg.zipFileName}`;
-      await $.request(zipUrl).showProgress().pipeToPath(zipPath);
+      if (zipsDir == null) {
+        const zipUrl = `${repositoryUrl}/releases/download/${version}/${pkg.zipFileName}`;
+        await $.request(zipUrl).showProgress().pipeToPath(zipPath);
+      } else {
+        zipsDir.join(pkg.zipFileName).copyFileSync(zipPath);
+      }
       await decompress(zipPath.toString(), pkgDir.toString());
       zipPath.removeSync();
 
@@ -275,6 +294,7 @@ if (!args["publish-only"]) {
 }
 
 // publish if necessary
+const tagArgs = args.tag == null ? [] : ["--tag", args.tag];
 if (args.publish || args["publish-only"]) {
   for (const pkg of packages) {
     const pkgName = getPackageNameNoScope(pkg);
@@ -288,11 +308,11 @@ if (args.publish || args["publish-only"]) {
     if (pkg.os !== "win32") {
       await $`chmod +x ${pkgDir.join("dprint")}`;
     }
-    await $`cd ${pkgDir} && npm publish --provenance --access public`;
+    await $`cd ${pkgDir} && npm publish --provenance --access public ${tagArgs}`;
   }
 
   $.logStep(`Publishing kprint...`);
-  await $`cd ${dprintDir} && npm publish --provenance --access public`;
+  await $`cd ${dprintDir} && npm publish --provenance --access public ${tagArgs}`;
 }
 
 async function sha256Hex(filePath: string) {
