@@ -1449,6 +1449,44 @@ mod test {
       .build()
   }
 
+  /// A repository whose gitignore's case differs from its files', and whose
+  /// index has a tracked file under another case than on disk (renamed by
+  /// changing its case).
+  fn ignore_case_environment(ignore_case: bool) -> TestEnvironment {
+    let entries = ["ignored/kept.txt", "tracked.log"].map(kprint_git::test_util::TestEntry::file);
+    TestEnvironmentBuilder::new()
+      .write_file("/.git/index", kprint_git::test_util::write_index(2, 20, &entries, &[]))
+      .write_file("/.git/config", format!("[core]\n\tignorecase = {ignore_case}\n"))
+      .write_file("/.gitignore", "Ignored/\n*.LOG\n")
+      .write_file("/a.txt", "")
+      .write_file("/Debug.log", "")
+      .write_file("/Tracked.log", "")
+      .write_file("/ignored/kept.txt", "")
+      .write_file("/ignored/new.txt", "")
+      .build()
+  }
+
+  #[tokio::test]
+  async fn should_match_the_gitignore_ignoring_case_when_the_repository_does() {
+    // like git: the untracked files the gitignore matches ignoring case are
+    // ignored, and the tracked ones count, under any case
+    assert_eq!(
+      glob_tracked_ignored(&ignore_case_environment(true), "/", None).0,
+      vec!["/Tracked.log".to_string(), "/a.txt".to_string(), "/ignored/kept.txt".to_string()]
+    );
+    // and exactly otherwise, where the gitignore matches nothing
+    assert_eq!(
+      glob_tracked_ignored(&ignore_case_environment(false), "/", None).0,
+      vec![
+        "/Debug.log".to_string(),
+        "/Tracked.log".to_string(),
+        "/a.txt".to_string(),
+        "/ignored/kept.txt".to_string(),
+        "/ignored/new.txt".to_string(),
+      ]
+    );
+  }
+
   fn glob_tracked_ignored(environment: &TestEnvironment, start_dir: &str, arg_includes: Option<&[&str]>) -> (Vec<String>, Vec<String>) {
     let root_dir = environment.canonicalize("/").unwrap();
     let result = glob(

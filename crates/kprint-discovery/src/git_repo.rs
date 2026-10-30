@@ -10,6 +10,7 @@ use kprint_git::parse_repo_config;
 
 use crate::environment::DiscoveryEnvironment as Environment;
 use crate::environment::PathKind;
+use crate::path_case::PathCase;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct GitRepo {
@@ -47,16 +48,23 @@ pub(crate) fn find_repo(environment: &impl Environment, dir: &Path) -> Result<Op
   Ok(None)
 }
 
-/// Reads the index of a repository with a config dprint understands, and the
-/// repository's hash length.
-pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Result<(IndexFile, usize)> {
+/// A repository's index, read with a config dprint understands.
+pub(crate) struct ReadIndex {
+  pub index: IndexFile,
+  /// For the git index scan, which is unix only (see `git_index`).
+  #[cfg(unix)]
+  pub hash_len: usize,
+  /// How the repository compares paths (`core.ignoreCase`).
+  pub case: PathCase,
+}
+
+/// Reads the index of a repository with a config dprint understands.
+pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Result<ReadIndex> {
   let config = parse_repo_config(&environment.maybe_read_file(repo.common_dir.join("config"))?.unwrap_or_default());
   if config.bare || config.has_work_tree_setting || config.has_includes || config.has_worktree_config {
     bail!("the repository config is bare, moves the work tree or has includes");
   }
-  if config.ignore_case {
-    bail!("core.ignoreCase is set");
-  }
+  let case = PathCase::from_ignore_case(config.ignore_case);
   let hash_len = match config.object_format.as_deref() {
     None | Some("sha1") => 20,
     Some("sha256") => 32,
@@ -65,11 +73,23 @@ pub(crate) fn read_index(environment: &impl Environment, repo: &GitRepo) -> Resu
   let index_path = repo.git_dir.join("index");
   let bytes = match environment.read_file_bytes(&index_path) {
     Ok(bytes) => bytes,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((IndexFile::default(), hash_len)),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+      return Ok(ReadIndex {
+        index: IndexFile::default(),
+        #[cfg(unix)]
+        hash_len,
+        case,
+      });
+    }
     Err(err) => return Err(err.into()),
   };
   let index = parse_index(&bytes, hash_len).with_context(|| format!("reading {}", index_path.display()))?;
-  Ok((index, hash_len))
+  Ok(ReadIndex {
+    index,
+    #[cfg(unix)]
+    hash_len,
+    case,
+  })
 }
 
 #[cfg(test)]

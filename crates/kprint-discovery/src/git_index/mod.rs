@@ -33,6 +33,7 @@ use crate::glob::DirScanOutput;
 use crate::glob::ExcludeMatchDetail;
 use crate::glob::GlobMatchesDetail;
 use crate::glob::walk_dir;
+use crate::path_case::PathCase;
 use crate::repo_index::RepoIndex;
 
 use kprint_git::DIR_HIDE_EMPTY_DIRECTORIES;
@@ -98,6 +99,12 @@ impl Snapshot {
       Some(index) => index.clone(),
       None => Arc::new(RepoIndex::read(environment, &options.start_dir)?),
     };
+    // the daemon's paths, the untracked cache's names and the fsmonitor data's
+    // entry positions (in git's order, which a folded index isn't sorted in)
+    // are compared exactly here, while git compares them ignoring case
+    if index.case == PathCase::Folded {
+      bail!("core.ignoreCase is set");
+    }
     let repo = &index.repo;
     let fsmonitor = index.fsmonitor.as_ref().ok_or_else(|| anyhow!("the index has no fsmonitor token"))?;
     let mut untracked_cache = index.untracked_cache.clone().ok_or_else(|| anyhow!("the index has no untracked cache"))?;

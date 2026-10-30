@@ -16,6 +16,7 @@ use crate::environment::DiscoveryEnvironment as Environment;
 use crate::git_repo::GitRepo;
 use crate::git_repo::find_repo;
 use crate::git_repo::read_index;
+use crate::path_case::PathCase;
 use crate::utils::DirPrefix;
 use crate::utils::path_to_slash_bytes;
 
@@ -38,7 +39,11 @@ pub struct RepoIndex {
   work_tree: DirPrefix,
   #[cfg(unix)]
   pub(crate) hash_len: usize,
-  /// Sorted by path, then by stage, like git's index.
+  /// How the repository compares paths, which every lookup does too.
+  pub(crate) case: PathCase,
+  /// Sorted by path, then by stage, like git's index. When the repository
+  /// ignores case, by the folded path first (see `PathCase::sort_cmp`), so
+  /// that a path's entries are next to each other for its lookups.
   pub(crate) entries: Vec<IndexEntry>,
   #[cfg(unix)]
   pub(crate) fsmonitor: Option<FsmonitorData>,
@@ -67,27 +72,34 @@ impl RepoIndex {
     let Some(repo) = find_repo(environment, dir)? else {
       bail!("not in a git work tree");
     };
-    #[cfg(unix)]
-    let (index, hash_len) = read_index(environment, &repo)?;
-    #[cfg(not(unix))]
-    let (index, _) = read_index(environment, &repo)?;
+    let read = read_index(environment, &repo)?;
+    let mut entries = read.index.entries;
+    sort_entries(&mut entries, read.case);
     Ok(RepoIndex {
       work_tree: DirPrefix::new(repo.work_tree.clone()),
       #[cfg(unix)]
       repo,
       #[cfg(unix)]
-      hash_len,
-      entries: index.entries,
+      hash_len: read.hash_len,
+      case: read.case,
+      entries,
       #[cfg(unix)]
-      fsmonitor: index.fsmonitor,
+      fsmonitor: read.index.fsmonitor,
       #[cfg(unix)]
-      untracked_cache: index.untracked_cache,
+      untracked_cache: read.index.untracked_cache,
     })
   }
 
   #[cfg(test)]
   pub(crate) fn for_entries(work_tree: &Path, entries: Vec<IndexEntry>) -> Self {
+    Self::for_entries_with_case(work_tree, entries, PathCase::Exact)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn for_entries_with_case(work_tree: &Path, mut entries: Vec<IndexEntry>, case: PathCase) -> Self {
+    sort_entries(&mut entries, case);
     RepoIndex {
+      case,
       work_tree: DirPrefix::new(work_tree.to_path_buf()),
       #[cfg(unix)]
       repo: GitRepo {
@@ -107,8 +119,9 @@ impl RepoIndex {
 
   /// The entries for `path`, one per stage. Git's `index_name_pos`.
   fn entries_for(&self, path: &[u8]) -> &[IndexEntry] {
-    let start = self.entries.partition_point(|entry| entry.path.as_slice() < path);
-    let len = self.entries[start..].iter().take_while(|entry| entry.path == path).count();
+    let case = self.case;
+    let start = self.entries.partition_point(|entry| case.cmp(&entry.path, path).is_lt());
+    let len = self.entries[start..].iter().take_while(|entry| case.eq(&entry.path, path)).count();
     &self.entries[start..start + len]
   }
 
@@ -141,10 +154,11 @@ impl RepoIndex {
     {
       return true;
     }
-    let start = self.entries.partition_point(|entry| sorts_before_dir_contents(&entry.path, &dir));
+    let case = self.case;
+    let start = self.entries.partition_point(|entry| sorts_before_dir_contents(&entry.path, &dir, case));
     self.entries[start..]
       .iter()
-      .take_while(|entry| is_below(&entry.path, &dir))
+      .take_while(|entry| is_below(&entry.path, &dir, case))
       .any(|entry| !entry.skip_worktree)
   }
 
@@ -158,8 +172,9 @@ impl RepoIndex {
         entries: 0..self.entries.len(),
       });
     }
-    let start = self.entries.partition_point(|entry| sorts_before_dir_contents(&entry.path, &dir));
-    let len = self.entries[start..].partition_point(|entry| is_below(&entry.path, &dir));
+    let case = self.case;
+    let start = self.entries.partition_point(|entry| sorts_before_dir_contents(&entry.path, &dir, case));
+    let len = self.entries[start..].partition_point(|entry| is_below(&entry.path, &dir, case));
     Some(IndexDir {
       prefix_len: dir.len() + 1,
       entries: start..start + len,
@@ -168,9 +183,10 @@ impl RepoIndex {
 
   /// The entries for `name` in `dir`, one per stage.
   fn entries_named(&self, dir: &IndexDir, name: &[u8]) -> &[IndexEntry] {
+    let case = self.case;
     let entries = &self.entries[dir.entries.clone()];
-    let start = entries.partition_point(|entry| &entry.path[dir.prefix_len..] < name);
-    let len = entries[start..].iter().take_while(|entry| &entry.path[dir.prefix_len..] == name).count();
+    let start = entries.partition_point(|entry| case.cmp(&entry.path[dir.prefix_len..], name).is_lt());
+    let len = entries[start..].iter().take_while(|entry| case.eq(&entry.path[dir.prefix_len..], name)).count();
     &entries[start..start + len]
   }
 
@@ -191,11 +207,12 @@ impl RepoIndex {
     {
       return true;
     }
+    let case = self.case;
     let entries = &self.entries[dir.entries.clone()];
-    let start = entries.partition_point(|entry| sorts_before_dir_contents(&entry.path[dir.prefix_len..], name));
+    let start = entries.partition_point(|entry| sorts_before_dir_contents(&entry.path[dir.prefix_len..], name, case));
     entries[start..]
       .iter()
-      .take_while(|entry| is_below(&entry.path[dir.prefix_len..], name))
+      .take_while(|entry| is_below(&entry.path[dir.prefix_len..], name, case))
       .any(|entry| !entry.skip_worktree)
   }
 
@@ -205,16 +222,25 @@ impl RepoIndex {
   }
 }
 
+/// Sorts entries for the repository's lookups: like git's index, by path
+/// then stage, with paths that are the same to the repository next to each
+/// other (see `PathCase::sort_cmp`).
+fn sort_entries(entries: &mut [IndexEntry], case: PathCase) {
+  if case == PathCase::Folded {
+    entries.sort_by(|a, b| case.sort_cmp(&a.path, &b.path).then(a.stage.cmp(&b.stage)));
+  }
+}
+
 /// Whether `path` is below `dir`.
-fn is_below(path: &[u8], dir: &[u8]) -> bool {
-  path.len() > dir.len() && path.starts_with(dir) && path[dir.len()] == b'/'
+fn is_below(path: &[u8], dir: &[u8], case: PathCase) -> bool {
+  path.len() > dir.len() && case.eq(&path[..dir.len()], dir) && path[dir.len()] == b'/'
 }
 
 /// Whether `path` sorts before `dir` followed by `/`.
-fn sorts_before_dir_contents(path: &[u8], dir: &[u8]) -> bool {
+fn sorts_before_dir_contents(path: &[u8], dir: &[u8], case: PathCase) -> bool {
   match path.len().cmp(&dir.len()) {
-    std::cmp::Ordering::Less => path <= &dir[..path.len()],
-    _ => match path[..dir.len()].cmp(dir) {
+    std::cmp::Ordering::Less => case.cmp(path, &dir[..path.len()]).is_le(),
+    _ => match case.cmp(&path[..dir.len()], dir) {
       std::cmp::Ordering::Less => true,
       std::cmp::Ordering::Greater => false,
       std::cmp::Ordering::Equal => path.get(dir.len()).is_none_or(|byte| *byte < b'/'),
@@ -291,14 +317,51 @@ mod test {
   }
 
   #[test]
+  fn looks_up_paths_ignoring_case_when_the_repository_does() {
+    // in git's (exact) order, where `Z` comes before `_` and `_` before `a`,
+    // which folding changes
+    let entries = || {
+      vec![
+        entry("Foo.ts", EntryKind::File, false),
+        entry("Src/Bar.ts", EntryKind::File, false),
+        entry("Z.ts", EntryKind::File, false),
+        entry("_y/z.ts", EntryKind::File, false),
+        entry("vendor/Patched.ts", EntryKind::File, false),
+      ]
+    };
+    let folded = RepoIndex::for_entries_with_case(Path::new("/repo"), entries(), PathCase::Folded);
+    assert!(folded.contains_file(Path::new("/repo/foo.ts")));
+    assert!(folded.contains_file(Path::new("/repo/FOO.TS")));
+    assert!(folded.contains_file(Path::new("/repo/z.ts")));
+    assert!(folded.contains_file(Path::new("/repo/VENDOR/patched.ts")));
+    assert!(folded.contains_dir(Path::new("/repo/src")));
+    assert!(folded.contains_dir(Path::new("/repo/_Y")));
+    assert!(!folded.contains_file(Path::new("/repo/src")));
+    assert!(!folded.contains_file(Path::new("/repo/bar.ts")));
+    let src = folded.dir(Path::new("/repo/SRC")).unwrap();
+    assert!(folded.contains_file_in(&src, b"bar.TS"));
+    let root = folded.dir(Path::new("/repo")).unwrap();
+    assert!(folded.contains_dir_in(&root, b"src"));
+    assert!(folded.contains_dir_in(&root, b"Vendor"));
+    assert!(folded.contains_file_in(&root, b"z.TS"));
+
+    // and exactly otherwise
+    let exact = RepoIndex::for_entries(Path::new("/repo"), entries());
+    assert!(exact.contains_file(Path::new("/repo/Foo.ts")));
+    assert!(!exact.contains_file(Path::new("/repo/foo.ts")));
+    assert!(!exact.contains_dir(Path::new("/repo/src")));
+    assert!(exact.contains_dir(Path::new("/repo/_y")));
+  }
+
+  #[test]
   fn sorts_paths_against_directory_contents() {
-    assert!(sorts_before_dir_contents(b"a", b"a"));
-    assert!(sorts_before_dir_contents(b"a-b", b"a"));
-    assert!(!sorts_before_dir_contents(b"a/", b"a"));
-    assert!(!sorts_before_dir_contents(b"a/b", b"a"));
-    assert!(!sorts_before_dir_contents(b"a0", b"a"));
-    assert!(sorts_before_dir_contents(b"", b"a"));
-    assert!(!sorts_before_dir_contents(b"b", b"a"));
-    assert!(sorts_before_dir_contents(b"Z", b"a"));
+    assert!(sorts_before_dir_contents(b"a", b"a", PathCase::Exact));
+    assert!(sorts_before_dir_contents(b"a-b", b"a", PathCase::Exact));
+    assert!(!sorts_before_dir_contents(b"a/", b"a", PathCase::Exact));
+    assert!(!sorts_before_dir_contents(b"a/b", b"a", PathCase::Exact));
+    assert!(!sorts_before_dir_contents(b"a0", b"a", PathCase::Exact));
+    assert!(sorts_before_dir_contents(b"", b"a", PathCase::Exact));
+    assert!(!sorts_before_dir_contents(b"b", b"a", PathCase::Exact));
+    assert!(sorts_before_dir_contents(b"Z", b"a", PathCase::Exact));
   }
 }

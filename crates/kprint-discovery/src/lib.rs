@@ -5,6 +5,7 @@ mod git_index;
 mod git_repo;
 mod gitignore;
 mod glob;
+mod path_case;
 mod repo_index;
 
 mod config_patterns;

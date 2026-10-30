@@ -16,6 +16,10 @@ use crate::utils::path_to_slash_bytes;
 pub struct DirGitIgnores {
   current: Option<DirPatterns>,
   parent: Option<Arc<DirGitIgnores>>,
+  /// Whether the repository's patterns match ignoring case, like git does
+  /// with `core.ignoreCase` (which it sets for a case insensitive file
+  /// system, ex. macOS' and Windows' by default).
+  ignore_case: bool,
 }
 
 /// Gitignore patterns for the entries of `dir`.
@@ -62,20 +66,40 @@ impl DirGitIgnores {
     // a directory containing `.git` is a repository root, so gitignores above
     // it don't apply
     let parent = if hint.has_git { None } else { parent.cloned() };
-    let current = resolve_current_gitignore(environment, dir_path, hint.has_git, Some(hint), options);
-    Self::chain(current, parent)
+    let ignore_case = ignores_case(environment, dir_path, hint.has_git, parent.as_ref());
+    let current = resolve_current_gitignore(environment, dir_path, hint.has_git, Some(hint), options, ignore_case);
+    Self::chain(current, parent, ignore_case)
   }
 
   /// Adds a directory's gitignore to its parent's. A directory without one
   /// shares its parent's, so checking a path only visits directories with a
-  /// gitignore.
-  fn chain(current: Option<DirPatterns>, parent: Option<Arc<DirGitIgnores>>) -> Option<Arc<DirGitIgnores>> {
-    match current {
-      Some(current) => Some(Arc::new(DirGitIgnores {
-        current: Some(current),
-        parent,
-      })),
-      None => parent,
+  /// gitignore. A repository root that ignores case keeps a node without
+  /// patterns, as that's where its directories learn it.
+  fn chain(current: Option<DirPatterns>, parent: Option<Arc<DirGitIgnores>>, ignore_case: bool) -> Option<Arc<DirGitIgnores>> {
+    match (current, parent) {
+      (None, Some(parent)) => Some(parent),
+      (None, None) if !ignore_case => None,
+      (current, parent) => Some(Arc::new(DirGitIgnores { current, parent, ignore_case })),
+    }
+  }
+}
+
+/// Whether the patterns of a directory's entries match ignoring case: what
+/// its repository's `core.ignoreCase` says at a repository root, otherwise
+/// what its parent's say.
+fn ignores_case(environment: &impl Environment, dir_path: &Path, is_repo_root: bool, parent: Option<&Arc<DirGitIgnores>>) -> bool {
+  if !is_repo_root {
+    return parent.is_some_and(|parent| parent.ignore_case);
+  }
+  let config = crate::git_repo::find_repo(environment, dir_path).and_then(|repo| match repo {
+    Some(repo) => Ok(environment.maybe_read_file(repo.common_dir.join("config"))?),
+    None => Ok(None),
+  });
+  match config {
+    Ok(config) => config.is_some_and(|text| kprint_git::parse_repo_config(&text).ignore_case),
+    Err(err) => {
+      log_debug!(environment, "Not reading the git config for {}: {:#}", dir_path.display(), err);
+      false
     }
   }
 }
@@ -204,8 +228,9 @@ impl<TEnvironment: Environment> GitIgnoreTree<TEnvironment> {
       // ancestors aren't part of the caller's listing, so resolve them without a hint
       dir_path.parent().and_then(|parent| self.get_resolved_git_ignore_inner(parent, None))
     };
-    let current = resolve_current_gitignore(&self.environment, dir_path, is_repo_root, hint, &self.options);
-    DirGitIgnores::chain(current, parent)
+    let ignore_case = ignores_case(&self.environment, dir_path, is_repo_root, parent.as_ref());
+    let current = resolve_current_gitignore(&self.environment, dir_path, is_repo_root, hint, &self.options, ignore_case);
+    DirGitIgnores::chain(current, parent, ignore_case)
   }
 }
 
@@ -215,6 +240,7 @@ fn resolve_current_gitignore(
   is_repo_root: bool,
   hint: Option<DirEntriesHint>,
   options: &GitIgnoreTreeOptions,
+  ignore_case: bool,
 ) -> Option<DirPatterns> {
   // skip the read when the caller's listing already shows there's no `.gitignore`
   let maybe_has_gitignore = hint.map(|h| h.has_gitignore).unwrap_or(true);
@@ -237,7 +263,7 @@ fn resolve_current_gitignore(
 
   // git's precedence is global excludes < `.git/info/exclude` < `.gitignore`,
   // and the last matching pattern wins, so add them in that order
-  let mut patterns = PatternList::new(/* ignore case */ false);
+  let mut patterns = PatternList::new(ignore_case);
   for line in global_lines {
     patterns.add_line(line.as_bytes());
   }
@@ -270,6 +296,61 @@ mod test {
   use kprint_platform::environment::*;
 
   use super::*;
+
+  /// A repository at `/repo` whose config ignores case, with a nested one at
+  /// `/repo/nested` that doesn't, both ignoring `*.log`.
+  fn ignore_case_environment() -> TestEnvironment {
+    let env = TestEnvironment::new();
+    env.mk_dir_all("/repo/.git").unwrap();
+    env.write_file("/repo/.git/config", "[core]\n\tignorecase = true\n").unwrap();
+    env.write_file("/repo/.gitignore", "*.log\n").unwrap();
+    env.mk_dir_all("/repo/sub").unwrap();
+    env.write_file("/repo/sub/.gitignore", "Build/\n").unwrap();
+    env.mk_dir_all("/repo/nested/.git").unwrap();
+    env.write_file("/repo/nested/.git/config", "[core]\n\tignorecase = false\n").unwrap();
+    env.write_file("/repo/nested/.gitignore", "*.log\n").unwrap();
+    env
+  }
+
+  #[test]
+  fn ignores_case_like_git_when_the_repository_does() {
+    let mut ignore_tree = GitIgnoreTree::new(ignore_case_environment(), GitIgnoreTreeOptions::default());
+    let mut is_ignored = |path: &str, is_dir: bool| {
+      let path = PathBuf::from(path);
+      ignore_tree
+        .get_resolved_git_ignore_for_file(&path)
+        .is_some_and(|gitignore| gitignore.is_ignored(&path, is_dir))
+    };
+    assert!(is_ignored("/repo/debug.log", false));
+    assert!(is_ignored("/repo/Debug.LOG", false));
+    // a directory below the root, and its own gitignore
+    assert!(is_ignored("/repo/sub/deep/Trace.Log", false));
+    assert!(is_ignored("/repo/sub/build", true));
+    // a repository of its own, which doesn't
+    assert!(is_ignored("/repo/nested/debug.log", false));
+    assert!(!is_ignored("/repo/nested/Debug.LOG", false));
+  }
+
+  #[test]
+  fn ignores_case_for_listed_directories_when_the_repository_does() {
+    let env = ignore_case_environment();
+    let options = GitIgnoreTreeOptions::default();
+    let with_git = DirEntriesHint {
+      has_gitignore: true,
+      has_git: true,
+    };
+    let without_git = DirEntriesHint {
+      has_gitignore: false,
+      has_git: false,
+    };
+    let root = DirGitIgnores::for_listed_dir(&env, Path::new("/repo"), with_git, None, &options).unwrap();
+    assert!(root.is_ignored(Path::new("/repo/Debug.LOG"), false));
+    // a directory without a gitignore still ignores case below the root
+    let src = DirGitIgnores::for_listed_dir(&env, Path::new("/repo/src"), without_git, Some(&root), &options).unwrap();
+    assert!(src.is_ignored(Path::new("/repo/src/Debug.LOG"), false));
+    let nested = DirGitIgnores::for_listed_dir(&env, Path::new("/repo/nested"), with_git, Some(&root), &options).unwrap();
+    assert!(!nested.is_ignored(Path::new("/repo/nested/Debug.LOG"), false));
+  }
 
   #[test]
   fn git_ignore_tree() {
