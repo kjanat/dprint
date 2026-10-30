@@ -279,6 +279,9 @@ pub struct GlobalConfiguration {
   pub new_line_kind: Option<NewLineKind>,
 }
 
+/// The configuration keys of [`GlobalConfiguration`].
+pub const GLOBAL_CONFIGURATION_KEYS: [&str; 4] = ["lineWidth", "useTabs", "indentWidth", "newLineKind"];
+
 pub const RECOMMENDED_GLOBAL_CONFIGURATION: RecommendedGlobalConfiguration = RecommendedGlobalConfiguration {
   line_width: 120,
   indent_width: 2,
@@ -477,6 +480,24 @@ pub fn get_unknown_property_diagnostics(config: ConfigKeyMap) -> Vec<Configurati
 #[cfg(test)]
 mod test {
   use super::*;
+
+  #[test]
+  fn global_configuration_keys_are_its_properties() {
+    let config = GlobalConfiguration {
+      line_width: Some(80),
+      use_tabs: Some(false),
+      indent_width: Some(2),
+      new_line_kind: Some(NewLineKind::LineFeed),
+    };
+    let serde_json::Value::Object(properties) = serde_json::to_value(config).unwrap() else {
+      panic!("not an object");
+    };
+    let mut keys = properties.keys().map(String::as_str).collect::<Vec<_>>();
+    let mut expected = GLOBAL_CONFIGURATION_KEYS.to_vec();
+    keys.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+  }
 
   #[test]
   fn hashes_differently_nested_values_differently() {

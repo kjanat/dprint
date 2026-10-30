@@ -76,6 +76,12 @@ pub trait Plugin {
   /// Gets if this is a process plugin.
   fn is_process_plugin(&self) -> bool;
 
+  /// Whether the plugin runs in a sandbox, which only a Wasm plugin does.
+  /// What it asks the host to format can't configure a plugin that doesn't,
+  /// beyond the global configuration, as that could run any program (ex.
+  /// the exec plugin's `commands`).
+  fn is_sandboxed(&self) -> bool;
+
   /// The schema of the plugin's configuration when it's built into dprint, so
   /// it isn't downloaded from the plugin info's `config_schema_url`.
   fn config_schema(&self) -> Option<&'static str> {
@@ -232,6 +238,10 @@ impl Plugin for TestPlugin {
   }
 
   fn is_process_plugin(&self) -> bool {
+    false
+  }
+
+  fn is_sandboxed(&self) -> bool {
     false
   }
 

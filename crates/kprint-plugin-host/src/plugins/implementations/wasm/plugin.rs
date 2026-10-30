@@ -227,6 +227,10 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     false
   }
 
+  fn is_sandboxed(&self) -> bool {
+    true
+  }
+
   fn resolution_cache(&self) -> Option<&PluginResolutionCache> {
     Some(&self.resolution_cache)
   }

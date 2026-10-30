@@ -15,6 +15,7 @@ use kprint_async_runtime::LocalBoxFuture;
 use kprint_async_runtime::future;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::ConfigurationDiagnostic;
+use kprint_configuration::GLOBAL_CONFIGURATION_KEYS;
 use kprint_plugin_types::CancellationToken;
 use kprint_plugin_types::CheckConfigUpdatesMessage;
 use kprint_plugin_types::ConfigChange;
@@ -659,6 +660,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
   fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
     // owned because they outlive this scope by moving into the future below
     let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
+    let from_sandbox = embedder.as_ref().is_some_and(|embedder| embedder.plugin.plugin.is_sandboxed());
     let outer_path = match embedder {
       Some(embedder) => embedder.outer_path,
       None => request.file_path.clone(),
@@ -677,6 +679,11 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       let mut had_change = false;
       for plugin_name in plugin_names {
         let plugin = scope.get_plugin(&plugin_name);
+        let request_override_config = if from_sandbox && !plugin.plugin.is_sandboxed() {
+          global_config_only(&request.override_config)
+        } else {
+          request.override_config.clone()
+        };
         match plugin.get_or_create_checking_config_diagnostics(&scope.environment).await {
           Ok(GetPluginResult::Success(initialized_plugin)) => {
             let result = initialized_plugin
@@ -684,7 +691,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
                 file_path: request.file_path.clone(),
                 file_bytes: file_text.clone(),
                 range: request.range.clone(),
-                override_config: plugin.get_merged_overrides_for_path(&request.file_path, &request.override_config),
+                override_config: plugin.get_merged_overrides_for_path(&request.file_path, &request_override_config),
                 on_host_format: scope.create_host_format_callback(plugin.clone(), outer_path.clone()),
                 token: request.token.clone(),
               })
@@ -703,6 +710,16 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     }
     .boxed_local()
   }
+}
+
+/// The global configuration in what a sandboxed plugin asks the host to
+/// format with, which is all of it a plugin outside the sandbox gets.
+fn global_config_only(override_config: &ConfigKeyMap) -> ConfigKeyMap {
+  override_config
+    .iter()
+    .filter(|(key, _)| GLOBAL_CONFIGURATION_KEYS.contains(&key.as_str()))
+    .map(|(key, value)| (key.clone(), value.clone()))
+    .collect()
 }
 
 impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
@@ -1740,6 +1757,20 @@ mod test {
   use crate::plugins::TestPlugin;
 
   use super::*;
+
+  #[test]
+  fn global_config_only_keeps_the_global_configuration() {
+    let override_config = ConfigKeyMap::from([
+      ("lineWidth".to_string(), ConfigKeyValue::from_i32(40)),
+      ("useTabs".to_string(), ConfigKeyValue::from_bool(true)),
+      ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
+      ("newLineKind".to_string(), ConfigKeyValue::from_str("lf")),
+      ("commands".to_string(), ConfigKeyValue::Array(Vec::new())),
+      ("ending".to_string(), ConfigKeyValue::from_str("custom")),
+    ]);
+    let kept = global_config_only(&override_config);
+    assert_eq!(kept.keys().collect::<Vec<_>>(), vec!["lineWidth", "useTabs", "indentWidth", "newLineKind"]);
+  }
 
   fn plugin_with_config(plugin: TestPlugin) -> PluginWithConfig {
     PluginWithConfig::new(

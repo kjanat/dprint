@@ -141,6 +141,10 @@ impl<TEnvironment: Environment> Plugin for ProcessPlugin<TEnvironment> {
     true
   }
 
+  fn is_sandboxed(&self) -> bool {
+    false
+  }
+
   async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
     let start_instant = Instant::now();
     let plugin_name = &self.info().name;

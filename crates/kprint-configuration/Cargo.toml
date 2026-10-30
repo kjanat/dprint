@@ -13,3 +13,6 @@ all-features = true
 [dependencies]
 indexmap = { workspace = true }
 serde    = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

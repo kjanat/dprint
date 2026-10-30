@@ -45,6 +45,11 @@ impl PluginWrapper {
     self.plugin.is_process_plugin()
   }
 
+  /// Whether the plugin runs in a sandbox (see [`Plugin::is_sandboxed`]).
+  pub fn is_sandboxed(&self) -> bool {
+    self.plugin.is_sandboxed()
+  }
+
   /// Set when the plugin is a formatter built into dprint.
   pub fn built_in(&self) -> Option<&'static BuiltInFormatter> {
     self.plugin.built_in()

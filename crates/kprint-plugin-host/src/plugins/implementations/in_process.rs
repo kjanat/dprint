@@ -80,6 +80,10 @@ impl<THandler: InProcessHandler> Plugin for InProcessPlugin<THandler> {
     false
   }
 
+  fn is_sandboxed(&self) -> bool {
+    false
+  }
+
   fn config_schema(&self) -> Option<&'static str> {
     Some(self.config_schema)
   }

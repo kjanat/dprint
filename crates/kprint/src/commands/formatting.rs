@@ -919,7 +919,7 @@ mod test {
   }
 
   #[test]
-  fn should_format_calling_process_plugin_with_wasm_plugin_using_additional_plugin_specified_config() {
+  fn should_format_calling_process_plugin_with_wasm_plugin_ignoring_additional_plugin_specified_config() {
     let file_path1 = "/file1.txt";
     let file_path2 = "/file2.txt";
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
@@ -930,7 +930,7 @@ mod test {
     assert_eq!(environment.take_stdout_messages(), vec![get_plural_formatted_text(2)]);
     assert_eq!(
       environment.read_file(file_path1).unwrap(),
-      "plugin-config: format this text_custom_config_formatted"
+      "plugin-config: format this text_formatted_process_formatted"
     );
     assert_eq!(
       environment.read_file(file_path2).unwrap(),
@@ -1596,6 +1596,42 @@ mod test {
             "test-plugin",
             r#"{
               "associations": ["**/*.txt"],
+              "ending": "wasm",
+              "overrides": {
+                "files": "**/test.txt",
+                "ending": "config_file"
+              }
+            }"#,
+          )
+          .add_config_section(
+            "testProcessPlugin",
+            r#"{
+              "associations": ["**/*.txt_ps"],
+              "ending": "process"
+            }"#,
+          );
+      })
+      .write_file("/file.txt_ps", "plugin-config: text")
+      .build();
+
+    run_test_cli(vec!["fmt", "/file.txt_ps"], &environment).unwrap();
+
+    assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
+    assert_eq!(environment.read_file("/file.txt_ps").unwrap(), "plugin-config: text_custom_config_process");
+  }
+
+  #[test]
+  fn should_not_let_wasm_plugin_configure_process_plugin_it_asks_to_format() {
+    // a process plugin isn't sandboxed, so configuring it could run any
+    // program (ex. the exec plugin's `commands`)
+    let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin()
+      .with_default_config(|c| {
+        c.add_remote_wasm_plugin()
+          .add_remote_process_plugin()
+          .add_config_section(
+            "test-plugin",
+            r#"{
+              "associations": ["**/*.txt"],
               "ending": "wasm"
             }"#,
           )
@@ -1617,7 +1653,7 @@ mod test {
     run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
 
     assert_eq!(environment.take_stdout_messages(), vec![get_singular_formatted_text()]);
-    assert_eq!(environment.read_file("/file.txt").unwrap(), "plugin-config: text_custom_config_wasm");
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "plugin-config: text_config_file_wasm");
   }
 
   #[test]
