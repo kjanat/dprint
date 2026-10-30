@@ -155,22 +155,27 @@ mod test {
     let child = OwnedChild::spawn(&mut command).unwrap();
     let child_pid = Pid::from_u32(child.id());
 
+    // the program the child runs, not any process of the child's (ex. the
+    // conhost.exe Windows starts for a console program's console)
+    let program = if cfg!(windows) { "ping" } else { "sleep" };
+    let is_program = |process: &sysinfo::Process| process.name().to_string_lossy().to_ascii_lowercase().trim_end_matches(".exe") == program;
     let mut system = System::new();
     let started = wait_until(|| {
       system.refresh_processes(ProcessesToUpdate::All, true);
       system
         .processes()
         .iter()
-        .find(|(_, process)| process.parent() == Some(child_pid))
+        .find(|(_, process)| process.parent() == Some(child_pid) && is_program(process))
         .map(|(pid, _)| *pid)
     })
-    .expect("the child should start a process");
+    .expect("the child should start the program");
 
     drop(child);
     let ended = wait_until(|| {
       system.refresh_processes(ProcessesToUpdate::Some(&[started]), true);
-      system.process(started).is_none().then_some(())
+      // a process with the pid that isn't the program is another one
+      system.process(started).is_none_or(|process| !is_program(process)).then_some(())
     });
-    assert!(ended.is_some(), "the process the child started is still running");
+    assert!(ended.is_some(), "the program the child started is still running");
   }
 }
