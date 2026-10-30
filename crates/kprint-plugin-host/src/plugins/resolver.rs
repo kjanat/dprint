@@ -16,6 +16,7 @@ use super::implementations::create_builtin_exec_plugin;
 use super::implementations::create_plugin;
 use crate::environment::PluginEnvironment as Environment;
 use crate::plugins::BuiltInFormatter;
+use crate::plugins::FormatEngine;
 use crate::plugins::Plugin;
 use crate::plugins::PluginCache;
 use crate::plugins::PluginResolutionCache;
@@ -67,6 +68,11 @@ impl PluginWrapper {
   /// Whether formatting with the plugin first compiles it to native code.
   pub fn compiles_to_format(&self) -> bool {
     self.plugin.compiles_to_format()
+  }
+
+  /// How the plugin formats in this run, when it has more than one way.
+  pub fn format_engine(&self) -> Option<FormatEngine> {
+    self.plugin.format_engine()
   }
 
   /// Name of the plugin a configuration file refers to for this one (see

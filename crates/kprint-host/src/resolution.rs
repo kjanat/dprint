@@ -745,15 +745,23 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
         }
       }
     }
-    let bytes = bytes_to_format(&self.environment, files, choosing.len()).await?;
+    let to_format = bytes_to_format(&self.environment, files, choosing.len()).await?;
 
     let mut compiling = Vec::new();
-    for (plugin, bytes) in choosing.into_iter().zip(bytes) {
-      plugin.choose_format_engine(bytes);
+    for (plugin, to_format) in choosing.into_iter().zip(to_format) {
+      plugin.choose_format_engine(to_format.bytes);
       if plugin.compiles_to_format() {
-        compiling.push((plugin, bytes));
+        compiling.push((plugin, to_format));
       }
     }
+    let cwd = self.environment.cwd();
+    let describe = |compiling: &[(&Rc<PluginWrapper>, ToFormat)]| {
+      compiling
+        .iter()
+        .map(|(plugin, to_format)| format!("  {} {}: {}", plugin.info().name, plugin.info().version, to_format.display(cwd.as_ref())))
+        .collect::<Vec<_>>()
+        .join("\n")
+    };
     let limit = max_plugin_compiles(&self.environment);
     if compiling.len() > limit {
       bail!(
@@ -763,27 +771,20 @@ impl<TEnvironment: Environment> PluginsScopeAndPathsCollection<TEnvironment> {
         ),
         compiling.len(),
         limit,
-        compiling
-          .iter()
-          .map(|(plugin, bytes)| format!("  {} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
-          .collect::<Vec<_>>()
-          .join("\n"),
+        describe(&compiling),
       );
     }
     if !compiling.is_empty() {
       log_warn!(
         self.environment,
-        "Compiling {} to native code to format these files:\n{}",
+        "Compiling {} to native code for the files {}:\n{}",
         if compiling.len() == 1 {
           "1 plugin".to_string()
         } else {
           format!("{} plugins", compiling.len())
         },
-        compiling
-          .iter()
-          .map(|(plugin, bytes)| format!("  {} {} ({})", plugin.info().name, plugin.info().version, display_bytes(*bytes)))
-          .collect::<Vec<_>>()
-          .join("\n"),
+        if compiling.len() == 1 { "it formats" } else { "they format" },
+        describe(&compiling),
       );
     }
     Ok(())
@@ -1272,25 +1273,75 @@ struct FilesToMeasure<TEnvironment: Environment> {
   file_paths: Vec<PathBuf>,
 }
 
-/// How many bytes each of `plugin_count` plugins formats, from the files'
-/// sizes. It reads metadata on several threads, as there can be tens of
-/// thousands of files. Recovering native caches also check incremental hashes
-/// when metadata alone can't prove the files are unchanged.
+/// What a plugin formats, from `bytes_to_format`: its files that aren't known
+/// to be formatted, and their bytes.
+#[derive(Default)]
+struct ToFormat {
+  bytes: u64,
+  file_count: usize,
+  /// The first few of the files, to name them.
+  examples: Vec<PathBuf>,
+}
+
+impl ToFormat {
+  /// How many of the files are named.
+  const EXAMPLES: usize = 3;
+
+  fn add(&mut self, file_path: &Path, len: u64) {
+    self.bytes += len;
+    self.file_count += 1;
+    if self.examples.len() < Self::EXAMPLES {
+      self.examples.push(file_path.to_path_buf());
+    }
+  }
+
+  fn merge(&mut self, other: ToFormat) {
+    self.bytes += other.bytes;
+    self.file_count += other.file_count;
+    self.examples.extend(other.examples);
+    self.examples.truncate(Self::EXAMPLES);
+  }
+
+  /// Ex. "1.5 MB in 12 files (a.json, b.json, sub/c.json and 9 more)", with
+  /// the paths relative to `cwd`.
+  fn display(&self, cwd: &Path) -> String {
+    let files = if self.file_count == 1 {
+      "1 file".to_string()
+    } else {
+      format!("{} files", self.file_count)
+    };
+    let mut examples = self
+      .examples
+      .iter()
+      .map(|file_path| file_path.strip_prefix(cwd).unwrap_or(file_path).display().to_string())
+      .collect::<Vec<_>>()
+      .join(", ");
+    if self.file_count > self.examples.len() {
+      examples.push_str(&format!(" and {} more", self.file_count - self.examples.len()));
+    }
+    format!("{} in {} ({})", display_bytes(self.bytes), files, examples)
+  }
+}
+
+/// What each of `plugin_count` plugins formats, from the files' sizes. It
+/// reads metadata on several threads, as there can be tens of thousands of
+/// files. Recovering native caches also check incremental hashes when
+/// metadata alone can't prove the files are unchanged.
 async fn bytes_to_format<TEnvironment: Environment>(
   environment: &TEnvironment,
   files: Vec<FilesToMeasure<TEnvironment>>,
   plugin_count: usize,
-) -> Result<Vec<u64>> {
+) -> Result<Vec<ToFormat>> {
   // starting a thread costs more than reading the metadata of a few hundred files
   const FILES_PER_THREAD: usize = 500;
   let file_count = files.iter().map(|files| files.file_paths.len()).sum::<usize>();
   if file_count == 0 {
-    return Ok(vec![0; plugin_count]);
+    return Ok((0..plugin_count).map(|_| ToFormat::default()).collect());
   }
   let thread_count = environment.max_threads().min(file_count.div_ceil(FILES_PER_THREAD)).max(1);
   let environment = environment.clone();
-  let bytes = kprint_async_runtime::spawn_blocking(move || {
-    let measure = |files: &FilesToMeasure<TEnvironment>, file_paths: &[PathBuf], bytes: &mut [u64]| {
+  let to_format = kprint_async_runtime::spawn_blocking(move || {
+    let measure = |files: &FilesToMeasure<TEnvironment>, file_paths: &[PathBuf], to_format: &mut [ToFormat]| {
       let incremental_file = files.incremental_file.as_ref().filter(|file| file.has_known_files());
       for file_path in file_paths {
         let Ok(metadata) = environment.fs_metadata(file_path) else {
@@ -1311,7 +1362,7 @@ async fn bytes_to_format<TEnvironment: Environment>(
         }
         if !is_known_formatted {
           for index in &files.plugin_indices {
-            bytes[*index] += len;
+            to_format[*index].add(file_path, len);
           }
         }
       }
@@ -1329,25 +1380,26 @@ async fn bytes_to_format<TEnvironment: Environment>(
         .map(|chunks| {
           let measure = &measure;
           scope.spawn(move || {
-            let mut bytes = vec![0; plugin_count];
+            let mut to_format = (0..plugin_count).map(|_| ToFormat::default()).collect::<Vec<_>>();
             for (files, file_paths) in chunks {
-              measure(files, file_paths, &mut bytes);
+              measure(files, file_paths, &mut to_format);
             }
-            bytes
+            to_format
           })
         })
         .collect::<Vec<_>>();
-      let mut bytes = vec![0; plugin_count];
+      // joined in order, so the examples are the first files
+      let mut to_format = (0..plugin_count).map(|_| ToFormat::default()).collect::<Vec<_>>();
       for handle in handles {
-        for (total, thread_bytes) in bytes.iter_mut().zip(handle.join().unwrap()) {
-          *total += thread_bytes;
+        for (total, thread_to_format) in to_format.iter_mut().zip(handle.join().unwrap()) {
+          total.merge(thread_to_format);
         }
       }
-      bytes
+      to_format
     })
   })
   .await?;
-  Ok(bytes)
+  Ok(to_format)
 }
 
 /// Bytes for people, ex. "1.5 MB".
@@ -1840,6 +1892,24 @@ mod test {
     assert_eq!(on_table(embedded("exec")), on_table(embedded("exec")));
     assert_ne!(in_override(None), in_override(embedded("exec")));
     assert_ne!(in_override(embedded("exec")), in_override(embedded("typescript")));
+  }
+
+  #[test]
+  fn should_name_the_first_files_a_plugin_formats() {
+    let cwd = Path::new("/project");
+    let mut to_format = ToFormat::default();
+    to_format.add(Path::new("/project/a.json"), 1024);
+    assert_eq!(to_format.display(cwd), "1.0 KB in 1 file (a.json)");
+
+    // the examples of another thread follow, up to the limit
+    let mut other = ToFormat::default();
+    for name in ["b.json", "sub/c.json", "d.json", "e.json"] {
+      other.add(&Path::new("/project").join(name), 1024);
+    }
+    to_format.merge(other);
+    // outside the cwd, the path is kept
+    to_format.add(Path::new("/elsewhere/f.json"), 1024);
+    assert_eq!(to_format.display(cwd), "6.0 KB in 6 files (a.json, b.json, sub/c.json and 3 more)");
   }
 
   #[test]

@@ -273,6 +273,10 @@ impl<TEnvironment: Environment> Plugin for WasmPlugin<TEnvironment> {
     self.formatting.chosen.get() == Some(FormatEngine::Native) && !self.formatting.has_native_code()
   }
 
+  fn format_engine(&self) -> Option<FormatEngine> {
+    Some(self.formatting.engine())
+  }
+
   async fn initialize(&self) -> Result<Rc<dyn InitializedPlugin>> {
     // the calls before formatting need the interpreted module, so a plugin
     // whose module doesn't load fails here

@@ -19,6 +19,7 @@ use kprint_plugin_types::FormatResult;
 use kprint_plugin_types::HostFormatCallback;
 use kprint_plugin_types::PluginInfo;
 
+use super::FormatEngine;
 use super::PluginResolutionCache;
 use crate::environment::CanonicalizedPathBuf;
 use crate::plugins::PluginSourceReference;
@@ -113,6 +114,12 @@ pub trait Plugin {
   /// core.
   fn compiles_to_format(&self) -> bool {
     false
+  }
+
+  /// How the plugin formats in this run, for messages about it. `None` for a
+  /// plugin with one way to format, ex. a process plugin.
+  fn format_engine(&self) -> Option<FormatEngine> {
+    None
   }
 }
 
