@@ -205,6 +205,30 @@ fn builtin_exec_only_runs_a_missing_program_for_its_files() {
   assert_eq!(environment.read_file("/file.rs").unwrap(), "text\n");
 }
 
+#[test]
+fn reports_the_same_error_for_many_files_once() {
+  // a missing program fails every file it formats the same way
+  let mut builder = TestEnvironmentBuilder::new();
+  builder.with_default_config(|config| {
+    config.add_config_section("exec", r#"{"commands":[{"command":"kprint-missing-formatter","exts":["rs"]}]}"#);
+  });
+  for index in 0..7 {
+    builder.write_file(format!("/file{}.rs", index), "text\n");
+  }
+  let environment = builder.build();
+  let error = run_test_cli(vec!["fmt"], &environment).unwrap_err();
+  // every file is still an error
+  assert_eq!(error.to_string(), "Had 7 errors formatting.");
+  let errors = environment.take_stderr_messages();
+  assert_eq!(errors.len(), 2, "{:?}", errors);
+  assert!(errors[0].starts_with("Error formatting /file"), "{}", errors[0]);
+  assert!(errors[0].contains("Cannot start formatter process 'kprint-missing-formatter'"), "{}", errors[0]);
+  // the other six are named after formatting, the first five by path
+  assert!(errors[1].starts_with("The same error as for file"), "{}", errors[1]);
+  assert!(errors[1].contains(" for 6 more files: file"), "{}", errors[1]);
+  assert!(errors[1].ends_with(" and 1 more"), "{}", errors[1]);
+}
+
 #[cfg(unix)]
 #[test]
 fn names_the_plugins_that_keep_changing_each_others_output() {

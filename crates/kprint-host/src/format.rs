@@ -7,6 +7,7 @@ use kprint_plugin_types::HostFormatRequest;
 use kprint_plugin_types::NullCancellationToken;
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -125,6 +126,72 @@ fn describe_plugin(plugin: &PluginWithConfig) -> String {
   format!("{} {}{}", plugin.name(), plugin.info().version, engine)
 }
 
+/// The errors formatting files, reported once per message: the first file
+/// with a message gets it in full, and the other files with the same message
+/// are listed after formatting (ex. 39 files whose formatter isn't
+/// installed). Every file still counts as an error.
+struct FileErrors<TEnvironment: Environment> {
+  logger: ErrorCountLogger<TEnvironment>,
+  environment: TEnvironment,
+  /// The messages in the order they were first reported, with the files
+  /// after the first that had them.
+  repeated: RefCell<Vec<(String, PathBuf, Vec<PathBuf>)>>,
+  /// Where each message is in `repeated`.
+  indexes: RefCell<HashMap<String, usize>>,
+}
+
+impl<TEnvironment: Environment> FileErrors<TEnvironment> {
+  /// How many of the other files with a message are named.
+  const NAMED_FILES: usize = 5;
+
+  fn new(logger: ErrorCountLogger<TEnvironment>, environment: &TEnvironment) -> Self {
+    FileErrors {
+      logger,
+      environment: environment.clone(),
+      repeated: Default::default(),
+      indexes: Default::default(),
+    }
+  }
+
+  fn log(&self, file_path: &Path, message: String) {
+    let index = self.indexes.borrow().get(&message).copied();
+    match index {
+      Some(index) => {
+        self.repeated.borrow_mut()[index].2.push(file_path.to_path_buf());
+        self.logger.add_error_count(1);
+      }
+      None => {
+        self
+          .logger
+          .log_error(&format!("Error formatting {}. Message: {}", file_path.display(), message));
+        let mut repeated = self.repeated.borrow_mut();
+        self.indexes.borrow_mut().insert(message.clone(), repeated.len());
+        repeated.push((message, file_path.to_path_buf(), Vec::new()));
+      }
+    }
+  }
+
+  /// Lists the other files of each message reported more than once.
+  fn log_repeated(&self) {
+    let cwd = self.environment.cwd();
+    let display = |file_path: &PathBuf| file_path.strip_prefix(&cwd).unwrap_or(file_path).display().to_string();
+    for (_, first, others) in self.repeated.borrow().iter().filter(|(_, _, others)| !others.is_empty()) {
+      let mut named = others.iter().take(Self::NAMED_FILES).map(display).collect::<Vec<_>>().join(", ");
+      if others.len() > Self::NAMED_FILES {
+        named.push_str(&format!(" and {} more", others.len() - Self::NAMED_FILES));
+      }
+      log_error!(
+        self.environment,
+        "The same error as for {} for {} more {}: {}",
+        display(first),
+        others.len(),
+        if others.len() == 1 { "file" } else { "files" },
+        named
+      );
+    }
+  }
+}
+
 /// The plugins that format a group of files, which are initialized when the
 /// first of the files needs formatting. When every file is unchanged since the
 /// last run, they aren't loaded at all.
@@ -215,6 +282,7 @@ where
   log_debug!(environment, "Max threads: {}\nThread count: {}", max_threads, number_threads,);
 
   let error_logger = ErrorCountLogger::from_environment(environment);
+  let file_errors = Rc::new(FileErrors::new(error_logger.clone(), environment));
 
   let scope = Rc::new(scope_and_paths.scope);
   let mut file_paths_by_plugins = scope_and_paths.file_paths_by_plugins.into_vec();
@@ -252,6 +320,7 @@ where
   let handles = task_works.into_iter().enumerate().map(|(index, task_work)| {
     kprint_async_runtime::spawn({
       let error_logger = error_logger.clone();
+      let file_errors = file_errors.clone();
       let environment = environment.clone();
       let incremental_file = incremental_file.clone();
       let f = f.clone();
@@ -295,6 +364,7 @@ where
             let f = f.clone();
             let plugins = plugins.clone();
             let error_logger = error_logger.clone();
+            let file_errors = file_errors.clone();
             let scope = scope.clone();
             format_handles.push(kprint_async_runtime::spawn(async move {
               let long_format_token = CancellationToken::new();
@@ -339,11 +409,11 @@ where
                       ));
                       semaphore.close(); // stop formatting
                     } else {
-                      error_logger.log_error(&format!("Error formatting {}. Message: {:#}", file_path.display(), err));
+                      file_errors.log(&file_path, format!("{:#}", err));
                     }
                   }
                   RunForFilePathError::TokioJoin(_) | RunForFilePathError::Io(_) => {
-                    error_logger.log_error(&format!("Error formatting {}. Message: {:#}", file_path.display(), err));
+                    file_errors.log(&file_path, format!("{:#}", err));
                   }
                 }
               }
@@ -357,6 +427,7 @@ where
     })
   });
   future::join_all(handles).await;
+  file_errors.log_repeated();
 
   cpu_task_token.cancel();
 
