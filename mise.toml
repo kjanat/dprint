@@ -1,0 +1,10 @@
+[tools]
+deno                                    = "latest"
+rust                                    = "latest"
+tombi                                   = "latest"
+"github:kjanat/runner"                  = "latest"
+"aqua:nextest-rs/nextest/cargo-nextest" = "latest"
+
+[wrappers.dprint]
+command = "run"
+args    = ["dprint"]
