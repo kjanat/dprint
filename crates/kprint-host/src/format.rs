@@ -1,9 +1,12 @@
 use anyhow::Result;
 use anyhow::bail;
+use kprint_async_runtime::FutureExt;
 use kprint_async_runtime::future;
+use kprint_plugin_types::HostFormatCallback;
+use kprint_plugin_types::HostFormatRequest;
 use kprint_plugin_types::NullCancellationToken;
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -40,7 +43,7 @@ type InitializedPlugins = Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithCon
 const SLOW_FORMAT: Duration = Duration::from_secs(10);
 
 /// Where formatting a file is, to say what's slow about it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum FormatStage {
   /// Waiting for the plugins of the file's group, which start before their
   /// first file is formatted.
@@ -52,33 +55,62 @@ enum FormatStage {
     plugin: usize,
     pass: usize,
   },
+  /// Like `Formatting`, while the plugin waits for the host to format code it
+  /// embeds (ex. a code block in markdown).
+  FormattingEmbedded {
+    plugin: usize,
+    pass: usize,
+    embedded: EmbeddedFormat,
+  },
   /// Doing what the command does with the formatted text, ex. writing it.
   Finishing,
 }
 
 impl FormatStage {
   /// Ex. "dprint-plugin-typescript 0.95.0 (interpreted Wasm) is formatting it".
-  fn describe(self, plugins: &[Rc<PluginWithConfig>]) -> String {
+  fn describe(&self, plugins: &[Rc<PluginWithConfig>]) -> String {
+    let describe_index = |plugin: usize| {
+      plugins
+        .get(plugin)
+        .map(|plugin| describe_plugin(plugin))
+        .unwrap_or_else(|| "a plugin".to_string())
+    };
+    let pass_text = |pass: usize| {
+      if pass > 1 {
+        format!(" again (pass {}) to ensure a stable format", pass)
+      } else {
+        String::new()
+      }
+    };
     match self {
       FormatStage::StartingPlugins => format!(
         "it's waiting for {} to start",
         plugins.iter().map(|plugin| describe_plugin(plugin)).collect::<Vec<_>>().join(", ")
       ),
       FormatStage::Reading => "it's being read".to_string(),
-      FormatStage::Formatting { plugin, pass } => {
-        let plugin = plugins
-          .get(plugin)
-          .map(|plugin| describe_plugin(plugin))
-          .unwrap_or_else(|| "a plugin".to_string());
-        if pass > 1 {
-          format!("{} is formatting it again (pass {}) to ensure a stable format", plugin, pass)
+      FormatStage::Formatting { plugin, pass } => format!("{} is formatting it{}", describe_index(*plugin), pass_text(*pass)),
+      FormatStage::FormattingEmbedded { plugin, pass, embedded } => format!(
+        "{} is formatting it{}, waiting for {} to format its embedded {}",
+        describe_index(*plugin),
+        pass_text(*pass),
+        if embedded.plugin_names.is_empty() {
+          "the host".to_string()
         } else {
-          format!("{} is formatting it", plugin)
-        }
-      }
+          embedded.plugin_names.join(", ")
+        },
+        embedded.file_path.display()
+      ),
       FormatStage::Finishing => "the formatted text is being handled (ex. written)".to_string(),
     }
   }
+}
+
+/// Code a plugin asks the host to format, ex. a markdown code block.
+#[derive(Clone)]
+struct EmbeddedFormat {
+  /// The made-up path that gives the code's language, ex. `file.toml`.
+  file_path: PathBuf,
+  plugin_names: Vec<String>,
 }
 
 /// Ex. "dprint-plugin-typescript 0.95.0 (interpreted Wasm)": an interpreted
@@ -266,7 +298,7 @@ where
             let scope = scope.clone();
             format_handles.push(kprint_async_runtime::spawn(async move {
               let long_format_token = CancellationToken::new();
-              let stage = Rc::new(Cell::new(FormatStage::StartingPlugins));
+              let stage = Rc::new(RefCell::new(FormatStage::StartingPlugins));
               kprint_async_runtime::spawn({
                 let long_format_token = long_format_token.clone();
                 let environment = environment.clone();
@@ -285,7 +317,7 @@ where
                     "WARNING: Formatting {} is slow: after {}s, {}.",
                     display_path,
                     SLOW_FORMAT.as_secs(),
-                    stage.get().describe(&plugins.plugins)
+                    stage.borrow().describe(&plugins.plugins)
                   );
                   long_format_token.cancelled().await;
                   log_warn!(environment, "Finished formatting {} after {:.1}s.", display_path, start.elapsed().as_secs_f64());
@@ -430,7 +462,7 @@ where
     error_logger: &ErrorCountLogger<TEnvironment>,
     file_path: PathBuf,
     ensure_stable_format: EnsureStableFormat,
-    stage: &Cell<FormatStage>,
+    stage: &Rc<RefCell<FormatStage>>,
     f: F,
   ) -> Result<(), RunForFilePathError>
   where
@@ -443,7 +475,7 @@ where
     };
 
     // it's a big perf improvement to do this work on a blocking thread
-    stage.set(FormatStage::Reading);
+    stage.replace(FormatStage::Reading);
     let (file_path, file_text, environment) = kprint_async_runtime::spawn_blocking(move || {
       let file_text = environment.read_file_bytes(&file_path)?;
       Ok::<_, std::io::Error>((file_path, file_text, environment))
@@ -459,7 +491,7 @@ where
       formatted_text
     };
 
-    stage.set(FormatStage::Finishing);
+    stage.replace(FormatStage::Finishing);
     kprint_async_runtime::spawn_blocking(move || f(file_path, file_text, formatted_text, start_instant, environment)).await??;
 
     Ok(())
@@ -471,7 +503,7 @@ where
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
     mut formatted_text: Vec<u8>,
-    stage: &Cell<FormatStage>,
+    stage: &Rc<RefCell<FormatStage>>,
   ) -> Result<Vec<u8>> {
     log_debug!(environment, "Ensuring stable format: {}", file_path.display());
     let mut count = 0;
@@ -521,7 +553,7 @@ where
     plugins: Rc<Vec<(Rc<PluginWithConfig>, InitializedPluginWithConfig)>>,
     file_path: PathBuf,
     file_text: &[u8],
-    stage: &Cell<FormatStage>,
+    stage: &Rc<RefCell<FormatStage>>,
     pass: usize,
   ) -> Result<(Instant, Vec<u8>, Vec<String>)> {
     let start_instant = Instant::now();
@@ -530,7 +562,7 @@ where
     let mut changed_by = Vec::new();
     let plugins_len = plugins.len();
     for (i, (plugin, initialized_plugin)) in plugins.iter().enumerate() {
-      stage.set(FormatStage::Formatting { plugin: i, pass });
+      stage.replace(FormatStage::Formatting { plugin: i, pass });
       let start_instant = Instant::now();
       let format_text_result = initialized_plugin
         .format_text(InitializedPluginWithConfigFormatRequest {
@@ -538,7 +570,13 @@ where
           file_bytes: file_text.to_vec(),
           range: None,
           override_config: plugin.get_config_file_overrides_for_path(&file_path),
-          on_host_format: scope.create_host_format_callback(plugin.clone(), file_path.clone()),
+          on_host_format: observe_host_format(
+            scope.create_host_format_callback(plugin.clone(), file_path.clone()),
+            &scope,
+            plugin,
+            &file_path,
+            stage,
+          ),
           token: Arc::new(NullCancellationToken),
         })
         .await;
@@ -580,6 +618,40 @@ where
 
     Ok((start_instant, file_text.into_owned(), changed_by))
   }
+}
+
+/// Notes in `stage` which code `plugin` embeds in the file at `file_path` the
+/// host is formatting, and with which plugins, while it does. Only the code
+/// the file's own plugins embed is noted, not code embedded in that code.
+fn observe_host_format<TEnvironment: Environment>(
+  on_host_format: HostFormatCallback,
+  scope: &Rc<PluginsScope<TEnvironment>>,
+  plugin: &Rc<PluginWithConfig>,
+  file_path: &Path,
+  stage: &Rc<RefCell<FormatStage>>,
+) -> HostFormatCallback {
+  let scope = scope.clone();
+  let plugin = plugin.clone();
+  let file_path = file_path.to_path_buf();
+  let stage = stage.clone();
+  Rc::new(move |request: HostFormatRequest| {
+    let embedded = EmbeddedFormat {
+      file_path: request.file_path.clone(),
+      plugin_names: scope.embedded_format_plugin_names(&plugin, &file_path, &request),
+    };
+    let outer = stage.borrow().clone();
+    if let FormatStage::Formatting { plugin, pass } = outer {
+      stage.replace(FormatStage::FormattingEmbedded { plugin, pass, embedded });
+    }
+    let formatted = on_host_format(request);
+    let stage = stage.clone();
+    async move {
+      let result = formatted.await;
+      stage.replace(outer);
+      result
+    }
+    .boxed_local()
+  })
 }
 
 fn unstable_reason(changed_by: &[String]) -> String {

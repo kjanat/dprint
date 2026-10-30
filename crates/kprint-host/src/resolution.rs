@@ -627,9 +627,19 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
     self.format_from(request, None)
   }
 
-  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
-    // owned because they outlive this scope by moving into the future below
-    let plugin_names = match embedder.as_ref().and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
+  /// The names of the plugins that format the code `plugin` embeds in the
+  /// file at `outer_path`, when it asks the host to format it with `request`.
+  pub fn embedded_format_plugin_names(&self, plugin: &Rc<PluginWithConfig>, outer_path: &Path, request: &HostFormatRequest) -> Vec<String> {
+    let embedder = Embedder {
+      plugin: plugin.clone(),
+      outer_path: outer_path.to_path_buf(),
+    };
+    self.host_format_plugin_names(request, Some(&embedder))
+  }
+
+  /// The names of the plugins that format what `request` asks the host to.
+  fn host_format_plugin_names(&self, request: &HostFormatRequest, embedder: Option<&Embedder>) -> Vec<String> {
+    match embedder.and_then(|embedder| self.embedded_plugin_names(embedder, &request.file_path)) {
       Some(plugin_names) => plugin_names,
       None => self
         .plugin_name_maps
@@ -637,7 +647,12 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
         .into_iter()
         .map(ToOwned::to_owned)
         .collect::<Vec<String>>(),
-    };
+    }
+  }
+
+  fn format_from(self: &Rc<Self>, request: HostFormatRequest, embedder: Option<Embedder>) -> LocalBoxFuture<'static, FormatResult> {
+    // owned because they outlive this scope by moving into the future below
+    let plugin_names = self.host_format_plugin_names(&request, embedder.as_ref());
     let outer_path = match embedder {
       Some(embedder) => embedder.outer_path,
       None => request.file_path.clone(),
