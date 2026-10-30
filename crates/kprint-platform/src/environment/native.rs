@@ -455,6 +455,7 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
     {
       return *cached;
     }
+    log_debug!(self, "Asking git for core.ignoreCase in {}", work_tree.display());
     let output = Command::new("git")
       .arg("-C")
       .arg(work_tree)
@@ -470,13 +471,25 @@ impl<S: NativeServices> crate::environment::VcsEnvironment for NativeEnvironment
         // set nowhere, which git takes as false
         Some(1) => Some(false),
         // ex. git doesn't trust the repository, so it didn't read its config
-        _ => None,
+        code => {
+          log_debug!(
+            self,
+            "git exited with {:?} for core.ignoreCase in {}, so its config is read instead: {}",
+            code,
+            work_tree.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+          );
+          None
+        }
       },
       Err(err) => {
         log_debug!(self, "Not asking git for core.ignoreCase in {}: {}", work_tree.display(), err);
         None
       }
     };
+    if let Some(ignore_case) = ignore_case {
+      log_debug!(self, "git says core.ignoreCase is {} in {}", ignore_case, work_tree.display());
+    }
     CACHED
       .lock()
       .unwrap_or_else(|err| err.into_inner())

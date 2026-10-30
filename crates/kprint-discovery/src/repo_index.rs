@@ -73,6 +73,13 @@ impl RepoIndex {
       bail!("not in a git work tree");
     };
     let read = read_index(environment, &repo)?;
+    if read.case == PathCase::Folded {
+      log_debug!(
+        environment,
+        "Comparing paths in the git index of {} ignoring case (core.ignoreCase)",
+        repo.work_tree.display()
+      );
+    }
     #[cfg(unix)]
     let (entries, new_positions) = sort_entries(read.index.entries, read.case);
     #[cfg(not(unix))]

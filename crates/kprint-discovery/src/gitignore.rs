@@ -96,7 +96,12 @@ fn ignores_case(environment: &impl Environment, dir_path: &Path, is_repo_root: b
     None => Ok(false),
   });
   match ignore_case {
-    Ok(ignore_case) => ignore_case,
+    Ok(ignore_case) => {
+      if ignore_case {
+        log_debug!(environment, "Matching the gitignores in {} ignoring case (core.ignoreCase)", dir_path.display());
+      }
+      ignore_case
+    }
     Err(err) => {
       log_debug!(environment, "Not reading the git config for {}: {:#}", dir_path.display(), err);
       false

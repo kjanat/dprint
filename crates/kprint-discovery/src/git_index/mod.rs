@@ -151,6 +151,12 @@ impl Snapshot {
       // spellings of it (the untracked cache's names are the file system's,
       // which git compares exactly), see its `fsmonitor_refresh_callback`
       for spelling in index.other_spellings(path) {
+        log_debug!(
+          environment,
+          "The fsmonitor daemon's {} is {} in the git index",
+          String::from_utf8_lossy(path),
+          String::from_utf8_lossy(&spelling)
+        );
         untracked_cache.invalidate_path(&spelling);
         changed_paths.push(spelling);
       }
