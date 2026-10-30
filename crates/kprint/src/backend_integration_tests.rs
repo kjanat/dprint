@@ -201,7 +201,7 @@ fn builtin_exec_only_runs_a_missing_program_for_its_files() {
   environment.take_stdout_messages();
   run_test_cli(vec!["fmt", "/file.rs"], &environment).unwrap_err();
   let errors = environment.take_stderr_messages().join("\n");
-  assert!(errors.contains("Cannot start formatter process"), "{}", errors);
+  assert!(errors.contains("Cannot start formatter process 'kprint-missing-formatter' (in "), "{}", errors);
   assert_eq!(environment.read_file("/file.rs").unwrap(), "text\n");
 }
 

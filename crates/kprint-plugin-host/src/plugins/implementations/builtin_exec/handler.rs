@@ -221,6 +221,16 @@ pub async fn format_bytes(
     // so it'd otherwise hold up every other file being formatted.
     let cwd = command.cwd.clone();
     let stdin = if command.stdin { Stdio::piped() } else { Stdio::null() };
+    // ex. "Cannot start formatter process 'tombi' (in /project): No such file or
+    // directory"
+    let cannot_start = |err: &dyn std::fmt::Display| {
+      FormatError::new(format!(
+        "Cannot start formatter process '{}' (in {}): {}",
+        command.executable,
+        command.cwd.display(),
+        err
+      ))
+    };
     let mut child = kprint_async_runtime::spawn_blocking(move || {
       OwnedChild::spawn_untied(
         Command::new(executable)
@@ -233,8 +243,8 @@ pub async fn format_bytes(
       )
     })
     .await
-    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?
-    .map_err(|e| FormatError::new(format!("Cannot start formatter process: {}", e)))?;
+    .map_err(|err| cannot_start(&err))?
+    .map_err(|err| cannot_start(&err))?;
 
     // capturing stdout, up to what the formatted file could be
     let (out_tx, out_rx) = oneshot::channel();
