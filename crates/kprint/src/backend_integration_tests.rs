@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use crate::environment::FileSystemEnvironment;
 use crate::environment::TestEnvironmentBuilder;
 use crate::test_helpers::run_test_cli;
@@ -17,24 +18,30 @@ fn formats_with_built_in_exec_without_downloading_the_plugin() {
   assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n");
   assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_singular_formatted_text()]);
 }
+#[cfg(unix)]
 #[test]
-fn checks_the_checksum_of_a_reference_it_doesnt_serve() {
-  // the plugin it names is downloaded and fails its checksum check, rather
-  // than being replaced by the built-in exec
-  let environment = TestEnvironmentBuilder::new()
-    .with_default_config(|config_file| {
-      config_file
-        .add_plugin("https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000")
-        .add_config_section("exec", r#"{ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }"#);
-    })
-    .add_remote_file("https://plugins.dprint.dev/exec-0.7.3.json", "{}")
-    .write_file("/file.txt", "text\n")
-    .build();
-  let error = run_test_cli(vec!["fmt", "/file.txt"], &environment).err().unwrap();
-  error.assert_exit_code(12);
-  assert!(error.to_string().contains("The checksum did not match the expected checksum."), "{}", error);
-  assert_eq!(environment.read_file("/file.txt").unwrap(), "text\n");
-  environment.take_stderr_messages();
+fn formats_with_built_in_exec_for_any_release_or_checksum() {
+  // no plugin files are served, so any of these would fail if it tried to
+  // download the plugin it names
+  for reference in [
+    "https://plugins.dprint.dev/exec-0.7.3.json@0000000000000000000000000000000000000000000000000000000000000000",
+    "https://plugins.dprint.dev/exec-0.5.0.json",
+    "https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json",
+    "npm:@dprint/exec@0.8.0/plugin.json@abc",
+    "npm:@dprint/exec",
+  ] {
+    let environment = TestEnvironmentBuilder::new()
+      .with_default_config(|config_file| {
+        config_file
+          .add_plugin(reference)
+          .add_config_section("exec", r#"{ "commands": [{ "command": "tr a-z A-Z", "exts": ["txt"] }] }"#);
+      })
+      .write_file("/file.txt", "text\n")
+      .build();
+    run_test_cli(vec!["fmt", "/file.txt"], &environment).unwrap();
+    assert_eq!(environment.read_file("/file.txt").unwrap(), "TEXT\n", "{}", reference);
+    assert_eq!(environment.take_stdout_messages(), vec![crate::test_helpers::get_singular_formatted_text()]);
+  }
 }
 
 #[cfg(unix)]
