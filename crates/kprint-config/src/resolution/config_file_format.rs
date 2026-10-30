@@ -379,6 +379,20 @@ fn edit_array(array: &mut toml_edit::Array, should_remove: impl Fn(&Value) -> bo
       index += 1;
     }
   }
+  // without a trailing comma, what's between the last element and the `]`
+  // (ex. its newline) is that element's suffix, which would end up before
+  // the comma that now follows it
+  if !to_add.is_empty()
+    && let Some(last) = array.len().checked_sub(1).and_then(|index| array.get_mut(index))
+  {
+    let suffix = last.decor().suffix().and_then(|suffix| suffix.as_str()).unwrap_or("").to_string();
+    last.decor_mut().set_suffix("");
+    // a comment after it is kept after the comma, as what's before the next one
+    let comment = suffix.trim_end();
+    if !comment.trim_start().is_empty() && pending_prefix.is_none() {
+      pending_prefix = Some(format!("{}{}", comment, if is_multiline { "\n  " } else { " " }));
+    }
+  }
   for text in to_add {
     let mut value = Value::from(text.as_str());
     let prefix = pending_prefix
@@ -992,6 +1006,28 @@ plugins = [
 [typescript]
 quoteStyle = "preferSingle"
 "#
+    );
+  }
+
+  #[test]
+  fn adds_plugins_to_toml_after_a_last_element_without_a_comma() {
+    let add = |text: &str| {
+      ConfigFileFormat::Toml
+        .add_plugins(text, &[], &["https://plugins.dprint.dev/kjanat/tombi-0.1.0.wasm".to_string()])
+        .unwrap()
+    };
+    assert_eq!(
+      add("plugins = [\n  \"a.wasm\",\n  \"b.wasm\"\n]\n"),
+      "plugins = [\n  \"a.wasm\",\n  \"b.wasm\",\n  \"https://plugins.dprint.dev/kjanat/tombi-0.1.0.wasm\",\n]\n"
+    );
+    // a comment after it stays after it
+    assert_eq!(
+      add("plugins = [\n  \"a.wasm\",\n  \"b.wasm\" # b\n]\n"),
+      "plugins = [\n  \"a.wasm\",\n  \"b.wasm\", # b\n  \"https://plugins.dprint.dev/kjanat/tombi-0.1.0.wasm\",\n]\n"
+    );
+    assert_eq!(
+      add("plugins = [\"a.wasm\" ]\n"),
+      "plugins = [\"a.wasm\", \"https://plugins.dprint.dev/kjanat/tombi-0.1.0.wasm\"]\n"
     );
   }
 
