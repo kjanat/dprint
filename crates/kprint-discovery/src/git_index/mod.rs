@@ -1141,17 +1141,17 @@ mod test {
   #[cfg(unix)] // a real git with unix sockets and sh hooks
   impl RealRepo {
     /// `None` without a git CLI.
-    fn new(index_version: &str) -> Option<Self> {
+    fn new(index_version: &str, ignore_case: bool) -> Option<Self> {
       std::process::Command::new("git").arg("--version").output().ok()?;
       let environment = RealEnvironment::new(crate::environment::HeadlessServices, "test").unwrap();
       let dir = tempfile::tempdir().unwrap();
       let root = environment.canonicalize(dir.path()).unwrap().into_path_buf();
       let repo = RealRepo { _dir: dir, root, environment };
       repo.git(&["init", "-q"]);
-      // git turns it on for a case insensitive file system (ex. macOS'),
-      // where dprint doesn't use the index, and no path here differs only by
-      // case
-      repo.git(&["config", "core.ignoreCase", "false"]);
+      // rather than what git chose for the file system (on for a case
+      // insensitive one, ex. macOS'), so both are tested everywhere. No path
+      // here differs from another only by case
+      repo.git(&["config", "core.ignoreCase", if ignore_case { "true" } else { "false" }]);
       let hook = repo.root.join(".git").join("fsmonitor-hook");
       repo.environment.write_file(&hook, "printf 'builtin:dprint-test:1\\0/'\n").unwrap();
       repo.git(&["config", "core.untrackedCache", "true"]);
@@ -1267,7 +1267,7 @@ mod test {
   #[test]
   fn reads_a_real_git_index() {
     for index_version in ["2", "4"] {
-      let Some(repo) = RealRepo::new(index_version) else {
+      let Some(repo) = RealRepo::new(index_version, false) else {
         return;
       };
       for (path, text) in [
@@ -1309,7 +1309,7 @@ mod test {
   #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   fn matches_tracked_ignored_files_and_configs() {
-    let Some(repo) = RealRepo::new("2") else {
+    let Some(repo) = RealRepo::new("2", false) else {
       return;
     };
     for path in [
@@ -1409,6 +1409,10 @@ mod test {
     "node/",
     "src/*/",
     "*/deep",
+    // only matching ignoring case
+    "FOO",
+    "LOGS/",
+    "*.TXT",
   ];
 
   #[cfg(unix)] // a real git with unix sockets and sh hooks
@@ -1463,8 +1467,8 @@ mod test {
   /// Builds a random repository, runs `git status`, changes files, and compares
   /// the walk and the index scan with `git ls-files`.
   #[cfg(unix)] // a real git with unix sockets and sh hooks
-  fn check_against_git(seed: u64) {
-    let Some(repo) = RealRepo::new(if seed.is_multiple_of(2) { "2" } else { "4" }) else {
+  fn check_against_git(seed: u64, ignore_case: bool) {
+    let Some(repo) = RealRepo::new(if seed.is_multiple_of(2) { "2" } else { "4" }, ignore_case) else {
       return;
     };
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -1517,15 +1521,29 @@ mod test {
       .filter_map(|path| repo.environment.read_file(repo.root.join(path)).ok().map(|text| format!("{path}:\n{text}")))
       .collect::<Vec<_>>()
       .join("\n");
-    assert_eq!(walked, expected, "seed {seed}: the walk differs from git\n{gitignores}");
-    assert_eq!(scanned, expected, "seed {seed}: the index scan differs from git\n{gitignores}");
+    assert_eq!(
+      walked, expected,
+      "seed {seed} (ignoring case: {ignore_case}): the walk differs from git\n{gitignores}"
+    );
+    assert_eq!(
+      scanned, expected,
+      "seed {seed} (ignoring case: {ignore_case}): the index scan differs from git\n{gitignores}"
+    );
   }
 
   #[cfg(unix)] // a real git with unix sockets and sh hooks
   #[test]
   fn matches_git_ls_files() {
     for seed in 1..=40 {
-      check_against_git(seed);
+      check_against_git(seed, false);
+    }
+  }
+
+  #[cfg(unix)] // a real git with unix sockets and sh hooks
+  #[test]
+  fn matches_git_ls_files_ignoring_case() {
+    for seed in 1..=40 {
+      check_against_git(seed, true);
     }
   }
 
@@ -1535,7 +1553,7 @@ mod test {
   #[ignore = "creates thousands of git repositories"]
   fn matches_git_ls_files_in_many_repositories() {
     for seed in 41..=3000 {
-      check_against_git(seed);
+      check_against_git(seed, seed.is_multiple_of(3));
     }
   }
 
@@ -1574,7 +1592,7 @@ mod test {
   #[test]
   #[ignore = "creates a repository with 110000 files"]
   fn compares_speed_with_git() {
-    let Some(repo) = RealRepo::new("4") else {
+    let Some(repo) = RealRepo::new("4", false) else {
       return;
     };
     repo.git(&["config", "core.fsmonitor", "true"]);
