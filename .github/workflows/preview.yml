@@ -43,7 +43,7 @@ jobs:
             name="pr-${PR_NUMBER}"
           else
             # a tag can't have a slash, and the version only has [0-9A-Za-z-] identifiers
-            name="branch-$(sed 's/[^[:alnum:]-]/-/g' <<< "${GITHUB_REF_NAME}")"
+            name="branch-${GITHUB_REF_NAME//[^[:alnum:]-]/-}"
           fi
           version="${base}.${name}.g${sha:0:7}"
           # the platforms npm and Docker previews are for, without their tests,
