@@ -49,6 +49,7 @@ use crate::plugins::InitializedPluginFormatRequest;
 use crate::plugins::Plugin;
 use crate::plugins::PluginResolutionCache;
 use crate::plugins::implementations::wasm::create_wasm_plugin_instance;
+use crate::utils::thread_cpu_time;
 
 /// Loads a module of a plugin.
 pub type LoadModule<T> = Box<dyn Fn() -> LocalBoxFuture<'static, Result<T>>>;
@@ -612,6 +613,10 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
           }
         };
         let start = Instant::now();
+        // the work interpreting takes, which compiling is weighed against,
+        // rather than how long it took, which includes waiting for a CPU
+        // (ex. on a busy machine) and for the other plugins it asks to format
+        let start_cpu = thread_cpu_time();
         let host_format_start = host_format_nanos.load(Ordering::Relaxed);
         let result = instance.format_text(
           &request.file_path,
@@ -622,10 +627,16 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
           request.token.clone(),
         );
         if let Some(interpreted) = &interpreted {
-          let host_format = host_format_nanos.load(Ordering::Relaxed) - host_format_start;
+          let nanos = match start_cpu.zip(thread_cpu_time()) {
+            Some((start_cpu, end_cpu)) => end_cpu.saturating_sub(start_cpu).as_nanos() as u64,
+            None => {
+              let host_format = host_format_nanos.load(Ordering::Relaxed) - host_format_start;
+              (start.elapsed().as_nanos() as u64).saturating_sub(host_format)
+            }
+          };
           interpreted.lock().add(FormatRate {
             bytes: request.file_bytes.len() as u64,
-            nanos: (start.elapsed().as_nanos() as u64).saturating_sub(host_format),
+            nanos,
           });
         }
         if response.send(result).is_err() {

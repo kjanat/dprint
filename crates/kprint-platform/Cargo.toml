@@ -43,7 +43,11 @@ pretty_assertions.workspace = true
 sys_traits                  = { workspace = true, features = ["memory"] }
 tempfile.workspace          = true
 
+[target."cfg(unix)".dependencies]
+# the thread CPU time (clock_gettime)
+libc.workspace = true
+
 [target."cfg(windows)".dependencies]
 # the git IPC client (named pipes)
-winapi           = { workspace = true, features = ["ioapiset", "namedpipeapi", "winerror", "winnt"] }
+winapi           = { workspace = true, features = ["ioapiset", "namedpipeapi", "processthreadsapi", "winerror", "winnt"] }
 winreg.workspace = true

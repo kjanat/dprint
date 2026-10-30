@@ -21,6 +21,7 @@ mod resolve_url_or_file_path;
 mod shebang;
 mod stdin_reader;
 mod sync;
+mod thread_cpu_time;
 mod unsync;
 mod update_checker;
 
@@ -46,6 +47,7 @@ pub use resolve_url_or_file_path::*;
 pub use shebang::*;
 pub use stdin_reader::*;
 pub use sync::*;
+pub use thread_cpu_time::*;
 pub use unsync::*;
 pub use update_checker::*;
 

@@ -1635,6 +1635,7 @@ dependencies = [
  "kprint-host-api",
  "kprint-owned-child",
  "kprint-test-support",
+ "libc",
  "once_cell",
  "parking_lot",
  "pretty_assertions",
