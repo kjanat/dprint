@@ -12,6 +12,7 @@ use kprint_config::plugin_config_file::select;
 use kprint_configuration::ConfigKeyMap;
 use kprint_configuration::ConfigKeyValue;
 use kprint_plugin_types::PluginInfo;
+use serde_json::Value as JsonValue;
 
 use crate::configuration::ConfigMap;
 use crate::configuration::ConfigMapValue;
@@ -86,51 +87,57 @@ pub fn resolve_plugin_config_file(
     }
     return Ok(properties);
   };
-  let reference = match config_file {
+  let read = |reference: &ConfigFileReference, files_read: &mut Vec<PluginConfigFileState>| -> Result<Option<JsonValue>> {
+    let file_path = base_dir.join(&reference.path);
+    if !environment.path_is_file(&file_path) {
+      // one that's made later is passed then
+      files_read.push(PluginConfigFileState { path: file_path, text: None });
+      return Ok(None);
+    }
+    let text = environment
+      .read_file(&file_path)
+      .with_context(|| format!("Failed reading {}.", file_path.display()))?;
+    files_read.push(PluginConfigFileState {
+      path: file_path.clone(),
+      text: Some(text.clone()),
+    });
+    parse_config_file(&file_path, &text).map(Some)
+  };
+  let found = match config_file {
     Some(PluginConfigFile::Path(text)) => {
       let reference = ConfigFileReference::parse(&text).with_context(|| format!("{}.{}", plugin_info.config_key, CONFIG_FILE_PROPERTY))?;
-      if !environment.path_is_file(base_dir.join(&reference.path)) {
+      let Some(content) = read(&reference, files_read)? else {
         bail!(
           "{}.{}: Could not find {}.",
           plugin_info.config_key,
           CONFIG_FILE_PROPERTY,
           base_dir.join(&reference.path).display()
         );
-      }
-      Some(reference)
+      };
+      let part = select(&content, &reference)?.clone();
+      Some((reference, part))
     }
     Some(PluginConfigFile::Disabled) => None,
     None => {
-      let found = default_files.iter().find(|path| {
-        let exists = environment.path_is_file(base_dir.join(path));
-        if !exists {
-          // one that's made later is passed instead
-          files_read.push(PluginConfigFileState {
-            path: base_dir.join(path),
-            text: None,
-          });
+      let mut found = None;
+      for default_file in default_files {
+        let reference = ConfigFileReference::parse(default_file).with_context(|| format!("{} declares a configuration file of its own", plugin_info.name))?;
+        let Some(content) = read(&reference, files_read)? else {
+          continue;
+        };
+        // a file without the part isn't the plugin's (ex. a pyproject.toml
+        // without its [tool.tombi])
+        if let Ok(part) = select(&content, &reference) {
+          found = Some((reference, part.clone()));
+          break;
         }
-        exists
-      });
-      found.map(|path| ConfigFileReference {
-        path: path.clone(),
-        keys: Vec::new(),
-      })
+      }
+      found
     }
   };
-  let Some(reference) = reference else {
+  let Some((reference, content)) = found else {
     return Ok(properties);
   };
-  let file_path = base_dir.join(&reference.path);
-  let text = environment
-    .read_file(&file_path)
-    .with_context(|| format!("Failed reading {}.", file_path.display()))?;
-  files_read.push(PluginConfigFileState {
-    path: file_path.clone(),
-    text: Some(text.clone()),
-  });
-  let content = parse_config_file(&file_path, &text)?;
-  let content = select(&content, &reference)?;
   properties.insert(
     CONFIG_FILE_CONTENT_PROPERTY.to_string(),
     ConfigKeyValue::Object(ConfigKeyMap::from([
@@ -311,6 +318,40 @@ line-width = 100
     );
     assert!(error("tombi.toml").starts_with("Failed parsing"));
     assert!(error("tombi.toml#").starts_with("toml.configFile"));
+  }
+
+  #[test]
+  fn skips_a_declared_config_file_without_the_part_it_names() {
+    let environment = crate::environment::TestEnvironment::new();
+    write(
+      &environment,
+      "/project/pyproject.toml",
+      "[project]
+name = \"x\"
+",
+    );
+    let info = tombi_info(Some(vec!["pyproject.toml#tool.tombi"]));
+    let mut files_read = Vec::new();
+    let result = resolve_plugin_config_file(&info, None, properties(&[]), Path::new("/project"), &environment, &mut files_read).unwrap();
+    assert_eq!(result, properties(&[]));
+    // until it has it
+    assert!(files_read[0].is_current(&environment));
+    write(
+      &environment,
+      "/project/pyproject.toml",
+      "[tool.tombi.format.rules]
+line-width = 100
+",
+    );
+    assert!(!files_read[0].is_current(&environment));
+    let result = resolve_plugin_config_file(&info, None, properties(&[]), Path::new("/project"), &environment, &mut Vec::new()).unwrap();
+    assert_eq!(
+      config_file_content(&result),
+      Some((
+        "pyproject.toml".to_string(),
+        serde_json::json!({ "format": { "rules": { "line-width": 100 } } })
+      ))
+    );
   }
 
   #[test]
