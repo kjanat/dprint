@@ -44,9 +44,11 @@ jobs:
 
       - uses: dsherret/rust-toolchain-file@3551321aa44dd44a0393eb3b6bdfbc5d25ecf621 # v1
         if: matrix.build != 'freebsd-vm'
+      # a cache saved for a tag is only restored for that tag, so a release
+      # would just push the caches branches restore out of the 10 GB limit
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: matrix.build != 'freebsd-vm'
-        with: { key: "${{ matrix.target }}" }
+        with: { key: "${{ matrix.target }}", save-if: "${{ !startsWith(github.ref, 'refs/tags/') }}" }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         if: matrix.build == 'zigbuild'
         with: { version: 0.15.1 }
