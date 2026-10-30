@@ -3,7 +3,7 @@
 [alias]
 build-dprint = "build -p kprint --release --bin dprint"
 lint         = "clippy --workspace --all-features --all-targets"
-run-dprint   = "run -qp dprint --bin dprint --"
+run-dprint   = "run -qp kprint --bin dprint --"
 
 [build]
 rustflags = "-Dwarnings"

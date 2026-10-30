@@ -7,4 +7,4 @@ tombi                                   = "latest"
 
 [wrappers.dprint]
 command = "run"
-args    = ["dprint"]
+args    = ["run-dprint"]
