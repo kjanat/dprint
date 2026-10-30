@@ -320,7 +320,7 @@ function resolveVersion() {
   const version = rootDir
     .join("crates/kprint/Cargo.toml")
     .readTextSync()
-    .match(/version = "(.*?)"/)?.[1];
+    .match(/^version\s*=\s*"(.*?)"/m)?.[1];
   if (version == null) {
     throw new Error("Could not resolve version.");
   }

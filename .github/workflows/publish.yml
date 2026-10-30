@@ -104,8 +104,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+      - name: Install the build's dependencies
+        run: deno install --entrypoint deployment/npm/build.ts
       - name: Build npm packages
-        env: { VERSION: "${{ inputs.version }}" }
+        env: { VERSION: "${{ github.event.release.tag_name || inputs.version }}" }
         run: deno run -A deployment/npm/build.ts ${VERSION:+"${VERSION}"}
       - name: Tar the npm packages (keeps file modes)
         run: tar cf deployment/npm/dist.tar -C deployment/npm --exclude='node_modules' dist
@@ -241,6 +243,8 @@ jobs:
           path: deployment/npm
       - name: Extract the npm packages
         run: tar xf deployment/npm/dist.tar -C deployment/npm
+      - name: Install the build's dependencies
+        run: deno install --entrypoint deployment/npm/build.ts
       - name: Publish to npm
-        env: { VERSION: "${{ inputs.version }}" }
+        env: { VERSION: "${{ github.event.release.tag_name || inputs.version }}" }
         run: deno run -A deployment/npm/build.ts ${VERSION:+"${VERSION}"} --publish-only
