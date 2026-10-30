@@ -301,6 +301,8 @@ mod test {
 
   /// References to the exec plugin in every form they're written in.
   const EXEC_REFERENCES: &[&str] = &[
+    // the built-in by name
+    "exec",
     // npm, with or without a version or the package's file, and with any checksum
     "npm:@dprint/exec@0.7.3/plugin.json",
     "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",

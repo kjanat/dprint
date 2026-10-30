@@ -69,6 +69,14 @@ impl fmt::Display for PluginSourceReference {
 }
 
 pub fn parse_plugin_source_reference(text: &str, base: &PathSource, environment: &impl Environment) -> Result<PluginSourceReference> {
+  // "exec" names the built-in exec, as a reference to the exec plugin
+  // release it reads the configuration of (see `exec::legacy`), rather than
+  // a file called exec next to the configuration file
+  let text = if text == crate::exec::BUILT_IN_REFERENCE_NAME {
+    crate::exec::BUILT_IN_REFERENCE
+  } else {
+    text
+  };
   // intercept npm: specifiers before the general checksum/url parsing
   if text.starts_with("npm:") {
     let parsed = parse_npm_specifier(text)?;

@@ -16,7 +16,7 @@ Plugin that formats code via mostly any formatting CLI found on the host machine
 
 The CLI has exec built in, and formats every reference to this plugin with it rather than downloading anything: any release, the latest one or none in particular, with any checksum, written any way (ex. `npm:@dprint/exec@0.7.3/plugin.json`, `npm:@dprint/exec`, `https://plugins.dprint.dev/exec-0.5.0.json`, `https://plugins.dprint.dev/dprint/dprint-plugin-exec/latest.json`, its GitHub releases or the npm package on jsDelivr or unpkg). So it works on every platform the CLI does (ex. FreeBSD), and `dprint config update` leaves such references alone. The built-in reads the configuration of release 0.7.3. To run the separate plugin process a reference names instead, set `DPRINT_BUILTIN_EXEC=0`.
 
-An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required:
+An `exec` section in your local configuration activates the built-in formatter directly. No entry in `plugins` or download is required. To place it among the plugins, list it as `"exec"`:
 
 ```toml
 [exec]
