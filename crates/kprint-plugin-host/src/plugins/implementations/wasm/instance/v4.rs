@@ -335,7 +335,16 @@ impl<TExports: PluginExports> InitializedWasmPluginInstance for InitializedWasmP
   fn plugin_info(&mut self) -> Result<PluginInfo> {
     let len = self.wasm_functions.get_plugin_info()?;
     let json_bytes = self.receive_bytes(len)?;
-    Ok(serde_json::from_slice(&json_bytes)?)
+    let mut info: PluginInfo = serde_json::from_slice(&json_bytes)?;
+    // a plugin built for dprint's own plugin crates declares its configuration
+    // files with an export of its own, as their plugin info can't have them
+    if info.config_files.is_none()
+      && let Some(len) = self.wasm_functions.get_config_files()?
+    {
+      let json_bytes = self.receive_bytes(len)?;
+      info.config_files = Some(serde_json::from_slice(&json_bytes).context("Failed reading the configuration files the plugin declares.")?);
+    }
+    Ok(info)
   }
 
   fn license_text(&mut self) -> Result<String> {
@@ -428,6 +437,14 @@ impl<TExports: PluginExports> WasmFunctions<TExports> {
   #[inline]
   pub fn get_plugin_info(&mut self) -> Result<usize> {
     self.call_len("get_plugin_info", &[])
+  }
+
+  #[inline]
+  pub fn get_config_files(&mut self) -> Result<Option<usize>> {
+    if !self.exports.has_function("get_config_files") {
+      return Ok(None); // the plugin doesn't read a configuration file of its own
+    }
+    self.call_len("get_config_files", &[]).map(Some)
   }
 
   #[inline]

@@ -303,6 +303,7 @@ mod test {
         help_url: "help".to_string(),
         config_schema_url: "schema".to_string(),
         update_url: None,
+        config_files: None,
       },
       executable_sub_path: None,
       local_stamps: None,

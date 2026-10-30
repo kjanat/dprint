@@ -23,6 +23,16 @@ pub struct PluginInfo {
   /// Generally in the format: `https://plugins.dprint.dev/<org-or-user>/<repo>/latest.json`
   /// For example: <https://plugins.dprint.dev/dprint/dprint-plugin-typescript/latest.json>
   pub update_url: Option<String>,
+  /// Set when the plugin reads a configuration file of its own (ex.
+  /// `tombi.toml`), which dprint parses and passes to it: the paths
+  /// relative to the configuration file's directory to use when its
+  /// `configFile` property doesn't name one, the first that exists.
+  ///
+  /// A Wasm plugin declares them with a `get_config_files` export
+  /// returning a JSON array, so a plugin built for dprint's own plugin
+  /// crates can read one too.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub config_files: Option<Vec<String>>,
 }
 
 /// Message for when a plugin's [`FileMatchingInfo`] can't be deserialized. A

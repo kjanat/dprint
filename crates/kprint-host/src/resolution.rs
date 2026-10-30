@@ -33,6 +33,7 @@ use thiserror::Error;
 
 use crate::PluginNameResolutionMaps;
 use crate::configuration::GlobalConfigDiagnostic;
+use crate::configuration::PluginConfigFileState;
 use crate::configuration::RawPluginConfigOverride;
 use crate::configuration::ResolveConfigError;
 use crate::configuration::ResolvedConfig;
@@ -44,6 +45,7 @@ use crate::configuration::resolve_config_from_args;
 use crate::configuration::resolve_config_from_path_with_bytes;
 use crate::configuration::resolve_descendant_config_from_path_with_bytes;
 use crate::configuration::resolve_global_config_path_and_text;
+use crate::configuration::resolve_plugin_config_file;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::HostEnvironment as Environment;
 use crate::incremental::FileMetadata;
@@ -415,6 +417,9 @@ pub struct PluginsScope<TEnvironment: Environment> {
   pub plugin_name_maps: PluginNameResolutionMaps,
   global_config_diagnostics: Vec<GlobalConfigDiagnostic>,
   cached_editor_file_matcher: RefCell<Option<FileMatcher<TEnvironment>>>,
+  /// The configuration files of their own the plugins were passed, and the
+  /// ones they look for that didn't exist.
+  plugin_config_files: Vec<PluginConfigFileState>,
 }
 
 impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
@@ -434,6 +439,7 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       plugins: plugins.into_iter().map(|p| (p.name().to_string(), p)).collect(),
       global_config_diagnostics,
       cached_editor_file_matcher: Default::default(),
+      plugin_config_files: Vec::new(),
     })
   }
 
@@ -696,6 +702,19 @@ impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
       Ok(if had_change { Some(file_text) } else { None })
     }
     .boxed_local()
+  }
+}
+
+impl<TEnvironment: Environment> PluginsScope<TEnvironment> {
+  fn with_plugin_config_files(mut self, plugin_config_files: Vec<PluginConfigFileState>) -> Self {
+    self.plugin_config_files = plugin_config_files;
+    self
+  }
+
+  /// Whether a configuration file of a plugin's own changed since the
+  /// scope was resolved, so it's resolved again.
+  pub fn plugin_config_files_changed(&self) -> bool {
+    self.plugin_config_files.iter().any(|file| !file.is_current(&self.environment))
   }
 }
 
@@ -1501,6 +1520,7 @@ pub async fn get_plugins_scope_from_args<TEnvironment: Environment>(
       plugins: Default::default(),
       global_config_diagnostics: Default::default(),
       cached_editor_file_matcher: Default::default(),
+      plugin_config_files: Vec::new(),
     }),
   }
 }
@@ -1529,6 +1549,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
 
   // resolve each plugin's configuration
   let mut plugins_with_config = Vec::new();
+  let mut plugin_config_files = Vec::new();
   for plugin in plugins.into_iter() {
     plugins_with_config.push((get_plugin_config_map(&plugin, &mut config_map)?, plugin));
   }
@@ -1552,6 +1573,14 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
         &config.origin.source,
         plugin_resolver,
       )?;
+      let properties = resolve_plugin_config_file(
+        plugin.info(),
+        plugin_config.config_file,
+        plugin_config.properties,
+        config_base_path.as_ref(),
+        &environment,
+        &mut plugin_config_files,
+      )?;
       let next_config_id = plugin_resolver.next_config_id();
       let base_dir = config_base_path.clone();
       Ok(
@@ -1559,7 +1588,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
           let format_config = Arc::new(FormatConfig {
             id: next_config_id,
             global: global_config,
-            plugin: plugin_config.properties,
+            plugin: properties,
             base_dir,
           });
           let resolution = resolve_plugin_config(&plugin, &format_config, &environment).await?;
@@ -1602,7 +1631,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
     }
   }
 
-  Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?)
+  Ok(PluginsScope::new(environment.clone(), plugins, config, global_config_result.diagnostics)?.with_plugin_config_files(plugin_config_files))
 }
 
 /// Gets which files the plugin formats and its resolved configuration. A

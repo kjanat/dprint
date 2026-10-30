@@ -6,6 +6,7 @@ use anyhow::Result;
 use deno_terminal::colors;
 use thiserror::Error;
 
+use crate::PluginConfigFile;
 use crate::environment::CanonicalizedPathBuf;
 use crate::environment::ConfigEnvironment as Environment;
 use crate::options::ConfigOptions;
@@ -491,6 +492,26 @@ fn apply_remote_restrictions(layer: &mut CollectedLayer, resolved_config: &Confi
   // The assumption here is that the user won't be malicious to themselves, so
   // this is only for remote configuration.
   layer.settings.plugins.sources = filter_non_wasm_plugins(plugins, environment); // NEVER REMOVE THIS STATEMENT
+
+  // A plugin's configFile is a file dprint reads on this machine and passes
+  // to the plugin, which remote configuration doesn't choose (it can still
+  // say false, so none is passed).
+  let mut removed_config_file = false;
+  for value in layer.settings.plugins.config.values_mut() {
+    if let ConfigMapValue::PluginConfig(plugin) = value
+      && matches!(plugin.config_file, Some(PluginConfigFile::Path(_)))
+    {
+      plugin.config_file = None;
+      removed_config_file = true;
+    }
+  }
+  if removed_config_file && (layer.origin.is_first_download || layer.origin.source.is_local()) {
+    log_warn!(
+      environment,
+      "{} The 'configFile' property of a plugin is ignored for security reasons on remote configuration.",
+      colors::bold("Note: ")
+    );
+  }
   // =========
 }
 
@@ -691,6 +712,7 @@ mod tests {
               // ...while the inherited value still points at the ancestor's directory
               ("fromAncestor".to_string(), ConfigKeyValue::from_str("/a/value")),
             ]),
+            config_file: None,
           }),
         )])
       );
@@ -715,6 +737,7 @@ mod tests {
         })
         .collect(),
       properties: to_map(properties),
+      config_file: None,
     })
   }
 
@@ -1075,6 +1098,37 @@ lineWidth = 80
   }
 
   #[test]
+  fn ignores_a_plugins_config_file_in_remote_config() {
+    let environment = TestEnvironment::new();
+    environment.add_remote_file(
+      "https://dprint.dev/base.json",
+      r#"{ "toml": { "configFile": "/etc/passwd", "lineWidth": 80 }, "json": { "configFile": false } }"#.as_bytes(),
+    );
+    environment
+      .write_file(
+        "/dprint.json",
+        r#"{ "extends": "https://dprint.dev/base.json", "local": { "configFile": "tombi.toml" } }"#,
+      )
+      .unwrap();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dprint.json", &environment).await.unwrap();
+      let messages = environment.take_stderr_messages();
+      assert_eq!(messages.len(), 1);
+      assert!(messages[0].contains("The 'configFile' property of a plugin is ignored"), "{:?}", messages);
+      let plugin = |key: &str| match &result.plugins.config[key] {
+        ConfigMapValue::PluginConfig(plugin) => plugin.clone(),
+        ConfigMapValue::KeyValue(_) => unreachable!(),
+      };
+      assert_eq!(plugin("toml").config_file, None);
+      assert_eq!(plugin("toml").properties.get("lineWidth"), Some(&ConfigKeyValue::from_i32(80)));
+      // it can still pass none
+      assert_eq!(plugin("json").config_file, Some(PluginConfigFile::Disabled));
+      assert_eq!(plugin("local").config_file, Some(PluginConfigFile::Path("tombi.toml".to_string())));
+    });
+  }
+
+  #[test]
   fn should_error_for_inherit_in_extended_config() {
     let environment = TestEnvironmentBuilder::new()
       .write_file("/a/dprint.json", r#"{ "extends": "../base.json" }"#)
@@ -1320,6 +1374,7 @@ lineWidth = 80
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
               (String::from("other"), ConfigKeyValue::from_str("test")),
             ]),
+            config_file: None,
           }),
         ),
         (
@@ -1330,6 +1385,7 @@ lineWidth = 80
             embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
+            config_file: None,
           }),
         ),
       ]);
@@ -1388,6 +1444,7 @@ lineWidth = 80
           embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(6))]),
+          config_file: None,
         }))
       );
     });
@@ -1536,6 +1593,7 @@ lineWidth = 80
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
               (String::from("other"), ConfigKeyValue::from_str("test")),
             ]),
+            config_file: None,
           }),
         ),
         (
@@ -1546,6 +1604,7 @@ lineWidth = 80
             embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
+            config_file: None,
           }),
         ),
       ]);
@@ -1641,6 +1700,7 @@ lineWidth = 80
               (String::from("prop"), ConfigKeyValue::from_i32(5)),
               (String::from("other"), ConfigKeyValue::from_str("test")),
             ]),
+            config_file: None,
           }),
         ),
         (
@@ -1651,6 +1711,7 @@ lineWidth = 80
             embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([(String::from("prop"), ConfigKeyValue::from_i32(2))]),
+            config_file: None,
           }),
         ),
       ]);
@@ -1932,6 +1993,7 @@ lineWidth = 80
             (String::from("prop"), ConfigKeyValue::from_i32(6)),
             (String::from("other"), ConfigKeyValue::from_str("test")),
           ]),
+          config_file: None,
         }),
       )]);
 
@@ -1979,6 +2041,7 @@ lineWidth = 80
             (String::from("prop"), ConfigKeyValue::from_i32(7)),
             (String::from("other"), ConfigKeyValue::from_str("test")),
           ]),
+          config_file: None,
         }),
       )]);
 
@@ -2024,6 +2087,7 @@ lineWidth = 80
             (String::from("prop"), ConfigKeyValue::from_i32(6)),
             (String::from("other"), ConfigKeyValue::from_str("test")),
           ]),
+          config_file: None,
         }),
       )]);
 
@@ -2073,6 +2137,7 @@ lineWidth = 80
             origin: Default::default(),
           }],
           properties: ConfigKeyMap::new(),
+          config_file: None,
         }),
       )]);
 
@@ -2136,6 +2201,7 @@ lineWidth = 80
             },
           ],
           properties: ConfigKeyMap::new(),
+          config_file: None,
         }),
       )]);
 
@@ -2217,6 +2283,7 @@ lineWidth = 80
           embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
+          config_file: None,
         }),
       )]);
 
@@ -2302,6 +2369,7 @@ lineWidth = 80
           embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
+          config_file: None,
         }),
       )]);
 
@@ -2715,6 +2783,7 @@ lineWidth = 80
                 ("indentWidth".to_string(), ConfigKeyValue::from_i32(4)),
                 ("newLineKind".to_string(), ConfigKeyValue::from_str("crlf")),
               ]),
+              config_file: None,
             }),
           ),
         ]),
@@ -2743,6 +2812,7 @@ lineWidth = 80
             embedded: None,
             overrides: Vec::new(),
             properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))]),
+            config_file: None,
           }),
         )]),
       },
@@ -2788,6 +2858,7 @@ lineWidth = 80
               // ...but inherits values it didn't override
               ("newLineKind".to_string(), ConfigKeyValue::from_str("crlf")),
             ]),
+            config_file: None,
           }),
         ),
         ("lineWidth".to_string(), ConfigMapValue::from_i32(80)),
@@ -2892,6 +2963,7 @@ lineWidth = 80
               embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(indent_width))]),
+              config_file: None,
             }),
           )]),
         },
@@ -4634,6 +4706,7 @@ lineWidth = 80
               embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/test && /dir/other"))]),
+              config_file: None,
             }),
           ),
           (
@@ -4644,6 +4717,7 @@ lineWidth = 80
               embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/origin"))]),
+              config_file: None,
             }),
           ),
           (
@@ -4654,6 +4728,7 @@ lineWidth = 80
               embedded: None,
               overrides: Vec::new(),
               properties: ConfigKeyMap::from([(String::from("value"), ConfigKeyValue::from_str("/dir/final && ${configDir}/escaped"))]),
+              config_file: None,
             }),
           )
         ])

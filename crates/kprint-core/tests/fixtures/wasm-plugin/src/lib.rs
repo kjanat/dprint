@@ -35,6 +35,7 @@ impl api::SyncPluginHandler<Configuration> for Plugin {
       help_url: String::new(),
       config_schema_url: String::new(),
       update_url: None,
+      config_files: None,
     }
   }
 

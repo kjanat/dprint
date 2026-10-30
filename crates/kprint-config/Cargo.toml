@@ -19,7 +19,7 @@ kprint-host-api      = { workspace = true }
 kprint-plugin-types  = { workspace = true }
 thiserror            = { workspace = true }
 toml_edit            = { workspace = true }
-jsonc-parser         = { workspace = true, features = ["cst", "preserve_order"] }
+jsonc-parser         = { workspace = true, features = ["cst", "preserve_order", "serde"] }
 json-schema-sort     = { workspace = true }
 deno_terminal        = { workspace = true }
 kprint-discovery     = { workspace = true }
@@ -31,6 +31,7 @@ percent-encoding     = { workspace = true, optional = false }
 schemars             = { workspace = true, features = ["indexmap2", "preserve_order"], optional = false }
 serde                = { workspace = true }
 serde_json           = { workspace = true }
+serde_norway         = { workspace = true }
 serde_path_to_error  = { workspace = true }
 url                  = { workspace = true, optional = false }
 

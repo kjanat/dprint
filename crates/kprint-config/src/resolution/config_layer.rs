@@ -337,6 +337,7 @@ mod test {
             ConfigKeyValue::Array(vec![ConfigKeyValue::from_i32(1), ConfigKeyValue::Null]),
           ),
         ]),
+        config_file: None,
       }),
     );
     assert_eq!(
@@ -360,6 +361,7 @@ mod test {
           embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(40))]),
+          config_file: None,
         }),
       ),
       (
@@ -370,6 +372,7 @@ mod test {
           embedded: None,
           overrides: Vec::new(),
           properties: ConfigKeyMap::new(),
+          config_file: None,
         }),
       ),
     ]);
@@ -400,6 +403,7 @@ mod test {
           origin: Default::default(),
         }],
         properties: ConfigKeyMap::from([("lineWidth".to_string(), ConfigKeyValue::from_i32(80))]),
+        config_file: None,
       }),
     )]);
     assert_eq!(
@@ -431,6 +435,7 @@ mod test {
           },
         ],
         properties: ConfigKeyMap::new(),
+        config_file: None,
       }),
     )]);
     assert_eq!(

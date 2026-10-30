@@ -69,6 +69,25 @@
               "type": "string"
             }
           }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": true

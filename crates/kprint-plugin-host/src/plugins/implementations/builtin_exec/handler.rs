@@ -85,6 +85,7 @@ impl InProcessHandler for ExecHandler {
       config_schema_url: String::new(),
       // it's updated by upgrading dprint
       update_url: None,
+      config_files: None,
     }
   }
 

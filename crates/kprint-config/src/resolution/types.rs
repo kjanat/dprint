@@ -1,3 +1,4 @@
+use crate::PluginConfigFile;
 use crate::PluginOverride;
 use crate::PluginTable;
 use indexmap::IndexMap;
@@ -47,6 +48,9 @@ pub struct RawPluginConfig {
   pub embedded: Option<IndexMap<String, Vec<String>>>,
   pub locked: bool,
   pub overrides: Vec<RawPluginConfigOverride>,
+  /// The configuration file of its own the plugin is passed, if not the
+  /// first of those it looks for.
+  pub config_file: Option<PluginConfigFile>,
   pub properties: ConfigKeyMap,
 }
 
@@ -65,6 +69,7 @@ impl From<PluginTable> for RawPluginConfig {
         .into_iter()
         .map(Into::into)
         .collect(),
+      config_file: table.config_file,
       properties: table.plugin,
     }
   }

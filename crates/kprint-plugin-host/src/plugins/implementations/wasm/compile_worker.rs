@@ -1080,6 +1080,7 @@ mod test {
       help_url: "https://dprint.dev/plugins/test".to_string(),
       config_schema_url: String::new(),
       update_url: None,
+      config_files: None,
     }
   }
 

@@ -94,6 +94,7 @@ impl<TEnvironment: Environment> HostSession<TEnvironment> {
     self.plugin_resolver.release_queued_configs().await;
     if let Some(existing_scope) = cell.as_ref()
       && existing_scope.config.as_deref() == Some(&config)
+      && !existing_scope.plugin_config_files_changed()
     {
       return Ok(existing_scope.clone());
     }

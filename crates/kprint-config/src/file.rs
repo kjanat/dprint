@@ -257,10 +257,81 @@ pub struct PluginTable {
   /// The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. "cs": ["exec"]), in order. An empty array leaves that code as it is.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub embedded: Option<Embedded>,
+  /// For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by "#" and the dotted path of the part to pass (ex. "pyproject.toml#tool.tombi"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.
+  #[serde(rename = "configFile", skip_serializing_if = "Option::is_none")]
+  pub config_file: Option<PluginConfigFile>,
   /// The plugin's own configuration, which its schema describes.
   #[serde(flatten)]
   #[cfg_attr(feature = "schema", schemars(with = "PluginProperties"))]
   pub plugin: ConfigKeyMap,
+}
+
+/// The configuration file of its own a plugin is passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginConfigFile {
+  /// The file, ex. "tombi.toml" or "pyproject.toml#tool.tombi".
+  Path(String),
+  /// None, rather than one the plugin looks for (`false`).
+  Disabled,
+}
+
+impl Serialize for PluginConfigFile {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    match self {
+      PluginConfigFile::Path(path) => serializer.serialize_str(path),
+      PluginConfigFile::Disabled => serializer.serialize_bool(false),
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for PluginConfigFile {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct PluginConfigFileVisitor;
+
+    impl Visitor<'_> for PluginConfigFileVisitor {
+      type Value = PluginConfigFile;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a file path (ex. \"tombi.toml\") or false")
+      }
+
+      fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        if value.is_empty() {
+          return Err(E::invalid_value(serde::de::Unexpected::Str(value), &self));
+        }
+        Ok(PluginConfigFile::Path(value.to_string()))
+      }
+
+      fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        if value {
+          return Err(E::invalid_value(serde::de::Unexpected::Bool(true), &self));
+        }
+        Ok(PluginConfigFile::Disabled)
+      }
+    }
+
+    deserializer.deserialize_any(PluginConfigFileVisitor)
+  }
+}
+
+#[cfg(feature = "schema")]
+impl JsonSchema for PluginConfigFile {
+  fn schema_name() -> std::borrow::Cow<'static, str> {
+    "pluginConfigFile".into()
+  }
+
+  fn inline_schema() -> bool {
+    true
+  }
+
+  fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "const": false },
+      ]
+    })
+  }
 }
 
 /// What a plugin's own properties are is the plugin's schema's to say.
@@ -598,6 +669,41 @@ mod test {
         ("#!/usr/bin/env node".to_string(), "mjs".to_string())
       ]
     );
+  }
+
+  #[test]
+  fn reads_a_plugins_config_file() {
+    let file: ConfigFile = from_json(json!({
+      "toml": { "configFile": "pyproject.toml#tool.tombi", "lineWidth": 80 },
+      "other": { "configFile": false },
+    }))
+    .unwrap();
+    let toml = &file.plugin_tables["toml"];
+    assert_eq!(toml.config_file, Some(PluginConfigFile::Path("pyproject.toml#tool.tombi".to_string())));
+    // it isn't one of the plugin's own properties
+    assert_eq!(toml.plugin.keys().collect::<Vec<_>>(), ["lineWidth"]);
+    assert_eq!(file.plugin_tables["other"].config_file, Some(PluginConfigFile::Disabled));
+    assert_eq!(serde_json::to_value(&file.plugin_tables["other"]).unwrap(), json!({ "configFile": false }));
+
+    for (value, message) in [
+      (
+        json!(true),
+        "toml.configFile: invalid value: boolean `true`, expected a file path (ex. \"tombi.toml\") or false",
+      ),
+      (
+        json!(""),
+        "toml.configFile: invalid value: string \"\", expected a file path (ex. \"tombi.toml\") or false",
+      ),
+      (
+        json!(1),
+        "toml.configFile: invalid type: integer `1`, expected a file path (ex. \"tombi.toml\") or false",
+      ),
+    ] {
+      assert_eq!(
+        from_json::<ConfigFile>(json!({ "toml": { "configFile": value } })).unwrap_err().to_string(),
+        message
+      );
+    }
   }
 
   #[test]

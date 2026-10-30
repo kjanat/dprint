@@ -16,6 +16,7 @@
 //! keeps its `$id` and its references, as JSON schema 2020-12 bundles them.
 
 pub mod file;
+pub mod plugin_config_file;
 mod values;
 
 #[cfg(feature = "schema")]
@@ -36,6 +37,7 @@ pub use file::NewLineKind;
 pub use file::OverrideFiles;
 pub use file::OverrideProperties;
 pub use file::Overrides;
+pub use file::PluginConfigFile;
 pub use file::PluginOverride;
 pub use file::PluginTable;
 pub use file::ROOT_SCHEMA_ID;
