@@ -24,6 +24,12 @@ pub fn output_version<TEnvironment: Environment>(environment: &TEnvironment) -> 
   Ok(())
 }
 
+/// Outputs a subcommand's help (ex. `kprint fmt --help`).
+pub fn output_subcommand_help<TEnvironment: Environment>(environment: &TEnvironment, help_text: &str) -> Result<()> {
+  log_stdout_info!(environment, help_text.trim_end());
+  Ok(())
+}
+
 pub async fn output_help<TEnvironment: Environment>(
   args: &CliArgs,
   environment: &TEnvironment,

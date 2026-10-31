@@ -23,6 +23,8 @@ jobs:
           - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # v0.28.0
       - name: Do it all
         working-directory: website
+        # runner would also pick cargo for the repository's Cargo.toml
+        env: { RUNNER_PM: deno }
         run: runner install -s playground:build playground:test build:ci
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5

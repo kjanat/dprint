@@ -126,6 +126,8 @@ pub enum SubCommand {
   Version,
   License,
   Help(String),
+  /// The help of a subcommand (ex. `kprint fmt --help`), which is only output.
+  SubcommandHelp(String),
   EditorInfo,
   EditorService(EditorServiceSubCommand),
   Lsp,
@@ -171,6 +173,7 @@ impl SubCommand {
       | SubCommand::Version
       | SubCommand::License
       | SubCommand::Help(_)
+      | SubCommand::SubcommandHelp(_)
       | SubCommand::Lsp
       | SubCommand::EditorInfo
       | SubCommand::EditorService(_)
@@ -353,7 +356,14 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
   }
 
   let cli_parser = create_cli_parser(CliArgParserKind::Default);
-  let matches = cli_parser.try_get_matches_from(&args)?;
+  let matches = match cli_parser.try_get_matches_from(&args) {
+    Ok(matches) => matches,
+    // asking for a subcommand's help isn't an error
+    Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
+      return Ok(CliArgs::new_with_sub_command(SubCommand::SubcommandHelp(err.render().to_string())));
+    }
+    Err(err) => return Err(err.into()),
+  };
 
   let mut is_global_config = false;
   let mut config_update_recursive = false;
@@ -2050,6 +2060,15 @@ mod test {
     match args.sub_command {
       SubCommand::Fmt(cmd) => Ok(cmd),
       _ => unreachable!(),
+    }
+  }
+
+  #[test]
+  fn subcommand_help_is_not_an_error() {
+    let args = test_args(vec!["fmt", "--help"]).unwrap();
+    match args.sub_command {
+      SubCommand::SubcommandHelp(text) => assert!(text.contains("kprint fmt"), "{text}"),
+      _ => panic!("not the subcommand's help"),
     }
   }
 
