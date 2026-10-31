@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "kprint"
-version = "0.60.5-kjanat"
+version = "0.60.6-kjanat"
 dependencies = [
  "anyhow",
  "clap",
