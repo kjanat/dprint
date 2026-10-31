@@ -94,7 +94,7 @@ jobs:
         working-directory: deployment/npm/dist
         run: |
           chmod +x @kprint/*/dprint
-          npx --yes pkg-pr-new@0.0.93 publish --comment=update --bin ./kprint ./@kprint/*
+          npx --yes pkg-pr-new@0.0.93 publish --comment=update --bin ./kprint ./fmt ./@kprint/*
 
   docker:
     name: Docker

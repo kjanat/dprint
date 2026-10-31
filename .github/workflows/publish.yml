@@ -51,7 +51,7 @@ jobs:
             sha="$(git rev-parse HEAD)"
             version="${base}.nightly.$(date -u +%Y%m%d).g${sha:0:7}"
             # the last nightly is of this commit, so there's nothing new
-            last="$(npm view kprint@nightly version 2> /dev/null || true)"
+            last="$(npm view @kprint/kprint@nightly version 2> /dev/null || true)"
             publish=true
             [[ "${last}" == *".g${sha:0:7}" ]] && publish=false
             {
@@ -241,7 +241,7 @@ jobs:
           npm config set //localhost:4873/:_authToken dummy-token
       - name: Publish packages to Verdaccio
         run: |
-          for package in deployment/npm/dist/@kprint/*/ deployment/npm/dist/kprint/; do
+          for package in deployment/npm/dist/@kprint/*/ deployment/npm/dist/kprint/ deployment/npm/dist/fmt/; do
             npm publish "${package}" --registry http://localhost:4873/
           done
           version="$(node -p "require('./deployment/npm/dist/kprint/package.json').version")"
@@ -253,30 +253,30 @@ jobs:
         run: |
           npm init -y
           EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
-          npm install "kprint@${KPRINT_VERSION}"
+          npm install "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$(npx "${command}" -v)"
             echo "${command}: ${ACTUAL}"
-            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" || "${ACTUAL}" = "${EXPECTED_VERSION}-kjanat" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
           done
       - name: Test kprint via bin.cjs fallback
         working-directory: ${{ runner.temp }}/npm-test
-        run: node node_modules/kprint/bin.cjs -v
+        run: node node_modules/@kprint/kprint/bin.cjs -v
       - name: Test kprint via simulated readonly file system
         working-directory: ${{ runner.temp }}/readonly-test
         run: |
           npm init -y
-          npm install "kprint@${KPRINT_VERSION}"
-          rm -f node_modules/kprint/dprint*
-          DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/kprint/bin.cjs -v
+          npm install "@kprint/kprint@${KPRINT_VERSION}"
+          rm -f node_modules/@kprint/kprint/dprint*
+          DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/@kprint/kprint/bin.cjs -v
       - name: Test npm global install kprint
         run: |
           EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
-          npm install -g "kprint@${KPRINT_VERSION}"
+          npm install -g "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"
             echo "${command}: ${ACTUAL}"
-            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" || "${ACTUAL}" = "${EXPECTED_VERSION}-kjanat" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
             # verify the global bin entry points directly at the native binary, not bin.cjs
             if [[ "${RUNNER_OS}" = "Windows" ]]; then
               CMD_FILE="$(npm prefix -g)/${command}.cmd"
@@ -290,17 +290,17 @@ jobs:
               echo "${command} symlink correctly points to native binary"
             fi
           done
-          npm uninstall -g kprint
+          npm uninstall -g @kprint/kprint
       - name: Test npm global install kprint (--ignore-scripts)
         run: |
           EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
-          npm install -g --ignore-scripts "kprint@${KPRINT_VERSION}"
+          npm install -g --ignore-scripts "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"
             echo "${command}: ${ACTUAL}"
-            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
+            [[ "${ACTUAL}" = "${EXPECTED_VERSION}" || "${ACTUAL}" = "${EXPECTED_VERSION}-kjanat" ]] || { echo "Version mismatch: expected '${EXPECTED_VERSION}', got '${ACTUAL}'"; exit 1; }
           done
-          npm uninstall -g kprint
+          npm uninstall -g @kprint/kprint
   publish-npm:
     name: npm publish
     needs:

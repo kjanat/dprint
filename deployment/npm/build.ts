@@ -3,6 +3,7 @@ import $ from "@david/dax";
 import { parseArgs } from "@std/cli/parse-args";
 // @ts-types="@types/decompress"
 import decompress from "decompress";
+import { mainPackage, platformDir, platformPackage, scope } from "./names.ts";
 
 interface Package {
   zipFileName: string;
@@ -16,7 +17,8 @@ const args = parseArgs(Deno.args, {
   // `zips`: a directory with the release zips (ex. a CI run's artifacts) to
   // package instead of the release's. Targets without a zip there aren't
   // packaged. `tag`: the npm dist-tag to publish to (ex. `nightly`).
-  string: ["zips", "tag"],
+  // `out`: the directory to build in, instead of `dist`.
+  string: ["zips", "tag", "out"],
 });
 const allPackages: Package[] = [
   {
@@ -113,22 +115,64 @@ const allPackages: Package[] = [
   },
 ];
 
-const markdownText = `# kprint
+const fmtPackage = "@kjanat/fmt";
+// fmt.ts's configuration without one
+const fmtDefaultConfig = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
-npm CLI distribution for [dprint](https://dprint.kjanat.dev)—a pluggable and configurable code formatting platform.
+const markdownText = `# ${mainPackage}
+
+[kprint](https://dprint.kjanat.dev) is a pluggable and configurable code
+formatter written in Rust, forked from dprint. It has formatters built in (ex.
+exec) and runs dprint's plugins.
+
+## Install
+
+\`\`\`sh
+npm install --global ${mainPackage}
+\`\`\`
+
+This installs the \`kprint\` command, also as \`dprint\` for tools
+that call that. npm only downloads the binary for your platform, from its
+\`${mainPackage}-<platform>\` package.
+
+## Use
+
+\`\`\`sh
+kprint init   # create a configuration file
+kprint fmt    # format the files
+kprint check  # check they're formatted
+\`\`\`
+
+Or in a project, as a dev dependency:
+
+\`\`\`sh
+npm install --save-dev ${mainPackage}
+npx kprint fmt
+\`\`\`
+
+[${fmtPackage}](https://www.npmjs.com/package/${fmtPackage}) runs \`kprint fmt\` as \`fmt\`.
+
+See [dprint.kjanat.dev](https://dprint.kjanat.dev) for the configuration and the
+plugins, and [the repository](https://github.com/kjanat/dprint) for its source.
 `;
 
 const currentDir = $.path(import.meta.url).parentOrThrow();
 const rootDir = currentDir.parentOrThrow().parentOrThrow();
-const outputDir = currentDir.join("./dist");
-const scopeDir = outputDir.join("@kprint");
+const outputDir = args.out == null ? currentDir.join("./dist") : $.path(args.out).resolve();
+const scopeDir = outputDir.join(scope);
 const dprintDir = outputDir.join("kprint");
+const fmtDir = outputDir.join("fmt");
+// the release tag (ex. `0.60.5-kjanat`), which the zips are downloaded from
 const version = resolveVersion();
+// The npm version: the tag without the fork's `-kjanat`, which tells its
+// releases from dprint's but makes every one a prerelease to npm. A nightly or
+// preview version (ex. `0.60.6-nightly.20261031.g1234567`) is kept.
+const npmVersion = version.replace(/-kjanat$/, "");
 
 const zipsDir = args.zips == null ? undefined : $.path(args.zips);
 // what was built, when only publishing it
 const packages = args["publish-only"]
-  ? allPackages.filter((pkg) => scopeDir.join(getPackageNameNoScope(pkg)).existsSync())
+  ? allPackages.filter((pkg) => scopeDir.join(platformDir(getPackageNameNoScope(pkg))).existsSync())
   : zipsDir == null
   ? allPackages
   : allPackages.filter((pkg) => zipsDir.join(pkg.zipFileName).existsSync());
@@ -136,7 +180,7 @@ if (packages.length === 0) {
   throw new Error(args["publish-only"] ? `No packages in ${scopeDir}.` : `No release zips in ${zipsDir}.`);
 }
 
-$.logStep(`Publishing ${version}...`);
+$.logStep(`Publishing ${npmVersion}...`);
 
 if (!args["publish-only"]) {
   // Resolve the permanent repository ID so release URLs and metadata survive renames.
@@ -149,30 +193,30 @@ if (!args["publish-only"]) {
 
   // setup dprint packages
   {
-    $.logStep(`Setting up kprint ${version}...`);
+    $.logStep(`Setting up ${mainPackage} ${npmVersion}...`);
     const pkgJson = {
-      name: "kprint",
-      version: version,
-      description: "Pluggable and configurable code formatting platform written in Rust.",
+      name: mainPackage,
+      version: npmVersion,
+      description: "kprint: a pluggable and configurable code formatter written in Rust, forked from dprint.",
       bin: { kprint: "bin.cjs", dprint: "bin.cjs" },
       repository: {
         type: "git",
         url: `git+${repositoryUrl}.git`,
       },
-      keywords: ["code", "formatter"],
+      keywords: ["dprint", "formatter", "format", "code", "cli"],
       author: "Kaj Kowalski",
       license: "MIT",
       bugs: {
         url: `${repositoryUrl}/issues`,
       },
-      homepage: `${repositoryUrl}#readme`,
+      homepage: "https://dprint.kjanat.dev",
       // for yarn berry (https://github.com/dprint/dprint/issues/686)
       preferUnplugged: true,
       scripts: {
         postinstall: "node ./install.cjs",
       },
       optionalDependencies: Object.fromEntries(
-        packages.map((pkg) => [`@kprint/${getPackageNameNoScope(pkg)}`, version]),
+        packages.map((pkg) => [getPackageName(pkg), npmVersion]),
       ),
     };
     for (const entry of ["bin", "install"]) {
@@ -188,8 +232,8 @@ if (!args["publish-only"]) {
     const executableHashes: Record<string, string> = {};
     for (const pkg of packages) {
       const pkgName = getPackageNameNoScope(pkg);
-      $.logStep(`Setting up @kprint/${pkgName}...`);
-      const pkgDir = scopeDir.join(pkgName);
+      $.logStep(`Setting up ${getPackageName(pkg)}...`);
+      const pkgDir = scopeDir.join(platformDir(pkgName));
       const zipPath = pkgDir.join("output.zip");
 
       await $`mkdir -p ${pkgDir}`;
@@ -215,12 +259,12 @@ if (!args["publish-only"]) {
       pkgDir
         .join("README.md")
         .writeTextSync(
-          `# @kprint/${pkgName}\n\n${pkgName} distribution of dprint.\n`,
+          `# ${getPackageName(pkg)}\n\nThe ${describePlatform(pkg)} binary of [${mainPackage}](https://www.npmjs.com/package/${mainPackage}), which installs it. Install that instead.\n`,
         );
       pkgDir.join("package.json").writeJsonPrettySync({
-        name: `@kprint/${pkgName}`,
-        version: version,
-        description: `${pkgName} distribution of the dprint code formatter`,
+        name: getPackageName(pkg),
+        version: npmVersion,
+        description: `The ${describePlatform(pkg)} binary of ${mainPackage}.`,
         repository: {
           type: "git",
           url: `git+${repositoryUrl}.git`,
@@ -232,7 +276,7 @@ if (!args["publish-only"]) {
         bugs: {
           url: `${repositoryUrl}/issues`,
         },
-        homepage: `${repositoryUrl}#readme`,
+        homepage: `https://www.npmjs.com/package/${mainPackage}`,
         os: [pkg.os],
         cpu: [pkg.cpu],
         libc: pkg.libc == null ? undefined : [pkg.libc],
@@ -242,6 +286,41 @@ if (!args["publish-only"]) {
     // write the executable hashes into the dprint package so the download
     // fallback can verify the binary it fetches from the registry
     dprintDir.join("hashes.json").writeJsonPrettySync(executableHashes);
+
+    // the `fmt` command, which runs `dprint fmt`
+    $.logStep(`Setting up ${fmtPackage} ${npmVersion}...`);
+    await $`mkdir -p ${fmtDir}`;
+    await $`deno bundle --platform=deno --format=cjs --output=${fmtDir.join("fmt.cjs")} ${currentDir.join("fmt.ts")}`;
+    fmtDir.join("package.json").writeJsonPrettySync({
+      name: fmtPackage,
+      version: npmVersion,
+      description: `Runs \`kprint fmt\` (${mainPackage}) as \`fmt\` or \`kfmt\`, with kjanat's configuration by default.`,
+      bin: { fmt: "fmt.cjs", kfmt: "fmt.cjs" },
+      repository: { type: "git", url: `git+${repositoryUrl}.git` },
+      keywords: ["dprint", "formatter", "format", "fmt"],
+      author: "Kaj Kowalski",
+      license: "MIT",
+      bugs: { url: `${repositoryUrl}/issues` },
+      homepage: `https://www.npmjs.com/package/${mainPackage}`,
+      dependencies: { [mainPackage]: npmVersion },
+    });
+    rootDir.join("LICENSE").copyFileSync(fmtDir.join("LICENSE"));
+    fmtDir.join("README.md").writeTextSync(`# ${fmtPackage}
+
+\`fmt\` (or \`kfmt\`, the same command where \`fmt\` is taken) runs \`kprint fmt\` of
+[${mainPackage}](https://www.npmjs.com/package/${mainPackage}) with the arguments it's given.
+
+\`\`\`sh
+npx ${fmtPackage}            # format the files of the configuration
+npx ${fmtPackage} src/a.ts   # or only these
+\`\`\`
+
+Without a configuration, which is no \`--config\` and no \`dprint.json\`,
+\`dprint.jsonc\`, \`dprint.toml\` (or a dotted one) in the directory or its
+ancestors, it formats with [kjanat's](${fmtDefaultConfig}).
+
+Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`, ...).
+`);
   }
 
   // verify that the package is created correctly
@@ -249,23 +328,24 @@ if (!args["publish-only"]) {
     $.logStep("Verifying packages...");
     const testPlatform = Deno.build.os === "windows"
       ? Deno.build.arch === "x86_64"
-        ? "@kprint/win32-x64"
-        : "@kprint/win32-arm64"
+        ? platformPackage("win32-x64")
+        : platformPackage("win32-arm64")
       : Deno.build.os === "darwin"
       ? Deno.build.arch === "x86_64"
-        ? "@kprint/darwin-x64"
-        : "@kprint/darwin-arm64"
+        ? platformPackage("darwin-x64")
+        : platformPackage("darwin-arm64")
       : Deno.build.arch === "x86_64"
-      ? "@kprint/linux-x64-glibc"
-      : "@kprint/linux-arm64-glibc";
+      ? platformPackage("linux-x64-glibc")
+      : platformPackage("linux-arm64-glibc");
     $.logLight("Test platform:", testPlatform);
     outputDir.join("package.json").writeJsonPrettySync({
       workspaces: [
         "kprint",
+        "fmt",
         // There seems to be a bug with npm workspaces where this doesn't
         // work, so for now make some assumptions and only include the package
         // that works on the CI for the current operating system
-        // ...packages.map(p => `@kprint/${getPackageNameNoScope(p)}`),
+        // ...packages.map(getPackageName),
         testPlatform,
       ],
     });
@@ -290,6 +370,9 @@ if (!args["publish-only"]) {
         "dprint executable did not exist when lazily initialized",
       );
     }
+
+    // `fmt --help` is `dprint fmt --help`
+    await $`node fmt.cjs --help`.cwd(fmtDir);
   }
 }
 
@@ -298,12 +381,12 @@ const tagArgs = args.tag == null ? [] : ["--tag", args.tag];
 if (args.publish || args["publish-only"]) {
   for (const pkg of packages) {
     const pkgName = getPackageNameNoScope(pkg);
-    $.logStep(`Publishing @kprint/${pkgName}...`);
-    if (await checkPackagePublished(`@kprint/${pkgName}`)) {
+    $.logStep(`Publishing ${getPackageName(pkg)}...`);
+    if (await checkPackagePublished(getPackageName(pkg))) {
       $.logLight("  Already published.");
       continue;
     }
-    const pkgDir = scopeDir.join(pkgName);
+    const pkgDir = scopeDir.join(platformDir(pkgName));
     // ensure the binary is executable in the tarball
     if (pkg.os !== "win32") {
       await $`chmod +x ${pkgDir.join("dprint")}`;
@@ -311,8 +394,11 @@ if (args.publish || args["publish-only"]) {
     await $`cd ${pkgDir} && npm publish --provenance --access public ${tagArgs}`;
   }
 
-  $.logStep(`Publishing kprint...`);
+  $.logStep(`Publishing ${mainPackage}...`);
   await $`cd ${dprintDir} && npm publish --provenance --access public ${tagArgs}`;
+
+  $.logStep(`Publishing ${fmtPackage}...`);
+  await $`cd ${fmtDir} && npm publish --provenance --access public ${tagArgs}`;
 }
 
 async function sha256Hex(filePath: string) {
@@ -321,6 +407,19 @@ async function sha256Hex(filePath: string) {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/** The npm package with the binary (ex. `@kprint/kprint-win32-x64`). */
+function getPackageName(pkg: Package) {
+  return platformPackage(getPackageNameNoScope(pkg));
+}
+
+/** The platform for people (ex. `Linux ppc64le (musl)`). */
+function describePlatform(pkg: Package) {
+  const os = { win32: "Windows", darwin: "macOS", linux: "Linux", android: "Android", freebsd: "FreeBSD" }[pkg.os];
+  // Node reports ppc64le as ppc64
+  const cpu = pkg.cpu === "ppc64" ? "ppc64le" : pkg.cpu;
+  return pkg.libc == null ? `${os} ${cpu}` : `${os} ${cpu} (${pkg.libc})`;
 }
 
 function getPackageNameNoScope(name: Package) {
@@ -348,6 +447,6 @@ function resolveVersion() {
 }
 
 async function checkPackagePublished(pkgName: string) {
-  const result = await $`npm info ${pkgName}@${version}`.quiet().noThrow();
+  const result = await $`npm info ${pkgName}@${npmVersion}`.quiet().noThrow();
   return result.code === 0;
 }
