@@ -51,10 +51,13 @@
     "jsr:@std/yaml@1.2.0": "1.2.0",
     "jsr:@std/yaml@^1.0.5": "1.2.0",
     "jsr:@zip-js/zip-js@2.7.53": "2.7.53",
+    "npm:@dprint/formatter@0.5.1": "0.5.1",
     "npm:@types/d3@6.7.8": "6.7.8",
     "npm:@types/decompress@4.2.7": "4.2.7",
     "npm:@types/node@24.19.1": "24.19.1",
     "npm:@types/nunjucks@3.2.6": "3.2.6",
+    "npm:@types/react-dom@19.3.0": "19.3.0_@types+react@19.3.0",
+    "npm:@types/react@19.3.0": "19.3.0",
     "npm:date-fns@4.4.0": "4.4.0",
     "npm:decompress@4.2.1": "4.2.1",
     "npm:esbuild@0.28.2": "0.28.2",
@@ -67,6 +70,9 @@
     "npm:markdown-it-deflist@4.0.0": "4.0.0",
     "npm:markdown-it@15.0.2": "15.0.2",
     "npm:nunjucks@3.2.4": "3.2.4",
+    "npm:react-dom@19.3.0": "19.3.0_react@19.3.0",
+    "npm:react-spinners@0.17.1": "0.17.1_react@19.3.0_react-dom@19.3.0",
+    "npm:react@19.3.0": "19.3.0",
     "npm:sass@1.104.1": "1.104.1"
   },
   "jsr": {
@@ -251,6 +257,9 @@
     }
   },
   "npm": {
+    "@dprint/formatter@0.5.1": {
+      "integrity": "sha512-cdZUrm0iv/FnnY3CKE2dEcVhNEzrC551aE2h2mTFwQCRBrqyARLDnb7D+3PlXTUVp3s34ftlnGOVCmhLT9DeKA=="
+    },
     "@esbuild/aix-ppc64@0.28.2": {
       "integrity": "sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==",
       "os": ["aix"],
@@ -656,6 +665,18 @@
     "@types/nunjucks@3.2.6": {
       "integrity": "sha512-pHiGtf83na1nCzliuAdq8GowYiXvH5l931xZ0YEHaLMNFgynpEqx+IPStlu7UaDkehfvl01e4x/9Tpwhy7Ue3w=="
     },
+    "@types/react-dom@19.3.0_@types+react@19.3.0": {
+      "integrity": "sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==",
+      "dependencies": [
+        "@types/react"
+      ]
+    },
+    "@types/react@19.3.0": {
+      "integrity": "sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==",
+      "dependencies": [
+        "csstype"
+      ]
+    },
     "a-sync-waterfall@1.0.1": {
       "integrity": "sha512-RYTOHHdWipFUliRFMCS4X2Yn2X8M87V/OpSqWzKKOGhzqyUxzyVmhHDH9sAvG+ZuQf/TAOFsLCpMw09I1ufUnA=="
     },
@@ -741,6 +762,9 @@
     },
     "core-util-is@1.0.3": {
       "integrity": "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ=="
+    },
+    "csstype@3.2.3": {
+      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="
     },
     "date-fns@4.4.0": {
       "integrity": "sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w=="
@@ -1099,6 +1123,23 @@
     "punycode.js@2.3.1": {
       "integrity": "sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA=="
     },
+    "react-dom@19.3.0_react@19.3.0": {
+      "integrity": "sha512-JDk8dgif51OjFoDE70+OT9ICyYr+69HlmihNwp1+Nsfbna3t5sIiCa9ZJktDmQ4/1b/rn26hIAR2uYXDMr5r0Q==",
+      "dependencies": [
+        "react",
+        "scheduler"
+      ]
+    },
+    "react-spinners@0.17.1_react@19.3.0_react-dom@19.3.0": {
+      "integrity": "sha512-YktwnYeMWpvior5/MCyl+gbFuIK98PLfsZ0sp92t15r4nMpWpXj77YyJiBiD2EM3Lcz1lNjpqICjt8gMGtxclw==",
+      "dependencies": [
+        "react",
+        "react-dom"
+      ]
+    },
+    "react@19.3.0": {
+      "integrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog=="
+    },
     "readable-stream@2.3.8": {
       "integrity": "sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==",
       "dependencies": [
@@ -1131,6 +1172,9 @@
         "@parcel/watcher"
       ],
       "bin": true
+    },
+    "scheduler@0.28.0": {
+      "integrity": "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw=="
     },
     "seek-bzip@1.0.6": {
       "integrity": "sha512-e1QtP3YL5tWww8uKaOCQ18UxIT2laNBXHjV/S2WYCiK4udiv8lkG89KRIoCjUagnAmCBurjF4zEVX2ByBbnCjQ==",
@@ -1237,10 +1281,6 @@
         "fd-slicer"
       ]
     }
-  },
-  "redirects": {
-    "https://esm.sh/@types/react@~19.3.0/index.d.ts": "https://esm.sh/@types/react@19.3.0/index.d.ts",
-    "https://esm.sh/scheduler@^0.28.0?target=denonext": "https://esm.sh/scheduler@0.28.0?target=denonext"
   },
   "remote": {
     "https://cdn.jsdelivr.net/gh/b-fuze/deno-dom@0.1.56/build/deno-wasm/deno-wasm-dynamic.js": "fd05e83a855aa68b09396dc47a7638ef526c39917971715ac37e0fc3227db886",
@@ -1422,8 +1462,6 @@
     "https://deno.land/x/compress@v0.5.6/zlib/zlib/status.ts": "6e27b66b6ce864e5fc2c2d9771b6078dd5007245eff5a13840651d2c62b3d1a5",
     "https://deno.land/x/compress@v0.5.6/zlib/zlib/trees.ts": "142a3dee0168e947ce967156aca9b76df4a652ff6ff3f0d884a2128c737df0e2",
     "https://deno.land/x/compress@v0.5.6/zlib/zlib/zstream.ts": "1bec7df2a16bc564f7e38ad05db3a57610adedc8e2ce3b7aaeeca325bf469ec3",
-    "https://esm.sh/@dprint/formatter@0.5.1/es2022/formatter.mjs": "fa7f747517612c079fca198fcdb245ed41ed2ee754222d877113edd25bdd110a",
-    "https://esm.sh/@dprint/formatter@0.5.1?target=es2022": "cdfe71de124c63f56cc3225a558f3c5fa63af8b95f1b55d7cf48ca7757da9e4a",
     "https://esm.sh/gh/actions/github-script@v9.0.0": "64da0cc1fe9ac17f3097719d31381e22dfdba38c274e5576e77f1c975f28b6cd",
     "https://esm.sh/gh/actions/github-script@v9.0.0/denonext/github-script.mjs": "156821044e17c7bb610cd8f543fe1872d1c8d511475b705101236a883336f17a",
     "https://esm.sh/monaco-editor@0.57.0/denonext/monaco-editor.bundle.mjs": "bffeceed30203d2f2be763bf83d104e805f909b5f10b8e2b8055248790be7f6f",
@@ -1433,17 +1471,6 @@
     "https://esm.sh/monaco-editor@0.57.0/language/json/json.worker.js?worker": "4aff69a56ab148193d1968345f3c0482c087533cf50734438d7397f5a1ee46fb",
     "https://esm.sh/monaco-editor@0.57.0/language/typescript/ts.worker.js?worker": "612b6f7d727055c15b2c51c00960f175d9ccec0780f3879a7e127215d367e960",
     "https://esm.sh/monaco-editor@0.57.0?standalone": "807da0ebf1f2d30e1e9b77ea62da28e3ec0eb59506bcd8e43b05c156e9be9739",
-    "https://esm.sh/react-dom@19.3.0&deps=react@19.3.0/client": "c486334dcdf7b7fe5adc0899dc6257d22e8e6e282ed2cbaed86bb15bfb56fdf2",
-    "https://esm.sh/react-dom@19.3.0/X-ZHJlYWN0QDE5LjMuMA/denonext/client.mjs": "3a76baf4e795499fc4c81d287db308505da276e1064a0957e41886bce1ab34b8",
-    "https://esm.sh/react-dom@19.3.0/X-ZHJlYWN0QDE5LjMuMA/denonext/react-dom.mjs": "59ccff6b86c30d3fa49c2c9030f83c2ddc98f7f2a7b33c5cb1b17edc2a03500c",
-    "https://esm.sh/react-spinners@0.17.1/X-ZHJlYWN0QDE5LjMuMA/denonext/react-spinners.mjs": "2efc60732c6b8ba5d3bd158734a6cd92c819d6df9bb012310176b185db5e25f0",
-    "https://esm.sh/react-spinners@0.17.1?deps=react@19.3.0": "a0883c70ec40b7f115096cc88a7085ccbe6ef085503beb03bf71f0470e8f2a72",
-    "https://esm.sh/react@19.3.0": "3fc02d69f22515c4eba1cdc44a0d44021f2450cbdd9914ff3381e0830b5e91ca",
-    "https://esm.sh/react@19.3.0/denonext/jsx-runtime.mjs": "9f791f92c3db9798617bbf8ffb4ff56e2799a1551cfc6d025977d627775ef151",
-    "https://esm.sh/react@19.3.0/denonext/react.mjs": "6678d6ebeb81a75d82dfaebf3de1ac41f3f6994055b0d9b769231f411f54375d",
-    "https://esm.sh/react@19.3.0/jsx-runtime": "8238b7adb49b4ce58979db74df808e7488fcb778416bf4132982447a89cec901",
-    "https://esm.sh/scheduler@0.28.0/denonext/scheduler.mjs": "b2a32b89f9e26f87de0e9acefada396aede74f07818aa464e734c48bc454ee1e",
-    "https://esm.sh/scheduler@0.28.0?target=denonext": "c2750b40038458478d903dc8a003e56bea17e7e532c2af4f8cea0f80c3e37cf5",
     "https://esm.sh/undici@6.26.0/types/handlers": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457",
     "https://esm.sh/undici@6.26.0/types/interceptors": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457",
     "https://esm.sh/undici@6.26.0/types/retry-handler": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457"
@@ -1475,8 +1502,14 @@
       },
       "website/playground": {
         "dependencies": [
+          "npm:@dprint/formatter@0.5.1",
+          "npm:@types/react-dom@19.3.0",
+          "npm:@types/react@19.3.0",
           "npm:json5@2.2.3",
-          "npm:lz-string@1.5.0"
+          "npm:lz-string@1.5.0",
+          "npm:react-dom@19.3.0",
+          "npm:react-spinners@0.17.1",
+          "npm:react@19.3.0"
         ]
       }
     }
