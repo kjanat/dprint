@@ -5,7 +5,7 @@ members  = ["crates/*"]
 exclude  = ["crates/test-plugin"]
 
 [workspace.package]
-authors    = ["David Sherret <dsherret@gmail.com>"]
+authors    = ["Kaj Kowalski <info@kajkowalski.nl>", "David Sherret <dsherret@gmail.com>"]
 edition    = "2024"
 repository = "https://github.com/kjanat/kprint"
 license    = "MIT"
