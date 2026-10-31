@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# the repository CI runs in, or kjanat/dprint
-repository_path="${GITHUB_REPOSITORY:-kjanat/dprint}"
+# the repository CI runs in, or kjanat/kprint
+repository_path="${GITHUB_REPOSITORY:-kjanat/kprint}"
 repository="${GITHUB_SERVER_URL:-https://github.com}/${repository_path}"
 homepage=https://dprint.kjanat.dev
 description='Pluggable and configurable code formatter written in Rust, forked from dprint'

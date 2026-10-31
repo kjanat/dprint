@@ -4,7 +4,7 @@ version     = "0.70.0"
 authors     = ["Kaj Kowalski <info@kajkowalski.nl>", "David Sherret <dsherret@gmail.com>"]
 edition     = { workspace = true }
 description = "Core library for dprint."
-homepage    = "https://github.com/kjanat/dprint/tree/HEAD/crates/kprint-core"
+homepage    = "https://github.com/kjanat/kprint/tree/HEAD/crates/kprint-core"
 repository  = { workspace = true }
 license     = { workspace = true }
 keywords    = ["formatter", "formatting"]

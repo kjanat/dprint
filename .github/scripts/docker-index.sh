@@ -23,7 +23,7 @@ image="$1"
 zips="$2"
 shift 2
 base=gcr.io/distroless/static-debian13:nonroot
-source_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-kjanat/dprint}"
+source_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-kjanat/kprint}"
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 

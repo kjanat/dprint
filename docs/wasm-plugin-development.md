@@ -192,4 +192,4 @@ High level functions:
 - `host_get_error_text() -> u32` - Tell the host to store the error text in its local byte array and return back the byte length of that error message.
 - `host_has_cancelled() -> u32` - Check if the host has cancelled the formatting request (`1`) or not (`0`).
 
-I recommend looking in the [`kprint-wasm-plugin` crate](https://github.com/kjanat/dprint/blob/HEAD/crates/kprint-wasm-plugin/src/lib.rs) for how to use these.
+I recommend looking in the [`kprint-wasm-plugin` crate](https://github.com/kjanat/kprint/blob/HEAD/crates/kprint-wasm-plugin/src/lib.rs) for how to use these.

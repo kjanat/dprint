@@ -1,5 +1,5 @@
 #!/bin/bash
-REPO="kjanat/dprint"
+REPO="kjanat/kprint"
 REPO_URL="https://github.com/${REPO}.git"
 
 BIN="${BIN:-}"

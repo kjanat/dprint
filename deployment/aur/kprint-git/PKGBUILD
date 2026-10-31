@@ -14,7 +14,7 @@ provides=("kprint=${pkgver}" "dprint=${pkgver}")
 conflicts=('dprint' 'dprint-git' 'kprint' 'kprint-bin')
 options=('!lto')
 _commit=80e6374cd17282a5cfafadf61cba272920290838
-source=("kprint::git+https://github.com/kjanat/dprint.git#commit=${_commit}")
+source=("kprint::git+https://github.com/kjanat/kprint.git#commit=${_commit}")
 sha256sums=('SKIP')
 
 pkgver() {

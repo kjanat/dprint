@@ -1,5 +1,5 @@
 {
-  "repository": "https://github.com/kjanat/dprint",
+  "repository": "https://github.com/kjanat/kprint",
   "versions": {
     "official": "dprint 0.61.1",
     "master": "dprint 0.59.0-kjanat",

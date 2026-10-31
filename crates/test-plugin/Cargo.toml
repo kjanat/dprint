@@ -3,7 +3,7 @@ name       = "test-plugin"
 version    = "0.2.0"
 authors    = ["David Sherret <dsherret@gmail.com>"]
 edition    = "2024"
-repository = "https://github.com/kjanat/dprint"
+repository = "https://github.com/kjanat/kprint"
 
 [workspace]
 

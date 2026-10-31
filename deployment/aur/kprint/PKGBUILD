@@ -14,7 +14,7 @@ provides=("kprint=${pkgver}" "dprint=${pkgver}")
 conflicts=('dprint' 'dprint-git' 'kprint-bin' 'kprint-git')
 options=('!lto')
 _tag="${pkgver}-kjanat"
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/kjanat/dprint/archive/refs/tags/${_tag}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/kjanat/kprint/archive/refs/tags/${_tag}.tar.gz")
 sha256sums=('2ca93c954ffbf410e5428653a7c18288a319d98790c5b2563b7a8174695b4db2')
 
 prepare() {

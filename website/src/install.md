@@ -52,11 +52,11 @@ Install using one of the methods below.
   yay -S kprint-git
   ```
 
-- [Cargo](https://doc.rust-lang.org/cargo/) (builds and installs from the [repository](https://github.com/kjanat/dprint) source):
+- [Cargo](https://doc.rust-lang.org/cargo/) (builds and installs from the [repository](https://github.com/kjanat/kprint) source):
 
   ```sh
   # this will be slower since it builds from the source
-  cargo install --locked --git https://github.com/kjanat/dprint kprint --bin kprint
+  cargo install --locked --git https://github.com/kjanat/kprint kprint --bin kprint
   ```
 
   This installs only `kprint`.
@@ -80,21 +80,21 @@ Install using one of the methods below.
 
   ```sh
   # for your project
-  mise use github:kjanat/dprint
-  mise x github:kjanat/dprint -- kprint help
+  mise use github:kjanat/kprint
+  mise x github:kjanat/kprint -- kprint help
 
   # or install globally
-  mise use --global github:kjanat/dprint
+  mise use --global github:kjanat/kprint
   kprint help
   ```
 
-- [Docker](https://github.com/kjanat/dprint/pkgs/container/kprint), for Linux amd64, arm64 and ppc64le:
+- [Docker](https://github.com/kjanat/kprint/pkgs/container/kprint), for Linux amd64, arm64 and ppc64le:
 
   ```sh
   docker run --rm -v "$PWD:/work" ghcr.io/kjanat/kprint fmt
   ```
 
-For binaries and source, see the [GitHub releases](https://github.com/kjanat/dprint/releases).
+For binaries and source, see the [GitHub releases](https://github.com/kjanat/kprint/releases).
 
 FreeBSD builds target amd64 on FreeBSD 14.4 or newer. Wasm plugins and built-in
 `exec` formatting are supported. Process plugins must publish a

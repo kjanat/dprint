@@ -12,8 +12,8 @@ depends=('glibc')
 provides=("kprint=${pkgver}" "dprint=${pkgver}")
 conflicts=('dprint' 'dprint-git' 'kprint' 'kprint-git')
 _tag="${pkgver}-kjanat"
-_releases="https://github.com/kjanat/dprint/releases/download/${_tag}"
-source=("LICENSE-${_tag}::https://raw.githubusercontent.com/kjanat/dprint/${_tag}/LICENSE")
+_releases="https://github.com/kjanat/kprint/releases/download/${_tag}"
+source=("LICENSE-${_tag}::https://raw.githubusercontent.com/kjanat/kprint/${_tag}/LICENSE")
 source_x86_64=("kprint-x86_64-${_tag}.zip::${_releases}/kprint-x86_64-unknown-linux-gnu.zip")
 source_aarch64=("kprint-aarch64-${_tag}.zip::${_releases}/kprint-aarch64-unknown-linux-gnu.zip")
 sha256sums=('f49eac7bc59816a4b7fffd64914169ef46deb636f94b77eaa274e7352983c3fa')

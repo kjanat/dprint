@@ -49,7 +49,9 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == schedule || "${NIGHTLY}" == true ]]; then
             base="$(sed -nE '0,/^version *= *"([^"]*)"/s//\1/p' crates/kprint/Cargo.toml)"
             sha="$(git rev-parse HEAD)"
-            version="${base}.nightly.$(date -u +%Y%m%d).g${sha:0:7}"
+            # plain semver, without the fork's `-kjanat`, like the releases on
+            # npm and ghcr.io
+            version="${base%-kjanat}-nightly.$(date -u +%Y%m%d).g${sha:0:7}"
             # the last nightly is of this commit, so there's nothing new
             last="$(npm view @kprint/kprint@nightly version 2> /dev/null || true)"
             publish=true
@@ -66,8 +68,13 @@ jobs:
             echo "Nightly ${version} (last: ${last:-none}, publish: ${publish})"
           else
             [[ -n "${RELEASE_TAG}" ]] || { echo 'No release version.' >&2; exit 1; }
-            docker_tags="${RELEASE_TAG}"
-            [[ "${PRERELEASE}" == true ]] || docker_tags+=$'\nlatest'
+            # the release tag is 0.60.6-kjanat; the image is tagged 0.60.6 and
+            # 0.60 (and latest), like npm's plain versions
+            semver="${RELEASE_TAG%-kjanat}"
+            docker_tags="${semver}"
+            if [[ "${PRERELEASE}" != true ]]; then
+              docker_tags+=$'\n'"${semver%.*}"$'\nlatest'
+            fi
             {
               echo channel=release
               echo publish=true

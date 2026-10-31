@@ -135,7 +135,7 @@ export function Playground({
             <a href="/sponsor">Sponsor</a>
             <a
               className="ghButton"
-              href="https://github.com/kjanat/dprint"
+              href="https://github.com/kjanat/kprint"
               rel="noopener noreferrer"
             >
               GitHub <span className="ghArrow">↗</span>

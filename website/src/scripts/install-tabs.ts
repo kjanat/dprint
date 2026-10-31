@@ -4,7 +4,7 @@ const commands: Record<string, string> = {
   pwsh: "irm https://dprint.kjanat.dev/install.ps1 | iex",
   npm: "npm install -g @kprint/kprint",
   brew: "brew install kjanat/tap/kprint",
-  cargo: "cargo install --locked --git https://github.com/kjanat/dprint kprint --bin kprint",
+  cargo: "cargo install --locked --git https://github.com/kjanat/kprint kprint --bin kprint",
 };
 
 export function addInstallTabsEvent() {
