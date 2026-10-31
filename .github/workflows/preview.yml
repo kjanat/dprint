@@ -2,7 +2,7 @@ name: Preview
 run-name: "Preview ${{ github.event.pull_request && format('#{0}', github.event.pull_request.number) || github.ref_name }}"
 
 # A build of a branch or pull request to try before it's released: npm
-# packages on pkg.pr.new and an image at ghcr.io/kjanat/dprint.
+# packages on pkg.pr.new and an image at ghcr.io/kjanat/kprint.
 on:
   push:
     branches: [master, the-big-split]
