@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 
 use crate::GlobalSettings;
+use crate::PluginConfigFile;
 use crate::PluginTable;
 use anyhow::Result;
 use anyhow::bail;
@@ -194,6 +195,10 @@ impl Templates<'_> {
           let overrides = config.overrides.iter_mut().flat_map(|override_config| override_config.properties.values_mut());
           for value in config.properties.values_mut().chain(overrides) {
             self.expand_value(value)?;
+          }
+          // read out of the properties, so not one of the values above
+          if let Some(PluginConfigFile::Path(path)) = &mut config.config_file {
+            self.expand(path)?;
           }
         }
       }

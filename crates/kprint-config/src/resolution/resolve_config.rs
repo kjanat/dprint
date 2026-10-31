@@ -1203,6 +1203,35 @@ lineWidth = 80
   }
 
   #[test]
+  fn should_expand_templates_in_a_plugins_config_file() {
+    let environment = TestEnvironmentBuilder::new()
+      .write_file(
+        "/dir/dprint.json",
+        r#"{ "extends": "../other/base.json", "local": { "configFile": "${configDir}/tombi.toml" } }"#,
+      )
+      .write_file(
+        "/other/base.json",
+        r#"{ "extended": { "configFile": "${configDir}/pyproject.toml#tool.tombi" }, "origin": { "configFile": "${originConfigDir}/tombi.toml" } }"#,
+      )
+      .build();
+
+    environment.clone().run_in_runtime(async move {
+      let result = get_result("/dir/dprint.json", &environment).await.unwrap();
+      let config_file = |key: &str| match &result.plugins.config[key] {
+        ConfigMapValue::PluginConfig(plugin) => plugin.config_file.clone(),
+        ConfigMapValue::KeyValue(_) => unreachable!(),
+      };
+      assert_eq!(config_file("local"), Some(PluginConfigFile::Path("/dir/tombi.toml".to_string())));
+      // relative to the file it's in, like the plugin's own properties
+      assert_eq!(
+        config_file("extended"),
+        Some(PluginConfigFile::Path("/other/pyproject.toml#tool.tombi".to_string()))
+      );
+      assert_eq!(config_file("origin"), Some(PluginConfigFile::Path("/dir/tombi.toml".to_string())));
+    });
+  }
+
+  #[test]
   fn should_error_for_inherit_in_extended_config() {
     let environment = TestEnvironmentBuilder::new()
       .write_file("/a/dprint.json", r#"{ "extends": "../base.json" }"#)

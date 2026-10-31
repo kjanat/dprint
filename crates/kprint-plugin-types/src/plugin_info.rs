@@ -26,7 +26,9 @@ pub struct PluginInfo {
   /// Set when the plugin reads a configuration file of its own (ex.
   /// `tombi.toml`), which dprint parses and passes to it: the paths
   /// relative to the configuration file's directory to use when its
-  /// `configFile` property doesn't name one, the first that exists.
+  /// `configFile` property doesn't name one, the first that exists. Each
+  /// must stay within that directory (no absolute path or `..`, and no
+  /// symlink out of it), or the plugin's configuration is an error.
   ///
   /// A Wasm plugin declares them with a `get_config_files` export
   /// returning a JSON array, so a plugin built for dprint's own plugin

@@ -1,3 +1,4 @@
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -122,6 +123,23 @@ pub fn resolve_plugin_config_file(
       let mut found = None;
       for default_file in default_files {
         let reference = ConfigFileReference::parse(default_file).with_context(|| format!("{} declares a configuration file of its own", plugin_info.name))?;
+        // the plugin chose these, not the user, so they may only name a file
+        // in the configuration's directory (a plugin from a remote
+        // configuration could otherwise read any file it likes)
+        if !is_plain_relative(&reference.path) {
+          bail!(
+            "{} declares the configuration file '{}', which isn't a path within the configuration file's directory.",
+            plugin_info.name,
+            reference.path
+          );
+        }
+        if escapes_dir(base_dir, &base_dir.join(&reference.path), environment) {
+          bail!(
+            "{} declares the configuration file '{}', which resolves outside the configuration file's directory.",
+            plugin_info.name,
+            reference.path
+          );
+        }
         let Some(content) = read(&reference, files_read)? else {
           continue;
         };
@@ -146,6 +164,27 @@ pub fn resolve_plugin_config_file(
     ])),
   );
   Ok(properties)
+}
+
+/// Whether a path only names directories and a file below where it's
+/// joined to: not absolute, and without a `..`.
+fn is_plain_relative(path: &str) -> bool {
+  Path::new(path)
+    .components()
+    .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+/// Whether an existing file is outside a directory once symlinks are
+/// followed. One that doesn't exist (yet) isn't.
+fn escapes_dir(dir: &Path, file_path: &Path, environment: &impl HostEnvironment) -> bool {
+  if !environment.path_is_file(file_path) {
+    return false;
+  }
+  match (environment.canonicalize(dir), environment.canonicalize(file_path)) {
+    (Ok(dir), Ok(file_path)) => !file_path.starts_with(&dir),
+    // what can't be resolved can't be shown to be inside
+    _ => true,
+  }
 }
 
 #[cfg(test)]
@@ -401,6 +440,49 @@ line-width = 100
     // or removing it
     environment.remove_file("/project/.config/tombi.toml").unwrap();
     assert!(!files_read[1].is_current(&environment));
+  }
+
+  #[test]
+  fn errors_for_a_declared_config_file_outside_the_configs_directory() {
+    let environment = crate::environment::TestEnvironment::new();
+    write(&environment, "/secret.json", "{ \"token\": \"x\" }");
+    write(&environment, "/project/tombi.toml", "");
+    for path in ["../secret.json", "/secret.json", "sub/../../secret.json"] {
+      let mut files_read = Vec::new();
+      let error = resolve_plugin_config_file(
+        &tombi_info(Some(vec![path])),
+        None,
+        properties(&[]),
+        Path::new("/project"),
+        &environment,
+        &mut files_read,
+      )
+      .unwrap_err()
+      .to_string();
+      assert_eq!(
+        error,
+        format!(
+          "dprint-plugin-tombi declares the configuration file '{}', which isn't a path within the configuration file's directory.",
+          path
+        )
+      );
+      // nothing was read
+      assert_eq!(files_read, Vec::new());
+    }
+    // a file the user names is theirs to choose
+    let result = resolve_plugin_config_file(
+      &tombi_info(Some(vec!["tombi.toml"])),
+      Some(PluginConfigFile::Path("../secret.json".to_string())),
+      properties(&[]),
+      Path::new("/project"),
+      &environment,
+      &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+      config_file_content(&result),
+      Some(("../secret.json".to_string(), serde_json::json!({ "token": "x" })))
+    );
   }
 
   #[test]
