@@ -1575,6 +1575,9 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
   let global_config_result = get_global_config(config_map);
   let global_config = global_config_result.config;
   let config_base_path = config.origin.base_path.clone();
+  // not `base_path`, which is the root for a configuration rebased to format
+  // files outside it
+  let config_file_base = config.origin.config_file_base.clone();
 
   // create the scope
   let plugins = plugins_with_config
@@ -1594,7 +1597,7 @@ pub async fn resolve_plugins_scope<TEnvironment: Environment>(
         plugin.info(),
         plugin_config.config_file,
         plugin_config.properties,
-        config_base_path.as_ref(),
+        config_file_base.as_ref(),
         &environment,
         &mut plugin_config_files,
       )?;
@@ -1910,6 +1913,7 @@ mod test {
       let config = Rc::new(ResolvedConfig {
         origin: ConfigOrigin {
           source: PathSource::new_local(base_path.join_panic_relative("dprint.json")),
+          config_file_base: base_path.clone(),
           base_path,
           is_global: false,
         },

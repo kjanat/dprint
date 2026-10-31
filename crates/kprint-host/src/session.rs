@@ -154,6 +154,7 @@ mod tests {
     let config = Rc::new(ResolvedConfig {
       origin: ConfigOrigin {
         source: PathSource::new_local(base_path.join_panic_relative("dprint.json")),
+        config_file_base: base_path.clone(),
         base_path,
         is_global: false,
       },

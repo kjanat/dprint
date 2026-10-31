@@ -58,6 +58,11 @@ pub struct ConfigOrigin {
   pub source: PathSource,
   /// The folder that should be considered the "root".
   pub base_path: CanonicalizedPathBuf,
+  /// The folder a plugin's `configFile`, and the configuration files a
+  /// plugin looks for, are relative to. It's the `base_path` the
+  /// configuration was resolved with, which rebasing the configuration to
+  /// format files outside it (ex. on another drive) doesn't change.
+  pub config_file_base: CanonicalizedPathBuf,
   /// Whether this is the user's global configuration file.
   pub is_global: bool,
 }
@@ -182,6 +187,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
           ConfigOrigin {
             source: PathSource::new_local(environment.cwd().join_panic_relative("dprint.json")),
             base_path: environment.cwd().clone(),
+            config_file_base: environment.cwd().clone(),
             is_global: false,
           },
           ConfigSettings::default(),
@@ -276,6 +282,7 @@ async fn resolve_config_file<TEnvironment: Environment>(
     ConfigOrigin {
       source: root.origin.source,
       base_path: config_path_and_text.base_path.clone(),
+      config_file_base: config_path_and_text.base_path.clone(),
       is_global: config_path_and_text.is_global_config,
     },
     root.settings,
@@ -656,6 +663,7 @@ mod tests {
     ConfigOrigin {
       source: PathSource::new_local(CanonicalizedPathBuf::new_for_testing(config_path)),
       base_path: CanonicalizedPathBuf::new_for_testing(base_path),
+      config_file_base: CanonicalizedPathBuf::new_for_testing(base_path),
       is_global: false,
     }
   }
