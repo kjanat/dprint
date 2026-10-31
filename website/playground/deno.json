@@ -13,8 +13,8 @@
     "monaco-editor/": "https://esm.sh/monaco-editor@0.57.0/",
     "react-spinners": "https://esm.sh/react-spinners@0.17.1?deps=react@19.3.0",
     "@dprint/formatter": "https://esm.sh/@dprint/formatter@0.5.1?target=es2022",
-    "json5": "https://esm.sh/json5@2.2.3",
-    "lz-string": "https://esm.sh/lz-string@1.5.0"
+    "json5": "npm:json5@2.2.3",
+    "lz-string": "npm:lz-string@1.5.0"
   },
   "tasks": {
     "build": "deno run --allow-read --allow-write --allow-run --allow-net --allow-env build.ts",

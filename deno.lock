@@ -59,7 +59,9 @@
     "npm:decompress@4.2.1": "4.2.1",
     "npm:esbuild@0.28.2": "0.28.2",
     "npm:highlight.js@11.12.0": "11.12.0",
+    "npm:json5@2.2.3": "2.2.3",
     "npm:lightningcss-wasm@1.33.0": "1.33.0",
+    "npm:lz-string@1.5.0": "1.5.0",
     "npm:markdown-it-anchor@10.0.0": "10.0.0_@types+markdown-it@14.2.0_markdown-it@15.0.2",
     "npm:markdown-it-attrs@5.0.1": "5.0.1_markdown-it@15.0.2",
     "npm:markdown-it-deflist@4.0.0": "4.0.0",
@@ -163,6 +165,7 @@
     "@std/fs@1.0.24": {
       "integrity": "f3061b45b81673a2bece689da041df32d174be064c89eb6397fb5718d3fb7877",
       "dependencies": [
+        "jsr:@std/internal",
         "jsr:@std/path@^1.1.5"
       ]
     },
@@ -988,6 +991,10 @@
     "isarray@2.0.5": {
       "integrity": "sha512-xHjhDr3cNBK0BzdUJSPXZntQUx/mwMS5Rw4A7lPJ90XGAO6ISP/ePDNuo0vhqOZU+UD5JoodwCAAoZQd3FeAKw=="
     },
+    "json5@2.2.3": {
+      "integrity": "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==",
+      "bin": true
+    },
     "lightningcss-wasm@1.33.0": {
       "integrity": "sha512-OLAtqEyInBSVWjPrTjpLzcZUMUHO0q+2PFBXKr86nxZOu0P38givj/ZMtRaZ0d38pMTb9wQx+LtaLtHclv+sEA=="
     },
@@ -996,6 +1003,10 @@
       "dependencies": [
         "uc.micro"
       ]
+    },
+    "lz-string@1.5.0": {
+      "integrity": "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==",
+      "bin": true
     },
     "make-dir@1.3.0": {
       "integrity": "sha512-2w31R7SJtieJJnQtGc7RVL2StM2vGYVfqUOvUDxH6bC6aJTxPxTF0GnIgCyu7tjockiUWAYQRbxa7vKn34s5sQ==",
@@ -1228,7 +1239,8 @@
     }
   },
   "redirects": {
-    "https://esm.sh/@types/react@~19.3.0/index.d.ts": "https://esm.sh/@types/react@19.3.0/index.d.ts"
+    "https://esm.sh/@types/react@~19.3.0/index.d.ts": "https://esm.sh/@types/react@19.3.0/index.d.ts",
+    "https://esm.sh/scheduler@^0.28.0?target=denonext": "https://esm.sh/scheduler@0.28.0?target=denonext"
   },
   "remote": {
     "https://cdn.jsdelivr.net/gh/b-fuze/deno-dom@0.1.56/build/deno-wasm/deno-wasm-dynamic.js": "fd05e83a855aa68b09396dc47a7638ef526c39917971715ac37e0fc3227db886",
@@ -1414,16 +1426,24 @@
     "https://esm.sh/@dprint/formatter@0.5.1?target=es2022": "cdfe71de124c63f56cc3225a558f3c5fa63af8b95f1b55d7cf48ca7757da9e4a",
     "https://esm.sh/gh/actions/github-script@v9.0.0": "64da0cc1fe9ac17f3097719d31381e22dfdba38c274e5576e77f1c975f28b6cd",
     "https://esm.sh/gh/actions/github-script@v9.0.0/denonext/github-script.mjs": "156821044e17c7bb610cd8f543fe1872d1c8d511475b705101236a883336f17a",
-    "https://esm.sh/json5@2.2.3": "13758d23e57a88c7448f62ea1bc6e8ef9be09be041d7f6de612bb8cb335ec331",
-    "https://esm.sh/json5@2.2.3/denonext/json5.mjs": "e92f247136c4293d510068444ca724572ae85eecaf1799c322d11f4448ee87a1",
-    "https://esm.sh/lz-string@1.5.0": "dea8909e240e2de1893fbd1b5740570560bae6ceda48e584b57d6728b51910fc",
-    "https://esm.sh/lz-string@1.5.0/denonext/lz-string.mjs": "f78a7f5bd28b50ba96fd7bd0ecf8cdeffef3a9f0ec430519e6a993b887fb0e9b",
     "https://esm.sh/monaco-editor@0.57.0/denonext/monaco-editor.bundle.mjs": "bffeceed30203d2f2be763bf83d104e805f909b5f10b8e2b8055248790be7f6f",
+    "https://esm.sh/monaco-editor@0.57.0/editor/editor.worker.js?worker": "22588a28d15652d1a4350f8ea17cde20f474a8976f800587473b2d4c7878910d",
+    "https://esm.sh/monaco-editor@0.57.0/language/css/css.worker.js?worker": "ac68ea74634934b1aea7fd4bb058064a2be5aff468a93a0af52332a29e0cc369",
+    "https://esm.sh/monaco-editor@0.57.0/language/html/html.worker.js?worker": "41e3f9b2674d466f4667e54f62b4e6762149278c8d0bad69a6de6fef031385ac",
+    "https://esm.sh/monaco-editor@0.57.0/language/json/json.worker.js?worker": "4aff69a56ab148193d1968345f3c0482c087533cf50734438d7397f5a1ee46fb",
+    "https://esm.sh/monaco-editor@0.57.0/language/typescript/ts.worker.js?worker": "612b6f7d727055c15b2c51c00960f175d9ccec0780f3879a7e127215d367e960",
     "https://esm.sh/monaco-editor@0.57.0?standalone": "807da0ebf1f2d30e1e9b77ea62da28e3ec0eb59506bcd8e43b05c156e9be9739",
+    "https://esm.sh/react-dom@19.3.0&deps=react@19.3.0/client": "c486334dcdf7b7fe5adc0899dc6257d22e8e6e282ed2cbaed86bb15bfb56fdf2",
+    "https://esm.sh/react-dom@19.3.0/X-ZHJlYWN0QDE5LjMuMA/denonext/client.mjs": "3a76baf4e795499fc4c81d287db308505da276e1064a0957e41886bce1ab34b8",
+    "https://esm.sh/react-dom@19.3.0/X-ZHJlYWN0QDE5LjMuMA/denonext/react-dom.mjs": "59ccff6b86c30d3fa49c2c9030f83c2ddc98f7f2a7b33c5cb1b17edc2a03500c",
     "https://esm.sh/react-spinners@0.17.1/X-ZHJlYWN0QDE5LjMuMA/denonext/react-spinners.mjs": "2efc60732c6b8ba5d3bd158734a6cd92c819d6df9bb012310176b185db5e25f0",
     "https://esm.sh/react-spinners@0.17.1?deps=react@19.3.0": "a0883c70ec40b7f115096cc88a7085ccbe6ef085503beb03bf71f0470e8f2a72",
     "https://esm.sh/react@19.3.0": "3fc02d69f22515c4eba1cdc44a0d44021f2450cbdd9914ff3381e0830b5e91ca",
+    "https://esm.sh/react@19.3.0/denonext/jsx-runtime.mjs": "9f791f92c3db9798617bbf8ffb4ff56e2799a1551cfc6d025977d627775ef151",
     "https://esm.sh/react@19.3.0/denonext/react.mjs": "6678d6ebeb81a75d82dfaebf3de1ac41f3f6994055b0d9b769231f411f54375d",
+    "https://esm.sh/react@19.3.0/jsx-runtime": "8238b7adb49b4ce58979db74df808e7488fcb778416bf4132982447a89cec901",
+    "https://esm.sh/scheduler@0.28.0/denonext/scheduler.mjs": "b2a32b89f9e26f87de0e9acefada396aede74f07818aa464e734c48bc454ee1e",
+    "https://esm.sh/scheduler@0.28.0?target=denonext": "c2750b40038458478d903dc8a003e56bea17e7e532c2af4f8cea0f80c3e37cf5",
     "https://esm.sh/undici@6.26.0/types/handlers": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457",
     "https://esm.sh/undici@6.26.0/types/interceptors": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457",
     "https://esm.sh/undici@6.26.0/types/retry-handler": "fabf6997a3adf11e45d11e3c4d58d0634ab98f9d72f3116f3694123818ccd457"
@@ -1451,6 +1471,12 @@
       "website": {
         "dependencies": [
           "npm:markdown-it-anchor@10.0.0"
+        ]
+      },
+      "website/playground": {
+        "dependencies": [
+          "npm:json5@2.2.3",
+          "npm:lz-string@1.5.0"
         ]
       }
     }
