@@ -123,7 +123,7 @@ jobs:
         run: |
           gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern SHASUMS256.txt --dir "${RUNNER_TEMP}"
           .github/scripts/package-managers.sh render "${TAG}" "${RUNNER_TEMP}/SHASUMS256.txt" "${MANIFESTS}"
-          cat "${MANIFESTS}/dprint.rb" "${MANIFESTS}/dprint.json"
+          cat "${MANIFESTS}/kprint.rb" "${MANIFESTS}/kprint.json"
       - name: Publish to kjanat/homebrew-tap and kjanat/scoop-bucket
         if: "!(inputs.dry_run || false)"
         env:
