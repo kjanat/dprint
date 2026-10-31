@@ -22,81 +22,81 @@ const args = parseArgs(Deno.args, {
 });
 const allPackages: Package[] = [
   {
-    zipFileName: "dprint-x86_64-unknown-freebsd.zip",
+    zipFileName: "kprint-x86_64-unknown-freebsd.zip",
     os: "freebsd",
     cpu: "x64",
   },
   {
-    zipFileName: "dprint-x86_64-pc-windows-msvc.zip",
+    zipFileName: "kprint-x86_64-pc-windows-msvc.zip",
     os: "win32",
     cpu: "x64",
   },
   {
-    zipFileName: "dprint-aarch64-pc-windows-msvc.zip",
+    zipFileName: "kprint-aarch64-pc-windows-msvc.zip",
     os: "win32",
     cpu: "arm64",
   },
   {
-    zipFileName: "dprint-x86_64-apple-darwin.zip",
+    zipFileName: "kprint-x86_64-apple-darwin.zip",
     os: "darwin",
     cpu: "x64",
   },
   {
-    zipFileName: "dprint-aarch64-apple-darwin.zip",
+    zipFileName: "kprint-aarch64-apple-darwin.zip",
     os: "darwin",
     cpu: "arm64",
   },
   {
-    zipFileName: "dprint-x86_64-unknown-linux-gnu.zip",
+    zipFileName: "kprint-x86_64-unknown-linux-gnu.zip",
     os: "linux",
     cpu: "x64",
     libc: "glibc",
   },
   {
-    zipFileName: "dprint-x86_64-unknown-linux-musl.zip",
+    zipFileName: "kprint-x86_64-unknown-linux-musl.zip",
     os: "linux",
     cpu: "x64",
     libc: "musl",
   },
   {
-    zipFileName: "dprint-aarch64-unknown-linux-gnu.zip",
+    zipFileName: "kprint-aarch64-unknown-linux-gnu.zip",
     os: "linux",
     cpu: "arm64",
     libc: "glibc",
   },
   {
-    zipFileName: "dprint-aarch64-unknown-linux-musl.zip",
+    zipFileName: "kprint-aarch64-unknown-linux-musl.zip",
     os: "linux",
     cpu: "arm64",
     libc: "musl",
   },
   {
-    zipFileName: "dprint-riscv64gc-unknown-linux-gnu.zip",
+    zipFileName: "kprint-riscv64gc-unknown-linux-gnu.zip",
     os: "linux",
     cpu: "riscv64",
     libc: "glibc",
   },
   {
-    zipFileName: "dprint-loongarch64-unknown-linux-gnu.zip",
+    zipFileName: "kprint-loongarch64-unknown-linux-gnu.zip",
     os: "linux",
     cpu: "loong64",
     libc: "glibc",
   },
   {
-    zipFileName: "dprint-loongarch64-unknown-linux-musl.zip",
+    zipFileName: "kprint-loongarch64-unknown-linux-musl.zip",
     os: "linux",
     cpu: "loong64",
     libc: "musl",
   },
   {
     // Node reports ppc64le as "ppc64"
-    zipFileName: "dprint-powerpc64le-unknown-linux-gnu.zip",
+    zipFileName: "kprint-powerpc64le-unknown-linux-gnu.zip",
     os: "linux",
     cpu: "ppc64",
     libc: "glibc",
   },
   {
-    zipFileName: "dprint-powerpc64le-unknown-linux-musl.zip",
+    zipFileName: "kprint-powerpc64le-unknown-linux-musl.zip",
     os: "linux",
     cpu: "ppc64",
     libc: "musl",
@@ -104,12 +104,12 @@ const allPackages: Package[] = [
   {
     // android (Termux): Node reports the platform as "android" and the arch as
     // "arm64"/"x64". bionic libc, so no libc field (npm only knows glibc/musl).
-    zipFileName: "dprint-aarch64-linux-android.zip",
+    zipFileName: "kprint-aarch64-linux-android.zip",
     os: "android",
     cpu: "arm64",
   },
   {
-    zipFileName: "dprint-x86_64-linux-android.zip",
+    zipFileName: "kprint-x86_64-linux-android.zip",
     os: "android",
     cpu: "x64",
   },
@@ -227,7 +227,7 @@ if (!args["publish-only"]) {
     rootDir.join("LICENSE").copyFileSync(dprintDir.join("LICENSE"));
     dprintDir.join("README.md").writeTextSync(mainReadme(repositoryUrl));
     // ensure the test files don't get published
-    dprintDir.join(".npmignore").writeTextSync("dprint\ndprint.exe\n");
+    dprintDir.join(".npmignore").writeTextSync("kprint\nkprint.exe\n");
 
     // setup each binary package
     const executableHashes: Record<string, string> = {};
@@ -251,7 +251,7 @@ if (!args["publish-only"]) {
 
       // record the executable's hash so the dprint package can verify it when
       // downloading the binary as a fallback (e.g. for `npm install --omit=optional`)
-      const executableName = pkg.os === "win32" ? "dprint.exe" : "dprint";
+      const executableName = pkg.os === "win32" ? "kprint.exe" : "kprint";
       executableHashes[pkgName] = await sha256Hex(
         pkgDir.join(executableName).toString(),
       );
@@ -351,14 +351,14 @@ Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`
       ],
     });
 
-    const dprintExe = Deno.build.os === "windows" ? "dprint.exe" : "dprint";
+    const dprintExe = Deno.build.os === "windows" ? "kprint.exe" : "kprint";
     await $`npm install`.cwd(dprintDir);
 
     // ensure the post-install script adds the executable to the dprint package,
     // which is necessary for faster caching and to ensure the vscode extension
     // picks it up
     if (!dprintDir.join(dprintExe).existsSync()) {
-      throw new Error("dprint executable did not exist after post install");
+      throw new Error("kprint executable did not exist after post install");
     }
 
     // run once after post install created dprint, once with a simulated readonly file system, once creating the cache and once with
@@ -368,7 +368,7 @@ Install ${mainPackage} for the other commands (\`kprint check\`, \`kprint init\`
 
     if (!dprintDir.join(dprintExe).existsSync()) {
       throw new Error(
-        "dprint executable did not exist when lazily initialized",
+        "kprint executable did not exist when lazily initialized",
       );
     }
 
@@ -390,7 +390,7 @@ if (args.publish || args["publish-only"]) {
     const pkgDir = scopeDir.join(platformDir(pkgName));
     // ensure the binary is executable in the tarball
     if (pkg.os !== "win32") {
-      await $`chmod +x ${pkgDir.join("dprint")}`;
+      await $`chmod +x ${pkgDir.join("kprint")}`;
     }
     await $`cd ${pkgDir} && npm publish --provenance --access public ${tagArgs}`;
   }

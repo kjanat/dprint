@@ -125,7 +125,7 @@ impl Snapshot {
       bail!("the global excludes file differs from the untracked cache");
     }
     if excludes_file.is_some_and(|bytes| !bytes.is_empty()) && gitignore.options.global_gitignore_lines.is_empty() {
-      bail!("git uses a global excludes file and dprint doesn't");
+      bail!("git uses a global excludes file and kprint doesn't");
     }
 
     let response = environment

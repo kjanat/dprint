@@ -1095,7 +1095,7 @@ impl<'a, TEnvironment: Environment> PluginsAndPathsResolver<'a, TEnvironment> {
         concat!(
           "No dprint config file found for '{}'. The path is outside the config file's directory ",
           "and no dprint config file was found in the path's ancestor directories. Create one there ",
-          "or set up a global config file by running `dprint init --global`."
+          "or set up a global config file by running `kprint init --global`."
         ),
         outside_path.include_pattern,
       );

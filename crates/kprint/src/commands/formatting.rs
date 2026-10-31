@@ -171,7 +171,7 @@ pub async fn output_format_times<TEnvironment: Environment>(
     "Found {} not formatted {}. Run {} to fix.",
     colors::bold(count.to_string()),
     if *count == 1 { "file" } else { "files" },
-    colors::bold("dprint fmt"),
+    colors::bold("kprint fmt"),
   ),
   Self::DisplayNone => "".to_string(), // no output
 })]
@@ -885,7 +885,7 @@ mod test {
     let expected_start_text = concat!(
       "Critical error formatting /file1.txt. Cannot continue. ",
       "Message: Originally panicked in test-plugin, then failed reinitialize. ",
-      "This may be a bug in the plugin, the dprint cli is out of date, or the plugin is out of date.",
+      "This may be a bug in the plugin, the kprint cli is out of date, or the plugin is out of date.",
     );
     assert_eq!(&logged_errors[0][..expected_start_text.len()], expected_start_text);
     assert_eq!(error_message.to_string(), "Had 1 error formatting.");
@@ -1426,12 +1426,12 @@ mod test {
       format!(
         concat!(
           "No config file found at /dprint.json. ",
-          "Did you mean to create (dprint init) or specify one (--config <path>)?",
+          "Did you mean to create (kprint init) or specify one (--config <path>)?",
           "\n\n{}",
         ),
         colors::gray(concat!(
-          "Note: dprint now supports global configuration. Set it up with ",
-          "`dprint init --global` then edit with `dprint config edit --global`",
+          "Note: kprint now supports global configuration. Set it up with ",
+          "`kprint init --global` then edit with `kprint config edit --global`",
         ))
       )
     );
@@ -3004,7 +3004,7 @@ text2"
       error.to_string(),
       concat!(
         "No files found to format with the specified plugins at /. ",
-        "You may want to try using `dprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
+        "You may want to try using `kprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
       )
     );
     error.assert_exit_code(14);
@@ -5819,7 +5819,7 @@ text_formatted"
     let err = run_test_cli(vec!["fmt"], &environment).err().unwrap();
     assert_eq!(
       err.to_string(),
-      "No files found to format with the specified plugins at /sub_dir. You may want to try using `dprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
+      "No files found to format with the specified plugins at /sub_dir. You may want to try using `kprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
     );
     err.assert_exit_code(14);
   }
@@ -5842,7 +5842,7 @@ text_formatted"
       vec![
         concat!(
           "Error formatting /file.txt. Message: The original file text was greater than 300 characters, ",
-          "but the formatted text was empty. Most likely this is a bug in the plugin and the dprint CLI has ",
+          "but the formatted text was empty. Most likely this is a bug in the plugin and the kprint CLI has ",
           "prevented the plugin from formatting the file to an empty file. Please report this scenario."
         )
         .to_string()
@@ -5990,7 +5990,7 @@ text_formatted"
     err.assert_exit_code(11);
     assert_eq!(
       err.to_string(),
-      "Could not find global dprint.json file. Create one with `dprint init --global`"
+      "Could not find global dprint.json file. Create one with `kprint init --global`"
     );
   }
 
@@ -6089,7 +6089,7 @@ text_formatted"
     err.assert_exit_code(11);
     assert_eq!(
       err.to_string(),
-      "Did not format directory without configuration file. Run `dprint fmt .` or `dprint fmt --config-discovery=global` to bypass this error."
+      "Did not format directory without configuration file. Run `kprint fmt .` or `kprint fmt --config-discovery=global` to bypass this error."
     );
     assert_eq!(environment.read_file(file_path1).unwrap(), "hello");
   }

@@ -13,15 +13,15 @@ concurrency: { group: aur-git, cancel-in-progress: false }
 
 jobs:
   publish:
-    name: Publish dprint-kjanat-git
+    name: Publish kprint-git
     if: >-
       github.repository_id == '1092062077' && (github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: { name: aur, url: "https://aur.archlinux.org/packages/dprint-kjanat-git" }
+    environment: { name: aur, url: "https://aur.archlinux.org/packages/kprint-git" }
     env:
-      PKGBUILD: deployment/aur/dprint-kjanat-git/PKGBUILD
+      PKGBUILD: deployment/aur/kprint-git/PKGBUILD
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { persist-credentials: false }
@@ -45,7 +45,7 @@ jobs:
           grep -E '^(_commit|source)=' "${PKGBUILD}"
       - uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         with:
-          pkgname: dprint-kjanat-git
+          pkgname: kprint-git
           pkgbuild: ${{ env.PKGBUILD }}
           test: true
           test_flags: --clean --cleanbuild --syncdeps --noconfirm

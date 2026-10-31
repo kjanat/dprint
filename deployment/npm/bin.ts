@@ -9,7 +9,7 @@ declare const __dirname: string;
 
 const exePath = join(
   __dirname,
-  platform() === "win32" ? "dprint.exe" : "dprint",
+  platform() === "win32" ? "kprint.exe" : "kprint",
 );
 
 if (!existsSync(exePath)) {
@@ -36,7 +36,7 @@ function runDprintExe(exePath: string): void {
       throw new Error(
         "Could not find exe at path '"
           + exePath
-          + "'. Maybe try installing dprint again.",
+          + "'. Maybe try installing kprint again.",
       );
     }
     throw result.error;

@@ -159,7 +159,7 @@ impl<Sys: HttpCacheSys> HttpCache<Sys> {
           headers,
         },
       )
-      .map_err(|err| MessagedError::new(format!("failed to set '{}' in the cache (maybe run `dprint clear-cache`)", url), err))?;
+      .map_err(|err| MessagedError::new(format!("failed to set '{}' in the cache (maybe run `kprint clear-cache`)", url), err))?;
 
     Ok(())
   }
@@ -168,7 +168,7 @@ impl<Sys: HttpCacheSys> HttpCache<Sys> {
     self
       .sys
       .read_cache_file(&key.file_path)
-      .map_err(|err| MessagedError::new(format!("failed to get '{}' from the cache (maybe run `dprint clear-cache`)", key.url), err))
+      .map_err(|err| MessagedError::new(format!("failed to get '{}' from the cache (maybe run `kprint clear-cache`)", key.url), err))
   }
 }
 

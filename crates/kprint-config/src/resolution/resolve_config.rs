@@ -117,9 +117,9 @@ impl ResolvedConfig {
 #[error(transparent)]
 pub enum ResolveConfigError {
   #[error(
-    "No config file found at {}. Did you mean to create (dprint init) or specify one (--config <path>)?\n\n{}",
+    "No config file found at {}. Did you mean to create (kprint init) or specify one (--config <path>)?\n\n{}",
     .config_path.display(),
-    colors::gray("Note: dprint now supports global configuration. Set it up with `dprint init --global` then edit with `dprint config edit --global`")
+    colors::gray("Note: kprint now supports global configuration. Set it up with `kprint init --global` then edit with `kprint config edit --global`")
   )]
   NotFound {
     config_path: CanonicalizedPathBuf,
@@ -149,7 +149,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
         },
         match selected {
           Some(_) => colors::gray(""),
-          None => colors::gray("\n\nHint: Specify the directory to bypass this prompt in the future (ex. `dprint fmt .`)"),
+          None => colors::gray("\n\nHint: Specify the directory to bypass this prompt in the future (ex. `kprint fmt .`)"),
         },
       )
     }
@@ -165,7 +165,7 @@ pub async fn resolve_config_from_args(args: &dyn ConfigOptions, environment: &im
       if resolved_config_path.is_global_config && args.confirm_global_format() {
         if !environment.is_terminal_interactive() {
           return Err(ResolveConfigError::Other(anyhow::anyhow!(
-            "Did not format directory without configuration file. Run `dprint fmt .` or `dprint fmt --config-discovery=global` to bypass this error."
+            "Did not format directory without configuration file. Run `kprint fmt .` or `kprint fmt --config-discovery=global` to bypass this error."
           )));
         } else if !environment.confirm_with_strategy(&ConfirmFormatGlobalConfigStrategy {
           directory: resolved_config_path.base_path.as_ref(),
@@ -4143,7 +4143,7 @@ lineWidth = 80
         format!(
           concat!(
             "Note: The exec \"{}\" in remote configuration (https://dprint.dev/exec.json) is ignored for security reasons, ",
-            "as the exec plugin 0.7.3 doesn't have it, so dprint can't tell what it does. ",
+            "as the exec plugin 0.7.3 doesn't have it, so kprint can't tell what it does. ",
             "To use it, specify \"playWithFire\": true in the exec configuration of a local configuration file."
           ),
           key

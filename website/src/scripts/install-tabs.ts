@@ -2,9 +2,9 @@
 const commands: Record<string, string> = {
   shell: "curl -fsSL https://dprint.kjanat.dev/install.sh | sh",
   pwsh: "irm https://dprint.kjanat.dev/install.ps1 | iex",
-  npm: "NOT AVAILABLE", // npm install -g kprint
-  brew: "brew install kjanat/tap/dprint",
-  cargo: "cargo install --locked --git https://github.com/kjanat/dprint kprint --bin dprint",
+  npm: "npm install -g @kprint/kprint",
+  brew: "brew install kjanat/tap/kprint",
+  cargo: "cargo install --locked --git https://github.com/kjanat/dprint kprint --bin kprint",
 };
 
 export function addInstallTabsEvent() {

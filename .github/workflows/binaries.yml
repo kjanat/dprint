@@ -113,25 +113,44 @@ jobs:
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with: { pattern: dprint-*, merge-multiple: true, path: release-assets }
+        with: { pattern: kprint-*, merge-multiple: true, path: release-assets }
       - name: Require at least one binary
         run: |
           shopt -s nullglob
-          files=(release-assets/dprint-*.zip)
+          files=(release-assets/kprint-*.zip)
           if (( ${#files[@]} == 0 )); then
             echo 'No release binaries were built.' >&2
             exit 1
           fi
           printf '%s\n' "${files[@]}"
+      # Releases before kprint had dprint-<target>.zip with dprint in it, which
+      # their `dprint upgrade`, the installers and pins (ex. mise,
+      # kjanat/install-dprint) still download.
+      - name: Package the binaries as dprint too
+        run: |
+          set -euo pipefail
+          for zip in release-assets/kprint-*.zip; do
+            name="$(basename "${zip}")"
+            dir="${RUNNER_TEMP}/dprint-zips/${name%.zip}"
+            mkdir -p "${dir}"
+            unzip -q "${zip}" -d "${dir}"
+            for exe in kprint kprint.exe; do
+              if [[ -e "${dir}/${exe}" ]]; then
+                mv "${dir}/${exe}" "${dir}/d${exe#k}"
+              fi
+            done
+            (cd "${dir}" && zip -q -9 "${GITHUB_WORKSPACE}/release-assets/d${name#k}" dprint*)
+          done
+          ls release-assets
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
-        with: { subject-path: release-assets/dprint-*.zip }
+        with: { subject-path: "release-assets/*.zip" }
       - name: Upload binaries
-        run: gh release upload "${RELEASE_TAG}" release-assets/dprint-*.zip --clobber
+        run: gh release upload "${RELEASE_TAG}" release-assets/*.zip --clobber
       - name: Update checksums for the complete release
         run: |
           gh release view "${RELEASE_TAG}" --json assets > release-assets.json
           jq -er '
-            [.assets[] | select(.name | startswith("dprint-") and endswith(".zip"))] | sort_by(.name) |
+            [.assets[] | select(.name | (startswith("kprint-") or startswith("dprint-")) and endswith(".zip"))] | sort_by(.name) |
             if length == 0 then error("No release binaries") else .[] end |
             if (.digest // "" | test("^sha256:[a-f0-9]{64}$")) then
               "\(.digest[7:])  \(.name)"

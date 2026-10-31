@@ -3,8 +3,8 @@
 # and a store of the binaries:
 #
 #   docker run ghcr.io/kjanat/kprint:<tag> fmt
-#   oras pull --platform linux/amd64 ghcr.io/kjanat/kprint:<tag>  # ./usr/local/bin/dprint
-#   oras pull --platform darwin/arm64 ghcr.io/kjanat/kprint:<tag> # ./dprint-aarch64-apple-darwin.zip
+#   oras pull --platform linux/amd64 ghcr.io/kjanat/kprint:<tag>  # ./usr/local/bin/kprint (and dprint)
+#   oras pull --platform darwin/arm64 ghcr.io/kjanat/kprint:<tag> # ./kprint-aarch64-apple-darwin.zip
 #
 # linux/amd64, linux/arm64 and linux/ppc64le are distroless images with the
 # static musl build, whose layer of it ORAS unpacks (its base's layers have no
@@ -56,8 +56,10 @@ image_manifest() {
   local arch="$1" zip="$2"
   local dir="${work}/${arch}"
   mkdir -p "${dir}/root/usr/local/bin"
-  unzip -q -o "${zip}" dprint -d "${dir}/root/usr/local/bin"
-  chmod 0755 "${dir}/root/usr/local/bin/dprint"
+  unzip -q -o "${zip}" kprint -d "${dir}/root/usr/local/bin"
+  chmod 0755 "${dir}/root/usr/local/bin/kprint"
+  # dprint too, for what calls that, which tar stores as a link to kprint
+  ln "${dir}/root/usr/local/bin/kprint" "${dir}/root/usr/local/bin/dprint"
 
   # the base's config and layers, as OCI
   oras manifest fetch --platform "linux/${arch}" "${base}" > "${dir}/base.json"
@@ -77,15 +79,15 @@ image_manifest() {
   # the binary's layer, which ORAS unpacks into ./usr. Its digest annotation
   # is of what a tar reader reads, which is no further than the end of the
   # archive, so it's written without padding after it.
-  tar --create --file "${dir}/dprint.tar" --directory "${dir}/root" --sort=name --mtime=@0 \
+  tar --create --file "${dir}/kprint.tar" --directory "${dir}/root" --sort=name --mtime=@0 \
     --owner=0 --group=0 --numeric-owner --mode=0755 \
     --blocking-factor=1 usr
-  gzip -9 -n -c "${dir}/dprint.tar" > "${dir}/dprint.tar.gz"
+  gzip -9 -n -c "${dir}/kprint.tar" > "${dir}/kprint.tar.gz"
   local tar_digest gz_digest gz_size
-  tar_digest="$(digest "${dir}/dprint.tar")"
-  gz_digest="$(digest "${dir}/dprint.tar.gz")"
-  gz_size="$(size "${dir}/dprint.tar.gz")"
-  oras blob push "${push_flags[@]}" "${image}" "${dir}/dprint.tar.gz" > /dev/null
+  tar_digest="$(digest "${dir}/kprint.tar")"
+  gz_digest="$(digest "${dir}/kprint.tar.gz")"
+  gz_size="$(size "${dir}/kprint.tar.gz")"
+  oras blob push "${push_flags[@]}" "${image}" "${dir}/kprint.tar.gz" > /dev/null
   layers="$(jq -c --arg digest "${gz_digest}" --argjson size "${gz_size}" \
     --arg tar_digest "${tar_digest}" --arg media_type "${oci_layer}" \
     '. + [{mediaType: $media_type, digest: $digest, size: $size, annotations: {
@@ -96,10 +98,10 @@ image_manifest() {
 
   jq -c --arg diff_id "${tar_digest}" '
     .rootfs.diff_ids += [$diff_id]
-    | .config.Entrypoint = ["/usr/local/bin/dprint"]
+    | .config.Entrypoint = ["/usr/local/bin/kprint"]
     | .config.Cmd = null
     | .config.WorkingDir = "/work"
-    | .history += [{created: "1970-01-01T00:00:00Z", created_by: "COPY dprint /usr/local/bin/dprint"}]
+    | .history += [{created: "1970-01-01T00:00:00Z", created_by: "COPY kprint /usr/local/bin/kprint"}]
   ' "${dir}/base-config.json" > "${dir}/config.json"
   oras blob push "${push_flags[@]}" "${image}" "${dir}/config.json" > /dev/null
 
@@ -130,12 +132,12 @@ artifact_manifest() {
     --arg source "${source_url}" --arg media_type "${oci_manifest}" --arg empty "${empty_digest}" '{
       schemaVersion: 2,
       mediaType: $media_type,
-      artifactType: "application/vnd.dprint.release.zip",
+      artifactType: "application/vnd.kprint.release.zip",
       config: {mediaType: "application/vnd.oci.empty.v1+json", digest: $empty, size: 2},
       layers: [{mediaType: "application/zip", digest: $digest, size: $size, annotations: {"org.opencontainers.image.title": $name}}],
       annotations: {"org.opencontainers.image.source": $source}
     }' > "${dir}/manifest.json"
-  push_manifest "${dir}/manifest.json" "${platform}" application/vnd.dprint.release.zip
+  push_manifest "${dir}/manifest.json" "${platform}" application/vnd.kprint.release.zip
 }
 
 # the OCI platform of a target, which a gnu build only gets without a musl one
@@ -168,9 +170,9 @@ oras blob push "${push_flags[@]}" "${image}" "${work}/empty.json" > /dev/null
 manifests='[]'
 add() { manifests="$(jq -c --argjson descriptor "$1" '. + [$descriptor]' <<< "${manifests}")"; }
 shopt -s nullglob
-for zip in "${zips}"/dprint-*.zip; do
+for zip in "${zips}"/kprint-*.zip; do
   target="$(basename "${zip}" .zip)"
-  target="${target#dprint-}"
+  target="${target#kprint-}"
   case "${target}" in
     x86_64-unknown-linux-musl) descriptor="$(image_manifest amd64 "${zip}")" ;;
     aarch64-unknown-linux-musl) descriptor="$(image_manifest arm64 "${zip}")" ;;
@@ -178,7 +180,7 @@ for zip in "${zips}"/dprint-*.zip; do
     # the musl images and builds are the Linux ones
     x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) continue ;;
     *)
-      if [[ "${target}" == *-unknown-linux-gnu && -e "${zips}/dprint-${target%-gnu}-musl.zip" ]]; then
+      if [[ "${target}" == *-unknown-linux-gnu && -e "${zips}/kprint-${target%-gnu}-musl.zip" ]]; then
         continue
       fi
       platform="$(platform_of "${target}")"

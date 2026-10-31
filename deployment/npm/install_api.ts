@@ -16,7 +16,7 @@ const BIN_COMMANDS = ["kprint", "dprint"];
 let cachedIsMusl: boolean | undefined;
 
 export function runInstall(): string {
-  const dprintFileName = os.platform() === "win32" ? "dprint.exe" : "dprint";
+  const dprintFileName = os.platform() === "win32" ? "kprint.exe" : "kprint";
   const targetExecutablePath = path.join(__dirname, dprintFileName);
 
   if (fs.existsSync(targetExecutablePath)) return targetExecutablePath;
@@ -196,7 +196,7 @@ function f(u) {
       return;
     }
     if (s !== 200) {
-      console.error(\`[dprint] Unexpected status code \${s} downloading \${u}\`);
+      console.error(\`[kprint] Unexpected status code \${s} downloading \${u}\`);
       process.exit(1);
     }
     r.pipe(process.stdout);

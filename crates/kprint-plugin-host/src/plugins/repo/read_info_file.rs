@@ -101,7 +101,7 @@ pub async fn read_info_file(environment: &impl Environment) -> Result<InfoFile> 
   };
   if schema_version != SCHEMA_VERSION as u32 {
     bail!(
-      "Cannot handle schema version {}. Expected {}. This might mean your dprint CLI version is old and isn't able to get the latest information.",
+      "Cannot handle schema version {}. Expected {}. This might mean your kprint CLI version is old and isn't able to get the latest information.",
       schema_version,
       SCHEMA_VERSION
     );
@@ -479,7 +479,7 @@ mod test {
       let message = read_info_file(&environment).await.err().unwrap();
       assert_eq!(
         message.to_string(),
-        "Cannot handle schema version 1. Expected 4. This might mean your dprint CLI version is old and isn't able to get the latest information."
+        "Cannot handle schema version 1. Expected 4. This might mean your kprint CLI version is old and isn't able to get the latest information."
       );
     });
   }

@@ -188,8 +188,8 @@ fn worker_setup_error(plugin_display: &str, what_failed: &str, err: anyhow::Erro
   NoRetrySetupError(format!(
     concat!(
       "Error compiling {}: {}: {:#}\n\n",
-      "dprint compiles a plugin in a separate process, so it can stop a compile that hangs. ",
-      "To compile it in the dprint process instead, where nothing can stop it, set {}=0."
+      "kprint compiles a plugin in a separate process, so it can stop a compile that hangs. ",
+      "To compile it in the kprint process instead, where nothing can stop it, set {}=0."
     ),
     plugin_display, what_failed, err, WORKER_ENV_VAR,
   ))
@@ -212,7 +212,7 @@ fn supervise_compile<TEnvironment: Environment>(
   // the time starts before anything else, so waiting for the compiles ahead
   // of this one counts
   let budget = TimeBudget::start(limits, control);
-  let executable = current_exe().map_err(|err| worker_setup_error(plugin_display, "Could not find the dprint executable to run it with", err))?;
+  let executable = current_exe().map_err(|err| worker_setup_error(plugin_display, "Could not find the kprint executable to run it with", err))?;
   let _slot = queue.wait(control, budget.deadline).map_err(|aborted| {
     NoRetrySetupError(match aborted {
       Aborted::OutOfTime => format!(
@@ -833,7 +833,7 @@ fn run_attempts<TEnvironment: Environment>(
         if !optimize {
           log_warn!(
             environment,
-            "Compiled {} without optimizations, so it may format more slowly. Run `dprint clear-cache` to try an optimized compile again.",
+            "Compiled {} without optimizations, so it may format more slowly. Run `kprint clear-cache` to try an optimized compile again.",
             plugin_display
           );
         }
@@ -1449,7 +1449,7 @@ mod test {
     );
     assert_eq!(
       messages[1],
-      "Compiled plugin.wasm without optimizations, so it may format more slowly. Run `dprint clear-cache` to try an optimized compile again."
+      "Compiled plugin.wasm without optimizations, so it may format more slowly. Run `kprint clear-cache` to try an optimized compile again."
     );
   }
 
@@ -1879,7 +1879,7 @@ mod test {
     })
   }
 
-  const OPT_OUT: &str = "dprint compiles a plugin in a separate process, so it can stop a compile that hangs. To compile it in the dprint process instead, where nothing can stop it, set DPRINT_WASM_COMPILE_WORKER=0.";
+  const OPT_OUT: &str = "kprint compiles a plugin in a separate process, so it can stop a compile that hangs. To compile it in the kprint process instead, where nothing can stop it, set DPRINT_WASM_COMPILE_WORKER=0.";
 
   #[test]
   fn fails_rather_than_compiles_in_process_when_the_executable_isnt_found() {
@@ -1889,7 +1889,7 @@ mod test {
     assert_eq!(
       err.to_string(),
       format!(
-        "Error compiling plugin.wasm: Could not find the dprint executable to run it with: No such file or directory\n\n{}",
+        "Error compiling plugin.wasm: Could not find the kprint executable to run it with: No such file or directory\n\n{}",
         OPT_OUT
       )
     );

@@ -8,13 +8,13 @@ repository  = { workspace = true }
 license     = { workspace = true }
 keywords    = ["code-formatter", "formatter"]
 categories  = ["development-tools"]
-default-run = "dprint"
+default-run = "kprint"
 
 [package.metadata.cargo-shear]
 ignored = ["libc"]
 
 [[bin]]
-name = "dprint"
+name = "kprint"
 path = "src/main.rs"
 # it has no tests of its own, and its test harness wouldn't import the DLLs
 # that build.rs delay loads for it, which the linker warns about

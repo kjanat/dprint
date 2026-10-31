@@ -43,10 +43,10 @@ fn set_windows_delay_load_dlls() {
     "psapi",    // sysinfo process info—only during plugin cache cleanup of a locked dir
   ];
   for dll in dlls {
-    println!("cargo:rustc-link-arg-bin=dprint=/delayload:{dll}.dll");
+    println!("cargo:rustc-link-arg-bin=kprint=/delayload:{dll}.dll");
   }
   // link the delay load helper that the above flags require
-  println!("cargo:rustc-link-arg-bin=dprint=delayimp.lib");
+  println!("cargo:rustc-link-arg-bin=kprint=delayimp.lib");
 }
 
 fn get_rustc_version() -> String {

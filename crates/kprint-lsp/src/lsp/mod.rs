@@ -388,8 +388,8 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
 
     Ok(InitializeResult {
       server_info: Some(ServerInfo {
-        name: "dprint".to_string(),
-        version: Some(self.environment.cli_version()),
+        name: "kprint".to_string(),
+        version: Some(self.environment.cli_display_version()),
       }),
       capabilities: ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
@@ -415,8 +415,8 @@ impl<TEnvironment: Environment> LanguageServer for Backend<TEnvironment> {
 
   async fn initialized(&self, _: InitializedParams) {
     self.client.log_info(format!(
-      "dprint {} ({}-{})",
-      self.environment.cli_version(),
+      "kprint {} ({}-{})",
+      self.environment.cli_display_version(),
       self.environment.os(),
       self.environment.cpu_arch()
     ));
@@ -1103,7 +1103,7 @@ mod test {
         vec![
           (
             MessageType::INFO,
-            format!("dprint {} ({}-{})", environment.cli_version(), environment.os(), environment.cpu_arch())
+            format!("kprint {} ({}-{})", environment.cli_display_version(), environment.os(), environment.cpu_arch())
           ),
           (MessageType::INFO, "Server ready.".to_string())
         ]
@@ -1169,7 +1169,7 @@ mod test {
         vec![
           (
             MessageType::INFO,
-            format!("dprint {} ({}-{})", environment.cli_version(), environment.os(), environment.cpu_arch())
+            format!("kprint {} ({}-{})", environment.cli_display_version(), environment.os(), environment.cpu_arch())
           ),
           (MessageType::INFO, "Server ready.".to_string())
         ]
@@ -1235,7 +1235,7 @@ mod test {
         vec![
           (
             MessageType::INFO,
-            format!("dprint {} ({}-{})", environment.cli_version(), environment.os(), environment.cpu_arch())
+            format!("kprint {} ({}-{})", environment.cli_display_version(), environment.os(), environment.cpu_arch())
           ),
           (MessageType::INFO, "Server ready.".to_string())
         ]
@@ -1301,7 +1301,7 @@ mod test {
         vec![
           (
             MessageType::INFO,
-            format!("dprint {} ({}-{})", environment.cli_version(), environment.os(), environment.cpu_arch())
+            format!("kprint {} ({}-{})", environment.cli_display_version(), environment.os(), environment.cpu_arch())
           ),
           (MessageType::INFO, "Server ready.".to_string())
         ]

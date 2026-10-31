@@ -628,7 +628,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
     }
   }
   for (source, key) in ignored_properties.0 {
-    let unknown = format!("the exec plugin {} doesn't have it, so dprint can't tell what it does", EXEC_COMMANDS_RELEASE);
+    let unknown = format!("the exec plugin {} doesn't have it, so kprint can't tell what it does", EXEC_COMMANDS_RELEASE);
     log_warn!(
       environment,
       concat!(
@@ -642,7 +642,7 @@ fn note_ignored(policy: &Policy, ignored_commands: IgnoredCommands, ignored_prop
       } else if is_time_limit(&key) {
         "it sets how long a command may run on this machine"
       } else if names().contains(&key) {
-        "dprint doesn't know whether it decides what runs"
+        "kprint doesn't know whether it decides what runs"
       } else {
         &unknown
       },

@@ -407,7 +407,7 @@ pub fn plugin_schema_version_from_exports<'a>(export_names: impl Iterator<Item =
         }
       }
     }
-    bail!("Error determining plugin schema version. Are you sure this is a dprint plugin? If so, maybe try upgrading dprint.");
+    bail!("Error determining plugin schema version. Are you sure this is a dprint plugin? If so, maybe try upgrading kprint.");
   }
 
   let plugin_schema_version = from_exports(export_names)?;
@@ -416,7 +416,7 @@ pub fn plugin_schema_version_from_exports<'a>(export_names: impl Iterator<Item =
     4 => Ok(PluginSchemaVersion::V4),
     version if version > 4 => {
       bail!(
-        "Invalid schema version: {} -- Expected: {}. Upgrade your dprint CLI ({}).",
+        "Invalid schema version: {} -- Expected: {}. Upgrade your kprint CLI ({}).",
         plugin_schema_version,
         PLUGIN_SYSTEM_SCHEMA_VERSION,
         get_current_exe_display(),
@@ -424,7 +424,7 @@ pub fn plugin_schema_version_from_exports<'a>(export_names: impl Iterator<Item =
     }
     plugin_schema_version => {
       bail!(
-        "Invalid schema version: {} -- Expected: {}. This plugin is too old for your version of dprint ({}). Please update the plugin manually.",
+        "Invalid schema version: {} -- Expected: {}. This plugin is too old for your version of kprint ({}). Please update the plugin manually.",
         plugin_schema_version,
         PLUGIN_SYSTEM_SCHEMA_VERSION,
         get_current_exe_display(),

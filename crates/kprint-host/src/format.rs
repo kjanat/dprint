@@ -679,7 +679,7 @@ where
         bail!(
           concat!(
             "The original file text was greater than {} characters, but the formatted text was empty. ",
-            "Most likely this is a bug in the plugin and the dprint CLI has prevented the plugin from ",
+            "Most likely this is a bug in the plugin and the kprint CLI has prevented the plugin from ",
             "formatting the file to an empty file. Please report this scenario.",
           ),
           MIN_CHARS_TO_EMPTY

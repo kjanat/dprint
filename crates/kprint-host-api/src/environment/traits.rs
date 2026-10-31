@@ -303,7 +303,7 @@ pub trait OutputEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   fn __log__(&self, text: &str);
   /// Don't ever call this directly in the code. That's why this has this weird name.
   fn __log_stderr__(&self, text: &str) {
-    self.log_stderr_with_context(text, "dprint");
+    self.log_stderr_with_context(text, "kprint");
   }
   /// Logs an error to the console providing the context name.
   /// This will cause the logger to output the context name when appropriate.
@@ -400,6 +400,13 @@ pub trait ProcessEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
 pub trait ApplicationEnvironment: Clone + Send + Sync + std::fmt::Debug + 'static {
   /// Gets the CLI version
   fn cli_version(&self) -> String;
+  /// The CLI version for people (ex. `0.60.5`): the version without the
+  /// fork's `-kjanat`, which only tells its release tags from dprint's. The
+  /// version itself is what's compared with a release's tag.
+  fn cli_display_version(&self) -> String {
+    let version = self.cli_version();
+    version.strip_suffix("-kjanat").map(str::to_string).unwrap_or(version)
+  }
   fn is_ci(&self) -> bool;
 }
 

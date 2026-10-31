@@ -19,7 +19,7 @@ use crate::utils::get_table_text;
 use crate::utils::is_out_of_date;
 
 pub fn output_version<TEnvironment: Environment>(environment: &TEnvironment) -> Result<()> {
-  log_stdout_info!(environment, "dprint {}", environment.cli_version());
+  log_stdout_info!(environment, "kprint {}", environment.cli_display_version());
 
   Ok(())
 }
@@ -59,7 +59,7 @@ pub async fn output_help<TEnvironment: Environment>(
   if let Some(latest_version) = is_out_of_date(environment).await {
     log_stdout_info!(
       environment,
-      "\nLatest version: {} (Current is {})\nDownload the latest version by running: dprint upgrade",
+      "\nLatest version: {} (Current is {})\nDownload the latest version by running: kprint upgrade",
       latest_version,
       environment.cli_version(),
     );
@@ -229,7 +229,7 @@ pub fn completions<TEnvironment: Environment>(shell: clap_complete::Shell, envir
   let mut cmd = create_cli_parser(CliArgParserKind::ForCompletions);
 
   let mut buffer = Vec::new();
-  clap_complete::generate(shell, &mut cmd, "dprint", &mut buffer);
+  clap_complete::generate(shell, &mut cmd, "kprint", &mut buffer);
   environment.log_machine_readable(&buffer);
 
   Ok(())
@@ -305,7 +305,7 @@ mod test {
     let environment = TestEnvironment::new();
     run_test_cli(vec!["-v"], &environment).unwrap();
     let logged_messages = environment.take_stdout_messages();
-    assert_eq!(logged_messages, vec![format!("dprint {}", environment.cli_version())]);
+    assert_eq!(logged_messages, vec![format!("kprint {}", environment.cli_display_version())]);
   }
 
   #[test]
@@ -313,7 +313,7 @@ mod test {
     let environment = TestEnvironment::new();
     run_test_cli(vec!["--version"], &environment).unwrap();
     let logged_messages = environment.take_stdout_messages();
-    assert_eq!(logged_messages, vec![format!("dprint {}", environment.cli_version())]);
+    assert_eq!(logged_messages, vec![format!("kprint {}", environment.cli_display_version())]);
   }
 
   #[test]
@@ -321,7 +321,7 @@ mod test {
     let environment = TestEnvironmentBuilder::with_initialized_remote_wasm_and_process_plugin().build();
     run_test_cli(vec!["--version"], &environment).unwrap();
     let logged_messages = environment.take_stdout_messages();
-    assert_eq!(logged_messages, vec![format!("dprint {}", environment.cli_version())]);
+    assert_eq!(logged_messages, vec![format!("kprint {}", environment.cli_display_version())]);
   }
 
   #[test]
@@ -376,7 +376,7 @@ mod test {
         get_expected_help_text(),
         concat!(
           "\nLatest version: 0.1.0 (Current is 0.0.0)",
-          "\nDownload the latest version by running: dprint upgrade",
+          "\nDownload the latest version by running: kprint upgrade",
         )
       ]
     );
@@ -486,7 +486,7 @@ mod test {
       err.to_string(),
       concat!(
         "No files found to format with the specified plugins at /sub. You may want to try using ",
-        "`dprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
+        "`kprint output-file-paths` to see which files it's finding or run with `--allow-no-files`."
       )
     );
     // nothing was formatted

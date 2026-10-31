@@ -83,7 +83,7 @@ pub async fn read_update_url(downloader: &impl UrlDownloader, url: &Url) -> Resu
   if schema_version != SCHEMA_VERSION as u32 {
     bail!(
       concat!(
-        "Cannot handle schema version {}. Expected {}. This might mean your dprint CLI ",
+        "Cannot handle schema version {}. Expected {}. This might mean your kprint CLI ",
         "version is old and isn't able to get the latest information or the registry ",
         "needs to update its schema version.",
       ),
@@ -215,7 +215,7 @@ mod test {
           .unwrap()
           .to_string(),
         concat!(
-          "Cannot handle schema version 205. Expected 1. This might mean your dprint CLI version ",
+          "Cannot handle schema version 205. Expected 1. This might mean your kprint CLI version ",
           "is old and isn't able to get the latest information or the registry needs to update its schema version.",
         )
       );

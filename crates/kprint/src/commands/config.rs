@@ -128,7 +128,7 @@ pub async fn init_config_file<TEnvironment: Environment>(
   environment.write_file(&config_file_path, &text)?;
   log_stdout_info!(environment, "\nCreated {}", config_file_path.display());
   if options.global {
-    log_stdout_info!(environment, "\nRun `dprint config edit --global` to modify this file in the future.");
+    log_stdout_info!(environment, "\nRun `kprint config edit --global` to modify this file in the future.");
   }
   log_stdout_info!(
     environment,
@@ -175,7 +175,7 @@ async fn add_missing_plugins_to_config_file<TEnvironment: Environment>(
   .await?;
   let entries = match plugins_to_add {
     InitPluginsToAdd::AllPluginsConfigured => {
-      log_stdout_info!(environment, "{} already has every plugin dprint knows about.", config_file_path.display());
+      log_stdout_info!(environment, "{} already has every plugin kprint knows about.", config_file_path.display());
       return Ok(());
     }
     InitPluginsToAdd::Entries(entries) => entries,
@@ -206,7 +206,7 @@ pub async fn edit_config_file<TEnvironment: Environment>(args: &CliArgs, environ
   let config_path_and_bytes = resolve_main_config_path_and_bytes(args, environment).await?.ok_or_else(|| {
     let is_global = args.config_discovery(environment).is_global();
     anyhow::anyhow!(
-      "Could not find a configuration file. Create one with `dprint init{}`",
+      "Could not find a configuration file. Create one with `kprint init{}`",
       if is_global { " --global" } else { "" }
     )
   })?;
@@ -296,7 +296,7 @@ pub async fn add_plugin_config_file<TEnvironment: Environment>(
     }
     let mut possible_plugins = get_possible_plugins_to_add(environment, plugin_resolver, config.plugins.sources).await?;
     if possible_plugins.is_empty() {
-      bail!("Could not find any plugins to add. Please provide one by specifying `dprint add <plugin-url>`.");
+      bail!("Could not find any plugins to add. Please provide one by specifying `kprint add <plugin-url>`.");
     }
     let index = environment.get_selection(
       "Select a plugin to add:",
@@ -537,7 +537,7 @@ async fn resolve_plugin_url_to_add<TEnvironment: Environment>(
         {
           log_warn!(
             environment,
-            "Skipping {}. The configuration file already has it, served by dprint's built-in {}.",
+            "Skipping {}. The configuration file already has it, served by kprint's built-in {}.",
             plugin_name_or_url,
             built_in.name
           );
@@ -861,7 +861,7 @@ fn apply_package_json_additions(config_path: &CanonicalizedPathBuf, additions: &
   let Some(pkg_path) = pkg_path else {
     log_warn!(
       environment,
-      "Skipped package.json update: no package.json was found at or above {}. Run `npm init -y` and re-run `dprint add --package-json` to record {} entr{}.",
+      "Skipped package.json update: no package.json was found at or above {}. Run `npm init -y` and re-run `kprint add --package-json` to record {} entr{}.",
       start_dir.display(),
       additions.len(),
       if additions.len() == 1 { "y" } else { "ies" },
@@ -1389,7 +1389,7 @@ async fn get_plugins_to_update<TEnvironment: Environment>(
     if let Some(built_in) = plugin.built_in() {
       log_debug!(
         environment,
-        "Skipping {}. It's served by dprint's built-in {}, which updates with dprint.",
+        "Skipping {}. It's served by kprint's built-in {}, which updates with kprint.",
         plugin_reference.display(),
         built_in.name
       );
@@ -2447,7 +2447,7 @@ mod test {
       vec![
         concat!(
           "The configuration schema of the test-plugin plugin (https://plugins.dprint.dev/test/schema.json) ",
-          "is for https://json-schema.org/draft/2099-01/schema, a JSON schema draft dprint doesn't know, so it's referred to by its url instead. ",
+          "is for https://json-schema.org/draft/2099-01/schema, a JSON schema draft kprint doesn't know, so it's referred to by its url instead. ",
           "Editors may report dprint's own properties of its table (ex. `associations`) as unknown."
         )
         .to_string(),
@@ -3000,7 +3000,7 @@ mod test {
     assert_eq!(
       environment.take_stdout_messages(),
       vec![format!(
-        "{} already has every plugin dprint knows about.",
+        "{} already has every plugin kprint knows about.",
         Path::new("/").join("dprint.json").display()
       )]
     );
@@ -3054,7 +3054,7 @@ mod test {
       environment.take_stdout_messages(),
       vec![
         format!("\nCreated {}", config_path.display()),
-        "\nRun `dprint config edit --global` to modify this file in the future.".to_string(),
+        "\nRun `kprint config edit --global` to modify this file in the future.".to_string(),
         "\nIf you are working in a commercial environment please consider sponsoring dprint: https://dprint.dev/sponsor".to_string()
       ]
     );
@@ -3094,7 +3094,7 @@ mod test {
       environment.take_stdout_messages(),
       vec![
         format!("\nCreated {}", Path::new("/custom/config").join("dprint.jsonc").display()),
-        "\nRun `dprint config edit --global` to modify this file in the future.".to_string(),
+        "\nRun `kprint config edit --global` to modify this file in the future.".to_string(),
         "\nIf you are working in a commercial environment please consider sponsoring dprint: https://dprint.dev/sponsor".to_string()
       ]
     );
@@ -3190,7 +3190,7 @@ mod test {
       config_has_wasm: true,
       config_has_process: true,
       remote_has_checksums: false,
-      expected_error: Some("Could not find any plugins to add. Please provide one by specifying `dprint add <plugin-url>`."),
+      expected_error: Some("Could not find any plugins to add. Please provide one by specifying `kprint add <plugin-url>`."),
       expected_logs: vec![],
       expected_urls: vec![],
       selection_result: Some(0),
@@ -4170,7 +4170,7 @@ mod test {
     assert_eq!(environment.read_file("/dprint.json").unwrap(), config_text);
     assert_eq!(
       environment.take_stderr_messages(),
-      vec!["Skipping exec. The configuration file already has it, served by dprint's built-in exec."]
+      vec!["Skipping exec. The configuration file already has it, served by kprint's built-in exec."]
     );
   }
 
@@ -4636,7 +4636,7 @@ text",
     let environment = TestEnvironment::new();
 
     let error = run_test_cli(vec!["config", "edit"], &environment).err().unwrap();
-    assert_eq!(error.to_string(), "Could not find a configuration file. Create one with `dprint init`");
+    assert_eq!(error.to_string(), "Could not find a configuration file. Create one with `kprint init`");
   }
 
   #[test]
@@ -4646,7 +4646,7 @@ text",
     let error = run_test_cli(vec!["config", "edit", "--global"], &environment).err().unwrap();
     assert_eq!(
       error.to_string(),
-      "Could not find global dprint.json file. Create one with `dprint init --global`"
+      "Could not find global dprint.json file. Create one with `kprint init --global`"
     );
   }
 

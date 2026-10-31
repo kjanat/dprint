@@ -5,7 +5,7 @@ set -euo pipefail
 repository_path="${GITHUB_REPOSITORY:-kjanat/dprint}"
 repository="${GITHUB_SERVER_URL:-https://github.com}/${repository_path}"
 homepage=https://dprint.kjanat.dev
-description='Pluggable and configurable code formatting platform'
+description='Pluggable and configurable code formatter written in Rust, forked from dprint'
 
 usage() {
 	echo "usage: $0 render TAG SHASUMS DIRECTORY | publish TAG DIRECTORY" >&2
@@ -13,7 +13,7 @@ usage() {
 }
 
 sha() {
-	local asset="dprint-$1.zip" hash
+	local asset="kprint-$1.zip" hash
 	hash="$(awk -v asset="${asset}" '$2 == asset { print $1 }' "${shasums}")"
 	if [[ ! "${hash}" =~ ^[0-9a-f]{64}$ ]]; then
 		echo "${shasums} has no SHA-256 for ${asset}" >&2
@@ -31,36 +31,36 @@ render() {
 	windows_x64="$(sha x86_64-pc-windows-msvc)"
 	windows_arm64="$(sha aarch64-pc-windows-msvc)"
 	mkdir -p "${directory}"
-	cat >"${directory}/dprint.rb" <<RUBY
-cask "dprint" do
+	cat >"${directory}/kprint.rb" <<RUBY
+cask "kprint" do
   version "${tag}"
 
   on_macos do
     on_arm do
       sha256 "${mac_arm}"
-      url "${repository}/releases/download/#{version}/dprint-aarch64-apple-darwin.zip",
+      url "${repository}/releases/download/#{version}/kprint-aarch64-apple-darwin.zip",
         verified: "${repository#*://}/"
     end
     on_intel do
       sha256 "${mac_x64}"
-      url "${repository}/releases/download/#{version}/dprint-x86_64-apple-darwin.zip",
+      url "${repository}/releases/download/#{version}/kprint-x86_64-apple-darwin.zip",
         verified: "${repository#*://}/"
     end
   end
   on_linux do
     on_arm do
       sha256 "${linux_arm}"
-      url "${repository}/releases/download/#{version}/dprint-aarch64-unknown-linux-gnu.zip",
+      url "${repository}/releases/download/#{version}/kprint-aarch64-unknown-linux-gnu.zip",
         verified: "${repository#*://}/"
     end
     on_intel do
       sha256 "${linux_x64}"
-      url "${repository}/releases/download/#{version}/dprint-x86_64-unknown-linux-gnu.zip",
+      url "${repository}/releases/download/#{version}/kprint-x86_64-unknown-linux-gnu.zip",
         verified: "${repository#*://}/"
     end
   end
 
-  name "dprint"
+  name "kprint"
   desc "${description}"
   homepage "${homepage}"
 
@@ -68,15 +68,17 @@ cask "dprint" do
     skip "Updated on release."
   end
 
-  binary "dprint"
+  binary "kprint"
+  # for what calls dprint
+  binary "kprint", target: "dprint"
 
   postflight do
     if OS.mac?
-      system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/dprint"]
+      system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kprint"]
     end
   end
-  generate_completions_from_executable "dprint", "completions",
-    base_name: "dprint",
+  generate_completions_from_executable "kprint", "completions",
+    base_name: "kprint",
     shells: [:bash, :zsh, :fish]
 end
 RUBY
@@ -93,11 +95,11 @@ RUBY
 			homepage: $homepage,
 			license: "MIT",
 			architecture: {
-				"64bit": { url: "\($base)/dprint-x86_64-pc-windows-msvc.zip", hash: $x64 },
-				arm64: { url: "\($base)/dprint-aarch64-pc-windows-msvc.zip", hash: $arm64 }
+				"64bit": { url: "\($base)/kprint-x86_64-pc-windows-msvc.zip", hash: $x64 },
+				arm64: { url: "\($base)/kprint-aarch64-pc-windows-msvc.zip", hash: $arm64 }
 			},
-			bin: "dprint.exe"
-		}' >"${directory}/dprint.json"
+			bin: ["kprint.exe", ["kprint.exe", "dprint"]]
+		}' >"${directory}/kprint.json"
 }
 
 publish_file() {
@@ -121,7 +123,7 @@ publish_file() {
 	fi
 	content="$(base64 -w0 "${file}")"
 	GH_TOKEN="${token}" gh api --method PUT "${endpoint}" \
-		-f message="Update dprint to ${tag}" \
+		-f message="Update kprint to ${tag}" \
 		-f branch=master \
 		-f content="${content}" \
 		${sha:+-f sha="${sha}"} >/dev/null
@@ -129,8 +131,8 @@ publish_file() {
 }
 
 publish() {
-	publish_file homebrew-tap Casks/dprint.rb "${directory}/dprint.rb" "${HOMEBREW_TAP_TOKEN:?}"
-	publish_file scoop-bucket bucket/dprint.json "${directory}/dprint.json" "${SCOOP_BUCKET_TOKEN:?}"
+	publish_file homebrew-tap Casks/kprint.rb "${directory}/kprint.rb" "${HOMEBREW_TAP_TOKEN:?}"
+	publish_file scoop-bucket bucket/kprint.json "${directory}/kprint.json" "${SCOOP_BUCKET_TOKEN:?}"
 }
 
 case "${1:-}" in

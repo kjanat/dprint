@@ -44,7 +44,7 @@ impl std::fmt::Debug for CliServices {
 }
 pub fn create_real_environment(options: RealEnvironmentOptions) -> Result<RealEnvironment> {
   let logger = Arc::new(Logger::new(&LoggerOptions {
-    initial_context_name: "dprint".to_string(),
+    initial_context_name: "kprint".to_string(),
     is_stdout_machine_readable: options.is_stdout_machine_readable,
     log_level: options.log_level,
   }));
@@ -67,7 +67,7 @@ pub fn create_real_environment(options: RealEnvironmentOptions) -> Result<RealEn
 }
 impl kprint_platform::environment::OutputEnvironment for CliServices {
   fn __log__(&self, text: &str) {
-    self.logger.log(text, "dprint");
+    self.logger.log(text, "kprint");
   }
 
   fn log_machine_readable(&self, bytes: &[u8]) {
@@ -98,11 +98,11 @@ impl kprint_platform::environment::OutputEnvironment for CliServices {
 }
 impl kprint_platform::environment::InteractionEnvironment for CliServices {
   fn get_selection(&self, prompt_message: &str, item_indent_width: u16, items: &[String]) -> Result<usize> {
-    show_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
+    show_select(&self.logger, "kprint", prompt_message, item_indent_width, items)
   }
 
   fn get_multi_selection(&self, prompt_message: &str, item_indent_width: u16, items: Vec<MultiSelectItem>) -> Result<Vec<usize>> {
-    show_multi_select(&self.logger, "dprint", prompt_message, item_indent_width, items)
+    show_multi_select(&self.logger, "kprint", prompt_message, item_indent_width, items)
   }
 
   fn stdout(&self) -> Box<dyn io::Write + Send> {
@@ -156,7 +156,7 @@ impl NativeServices for CliServices {
 
 impl kprint_platform::environment::ConsentEnvironment for CliServices {
   fn confirm_with_strategy(&self, strategy: &dyn ShowConfirmStrategy) -> Result<bool> {
-    show_confirm(&self.logger, "dprint", strategy)
+    show_confirm(&self.logger, "kprint", strategy)
   }
   fn is_terminal_interactive(&self) -> bool {
     is_terminal_interactive()

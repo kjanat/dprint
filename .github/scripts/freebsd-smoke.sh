@@ -2,7 +2,7 @@
 # Run from the repository root against the binary built in the FreeBSD VM.
 set -eu
 
-exe=$(realpath "${1:?Path to the dprint binary is required}")
+exe=$(realpath "${1:?Path to the kprint binary is required}")
 smoke_dir=$(mktemp -d)
 trap 'rm -rf "${smoke_dir}"' EXIT HUP INT TERM
 export DPRINT_CACHE_DIR="${smoke_dir}/cache"

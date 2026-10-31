@@ -558,7 +558,7 @@ function field(name,   value) {
       assert_eq!(format(&config, &served, "c.txt", b"SAME").await, Ok(None));
     });
     assert_eq!(worker.starts().len(), 1);
-    assert!(!is_running(&worker.starts()[0]), "the process should end with dprint");
+    assert!(!is_running(&worker.starts()[0]), "the process should end with kprint");
   }
 
   #[test]

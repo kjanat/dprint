@@ -140,7 +140,7 @@ jobs:
     environment: { name: aur, url: "https://aur.archlinux.org/packages/${{ matrix.package }}" }
     strategy:
       fail-fast: false
-      matrix: { package: [dprint-kjanat-bin, dprint-kjanat] }
+      matrix: { package: [kprint-bin, kprint] }
     env:
       TAG: ${{ github.event.release.tag_name || inputs.version }}
       PKGBUILD: deployment/aur/${{ matrix.package }}/PKGBUILD
@@ -185,7 +185,7 @@ jobs:
         with: { ref: "${{ needs.plan.outputs.ref || github.sha }}", persist-credentials: false }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.plan.outputs.channel == 'nightly'
-        with: { pattern: dprint-*, merge-multiple: true, path: zips }
+        with: { pattern: kprint-*, merge-multiple: true, path: zips }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - name: Install the build's dependencies
         run: deno install --entrypoint deployment/npm/build.ts
@@ -252,7 +252,7 @@ jobs:
         working-directory: ${{ runner.temp }}/npm-test
         run: |
           npm init -y
-          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          EXPECTED_VERSION="kprint ${KPRINT_VERSION}"
           npm install "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$(npx "${command}" -v)"
@@ -267,11 +267,11 @@ jobs:
         run: |
           npm init -y
           npm install "@kprint/kprint@${KPRINT_VERSION}"
-          rm -f node_modules/@kprint/kprint/dprint*
+          rm -f node_modules/@kprint/kprint/kprint*
           DPRINT_SIMULATED_READONLY_FILE_SYSTEM=1 node node_modules/@kprint/kprint/bin.cjs -v
       - name: Test npm global install kprint
         run: |
-          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          EXPECTED_VERSION="kprint ${KPRINT_VERSION}"
           npm install -g "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"
@@ -293,7 +293,7 @@ jobs:
           npm uninstall -g @kprint/kprint
       - name: Test npm global install kprint (--ignore-scripts)
         run: |
-          EXPECTED_VERSION="dprint ${KPRINT_VERSION}"
+          EXPECTED_VERSION="kprint ${KPRINT_VERSION}"
           npm install -g --ignore-scripts "@kprint/kprint@${KPRINT_VERSION}"
           for command in kprint dprint; do
             ACTUAL="$("${command}" -v)"

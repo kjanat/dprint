@@ -1,9 +1,9 @@
 # :schema https://www.schemastore.org/cargo-config.json
 
 [alias]
-build-dprint = "build -p kprint --release --bin dprint"
+build-kprint = "build -p kprint --release --bin kprint"
 lint         = "clippy --workspace --all-features --all-targets"
-run-dprint   = "run -qp kprint --release --bin dprint --"
+run-kprint   = "run -qp kprint --release --bin kprint --"
 
 [build]
 rustflags = "-Dwarnings"

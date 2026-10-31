@@ -318,7 +318,7 @@ pub fn parse_process_plugin_file(bytes: &[u8]) -> Result<ProcessPluginFile> {
   let plugin_file: Value = match serde_json::from_slice(bytes) {
     Ok(plugin_file) => plugin_file,
     Err(err) => bail!(
-      "Error deserializing plugin file: {}\n\nThis might mean you're using an old version of dprint.",
+      "Error deserializing plugin file: {}\n\nThis might mean you're using an old version of kprint.",
       err
     ),
   };
@@ -342,7 +342,7 @@ fn verify_plugin_file(plugin_file: &Value) -> Result<()> {
   if let Some(kind) = kind
     && kind != "process"
   {
-    bail!("Unsupported plugin kind: {kind}\nOnly process plugins are supported by this version of dprint. Please upgrade your CLI.");
+    bail!("Unsupported plugin kind: {kind}\nOnly process plugins are supported by this version of kprint. Please upgrade your CLI.");
   }
 
   Ok(())
@@ -456,7 +456,7 @@ mod test {
         .err()
         .unwrap()
         .to_string(),
-      "Unsupported plugin kind: other\nOnly process plugins are supported by this version of dprint. Please upgrade your CLI.",
+      "Unsupported plugin kind: other\nOnly process plugins are supported by this version of kprint. Please upgrade your CLI.",
     );
   }
 }

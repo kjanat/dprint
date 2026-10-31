@@ -106,13 +106,13 @@ jobs:
             rustup show active-toolchain
             cargo build -p kprint -p test-process-plugin --locked --target "${target}" ${release}
             cargo test --locked --target "${target}" --all-features ${release}
-            sh .github/scripts/freebsd-smoke.sh "target/${target}/${PROFILE}/dprint"
+            sh .github/scripts/freebsd-smoke.sh "target/${target}/${PROFILE}/kprint"
             if [ "${PROFILE}" = release ]; then
               # the binary is all packaging needs, so it's all that's copied back
-              mv "target/${target}/release/dprint" /tmp/dprint
+              mv "target/${target}/release/kprint" /tmp/kprint
               rm -rf target
               mkdir -p "target/${target}/release"
-              mv /tmp/dprint "target/${target}/release/dprint"
+              mv /tmp/kprint "target/${target}/release/kprint"
             fi
 
       - name: Test shell installer
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.profile == 'release'
         with:
-          name: dprint-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/dprint-${{ matrix.target }}.zip
+          name: kprint-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/kprint-${{ matrix.target }}.zip
           if-no-files-found: error
           overwrite: true

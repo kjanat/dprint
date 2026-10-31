@@ -211,7 +211,7 @@ async fn read_plugin_info_file(environment: &impl Environment) -> Option<InfoFil
         log_error!(
           environment,
           concat!(
-            "You are using an old version of dprint so the latest plugins may not be suggested. ",
+            "You are using an old version of kprint so the latest plugins may not be suggested. ",
             "Consider upgrading to support new plugins. ",
             "Plugin system schema version is {}, latest is {}."
           ),
@@ -2167,7 +2167,7 @@ mod test {
       );
       let mut expected_messages = get_standard_logged_messages_no_plugin_selection();
       expected_messages.push(concat!(
-        "You are using an old version of dprint so the latest plugins may not be suggested. ",
+        "You are using an old version of kprint so the latest plugins may not be suggested. ",
         "Consider upgrading to support new plugins. ",
         "Plugin system schema version is 4, latest is 999."
       ));

@@ -92,28 +92,34 @@ pub fn get_plural_formatted_text(count: usize) -> String {
 }
 
 pub fn get_singular_check_text() -> String {
-  format!("Found {} not formatted file. Run {} to fix.", colors::bold("1"), colors::bold("dprint fmt"))
+  format!("Found {} not formatted file. Run {} to fix.", colors::bold("1"), colors::bold("kprint fmt"))
 }
 
 pub fn get_plural_check_text(count: usize) -> String {
   format!(
     "Found {} not formatted files. Run {} to fix.",
     colors::bold(count.to_string()),
-    colors::bold("dprint fmt")
+    colors::bold("kprint fmt")
   )
 }
 
+/// The help, which shows the version without the fork's `-kjanat` (see
+/// `cli_display_version`).
 pub fn get_expected_help_text() -> &'static str {
-  concat!(
-    "dprint ",
-    env!("CARGO_PKG_VERSION"),
-    r#"
+  static TEXT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let version = env!("CARGO_PKG_VERSION");
+    format!("kprint {}{}", version.strip_suffix("-kjanat").unwrap_or(version), EXPECTED_HELP_BODY)
+  });
+  &TEXT
+}
+
+const EXPECTED_HELP_BODY: &str = r#"
 Copyright 2019 by David Sherret
 
 Auto-formats source code based on the specified plugins.
 
 USAGE:
-    dprint <SUBCOMMAND> [OPTIONS] [--] [files/directories/patterns]...
+    kprint <SUBCOMMAND> [OPTIONS] [--] [files/directories/patterns]...
 
 SUBCOMMANDS:
   init               Initializes a configuration file in the current directory, or adds plugins to an existing one.
@@ -127,12 +133,12 @@ SUBCOMMANDS:
   incremental-state  Prints the state used to determine whether the incremental cache would be invalidated.
   format-times       Prints the amount of time it takes to format each file. Use this for debugging.
   clear-cache        Deletes the plugin cache directory.
-  upgrade            Upgrades the dprint executable.
-  completions        Generate shell completions script for dprint
+  upgrade            Upgrades the kprint executable.
+  completions        Generate shell completions script for kprint
   license            Outputs the software license.
   lsp                Starts up a language server for formatting files.
 
-More details at `dprint help <SUBCOMMAND>`
+More details at `kprint help <SUBCOMMAND>`
 
 OPTIONS:
   -c, --config [<config>]             Path or url to JSON or TOML configuration file, the configuration text itself (a `{...}` object or TOML), or `-` to read it from stdin. Defaults to dprint.json(c), .dprint.json(c), dprint.toml or .dprint.toml in current or ancestor directory when not provided.
@@ -141,7 +147,7 @@ OPTIONS:
   -L, --log-level <log-level>         Set log level [default: info] [possible values: debug, info, warn, error, silent]
 
 ENVIRONMENT VARIABLES:
-  DPRINT_MAX_THREADS   Limit the number of threads dprint uses for
+  DPRINT_MAX_THREADS   Limit the number of threads kprint uses for
                        formatting (ex. DPRINT_MAX_THREADS=4).
   DPRINT_MAX_PLUGIN_COMPILES
                        The most Wasm plugins a run compiles to native code
@@ -161,7 +167,7 @@ ENVIRONMENT VARIABLES:
   DPRINT_TLS_CA_STORE  Comma-separated list of order dependent certificate stores.
                        Possible values: "mozilla" and "system".
                        Defaults to "mozilla,system".
-  DPRINT_IGNORE_CERTS  Unsafe way to get dprint to ignore certificates. Specify 1
+  DPRINT_IGNORE_CERTS  Unsafe way to get kprint to ignore certificates. Specify 1
                        to ignore all certificates or a comma separated list of specific
                        hosts to ignore (ex. dprint.dev,localhost,[::],127.0.0.1)
   DPRINT_EDITOR        Editor used for editing config files.
@@ -175,32 +181,30 @@ ENVIRONMENT VARIABLES:
 
 GETTING STARTED:
   1. Navigate to the root directory of a code repository.
-  2. Run `dprint init` to create a dprint.json file in that directory.
+  2. Run `kprint init` to create a dprint.json file in that directory.
   3. Modify configuration file if necessary.
-  4. Run `dprint fmt` or `dprint check`.
+  4. Run `kprint fmt` or `kprint check`.
 
 EXAMPLES:
   Write formatted files to file system:
 
-    dprint fmt
+    kprint fmt
 
   Check for files that haven't been formatted:
 
-    dprint check
+    kprint check
 
   Specify path to config file other than the default:
 
-    dprint fmt --config path/to/config/dprint.json
+    kprint fmt --config path/to/config/dprint.json
 
   Provide the configuration instead of a path to it:
 
-    dprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
-    dprint fmt --config <(cat path/to/config/dprint.json)
-    dprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
+    kprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
+    kprint fmt --config <(cat path/to/config/dprint.json)
+    kprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
 
   Search for files using the specified paths or file patterns:
 
-    dprint fmt "**/*.{ts,tsx,js,jsx,json}"
-"#
-  )
-}
+    kprint fmt "**/*.{ts,tsx,js,jsx,json}"
+"#;

@@ -29,7 +29,7 @@ struct ReleaseAsset {
 
 // Note: To test `dprint upgrade`, you must do so manually at the moment.
 // Update ./crates/kprint/Cargo.toml to have a version below the current
-// released one, then run `./target/debug/dprint upgrade --log-level=debug`.
+// released one, then run `./target/debug/kprint upgrade --log-level=debug`.
 
 pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> Result<()> {
   let (_, release_file) = environment
@@ -50,15 +50,15 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
   let mut components = exe_path.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).peekable();
   while let Some(component) = components.next() {
     if component == "node_modules" {
-      bail!("Cannot upgrade with `dprint upgrade` when the dprint executable is within a node_modules folder. Upgrade with npm instead.");
+      bail!("Cannot upgrade with `kprint upgrade` when the kprint executable is within a node_modules folder. Upgrade with npm instead.");
     } else if component == ".cargo" {
-      bail!("It looks like you might have installed dprint with cargo install. Upgrade with cargo instead.");
+      bail!("It looks like you might have installed kprint with cargo install. Upgrade with cargo instead.");
     } else if component == "deno" && matches!(components.peek().map(|c| c.as_str()), Some("npm")) {
-      bail!("It looks like you might have installed dprint with Deno. Upgrade by running the following instead: deno install -A -f npm:dprint");
+      bail!("It looks like you might have installed kprint with Deno. Upgrade by running the following instead: deno install -A -f npm:@kprint/kprint");
     }
   }
   if exe_path.starts_with("/usr/local/Cellar/") {
-    bail!("Cannot upgrade with `dprint upgrade` when the dprint executable is installed via Homebrew. Run `brew upgrade dprint` instead.");
+    bail!("Cannot upgrade with `kprint upgrade` when the kprint executable is installed via Homebrew. Run `brew upgrade kprint` instead.");
   }
 
   let permissions = environment.file_permissions(&exe_path)?;
@@ -76,7 +76,7 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
     "windows" => "pc-windows-msvc",
     _ => bail!("Not implemented operating system: {}", os),
   };
-  let zip_filename = format!("dprint-{}-{}.zip", arch, zip_suffix);
+  let zip_filename = format!("kprint-{}-{}.zip", arch, zip_suffix);
   let asset = release
     .assets
     .iter()
@@ -101,7 +101,7 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
     environment.remove_file(&exe_path)?;
   }
 
-  let maybe_reinstall_message = "You may need to reinstall dprint from scratch. Sorry!";
+  let maybe_reinstall_message = "You may need to reinstall kprint from scratch. Sorry!";
   if let Err(err) = try_upgrade(&exe_path, &zip_file.content, permissions, environment) {
     if cfg!(windows) {
       // try to rename it back
@@ -119,14 +119,21 @@ pub async fn upgrade<TEnvironment: Environment>(environment: &TEnvironment) -> R
 
   // it would be nice if we could delete the old executable here on Windows,
   // but we need it in order to keep running the current executable
-  log_stdout_info!(environment, "Upgraded to dprint {}", latest_version);
+  log_stdout_info!(environment, "Upgraded to kprint {}", latest_version);
 
   Ok(())
 }
 
 fn try_upgrade(exe_path: &Path, zip_bytes: &[u8], permissions: FilePermissions, environment: &impl Environment) -> Result<()> {
   try_kill_other_dprint_processes(environment);
-  extract_zip("Extracting zip...", zip_bytes, exe_path.parent().unwrap(), environment)?;
+  let exe_dir = exe_path.parent().unwrap();
+  extract_zip("Extracting zip...", zip_bytes, exe_dir, environment)?;
+  // the zip has kprint, which replaces the executable whatever it's named
+  // (ex. a dprint from before the rename)
+  let extracted = exe_dir.join(if cfg!(windows) { "kprint.exe" } else { "kprint" });
+  if extracted != exe_path {
+    environment.rename(&extracted, exe_path)?;
+  }
   environment.set_file_permissions(exe_path, permissions)?;
   validate_executable(exe_path).context("Error validating new executable.")?;
   Ok(())
@@ -141,10 +148,10 @@ fn validate_executable(path: &Path) -> Result<()> {
 }
 
 fn try_kill_other_dprint_processes(environment: &impl Environment) {
-  let pids = match get_running_pids_by_name("dprint") {
+  let pids = match get_running_pids_by_name("kprint") {
     Ok(pids) => pids,
     Err(err) => {
-      log_debug!(environment, "Error getting dprint processes. {:#}", err);
+      log_debug!(environment, "Error getting kprint processes. {:#}", err);
       return;
     }
   };
@@ -206,7 +213,7 @@ mod test {
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
       err.to_string(),
-      "Cannot upgrade with `dprint upgrade` when the dprint executable is within a node_modules folder. Upgrade with npm instead.",
+      "Cannot upgrade with `kprint upgrade` when the kprint executable is within a node_modules folder. Upgrade with npm instead.",
     );
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
   }
@@ -219,7 +226,7 @@ mod test {
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
       err.to_string(),
-      "Cannot upgrade with `dprint upgrade` when the dprint executable is installed via Homebrew. Run `brew upgrade dprint` instead.",
+      "Cannot upgrade with `kprint upgrade` when the kprint executable is installed via Homebrew. Run `brew upgrade kprint` instead.",
     );
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
   }
@@ -232,7 +239,7 @@ mod test {
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
     assert_eq!(
       err.to_string(),
-      "It looks like you might have installed dprint with cargo install. Upgrade with cargo instead.",
+      "It looks like you might have installed kprint with cargo install. Upgrade with cargo instead.",
     );
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
   }
@@ -246,8 +253,8 @@ mod test {
     assert_eq!(
       err.to_string(),
       concat!(
-        "It looks like you might have installed dprint with Deno. ",
-        "Upgrade by running the following instead: deno install -A -f npm:dprint",
+        "It looks like you might have installed kprint with Deno. ",
+        "Upgrade by running the following instead: deno install -A -f npm:@kprint/kprint",
       ),
     );
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
@@ -271,7 +278,7 @@ mod test {
       environment.write_file(&exe_path, "original executable").unwrap();
       environment.set_cpu_arch(arch);
       environment.set_os(os);
-      let asset_name = format!("dprint-{target}.zip");
+      let asset_name = format!("kprint-{target}.zip");
       let asset_url = format!("https://github.com/kjanat/renamed-repo/releases/download/0.1.0-kjanat/{asset_name}");
       environment.add_remote_file_bytes(
         LATEST_RELEASE_URL,
@@ -279,7 +286,7 @@ mod test {
           "tag_name": "0.1.0-kjanat",
           "assets": [
             { "name": "SHASUMS256.txt", "browser_download_url": "https://example.com/checksums" },
-            { "name": "dprint-other-target.zip", "browser_download_url": "https://example.com/other-target" },
+            { "name": "kprint-other-target.zip", "browser_download_url": "https://example.com/other-target" },
             { "name": asset_name, "browser_download_url": asset_url }
           ]
         }))
@@ -308,7 +315,7 @@ mod test {
     environment.set_cpu_arch("x86_64");
     environment.set_os("linux");
     let err = run_test_cli(vec!["upgrade"], &environment).err().unwrap();
-    assert_eq!(err.to_string(), "Release 0.1.0 does not contain dprint-x86_64-unknown-linux-gnu.zip");
+    assert_eq!(err.to_string(), "Release 0.1.0 does not contain kprint-x86_64-unknown-linux-gnu.zip");
     assert!(environment.path_exists(environment.current_exe().unwrap()));
     assert_eq!(environment.take_stdout_messages(), vec!["Upgrading from 0.0.0 to 0.1.0..."]);
   }

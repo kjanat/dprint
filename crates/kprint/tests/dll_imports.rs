@@ -35,7 +35,7 @@ ws2_32.dll: delay
 #[test]
 #[allow(clippy::disallowed_methods)] // standalone test binary; no Environment available
 fn windows_dll_imports() {
-  let exe_path = env!("CARGO_BIN_EXE_dprint");
+  let exe_path = env!("CARGO_BIN_EXE_kprint");
   let buf = std::fs::read(exe_path).unwrap();
   let pe = Pe::parse(&buf);
 

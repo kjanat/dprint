@@ -5,6 +5,11 @@ tombi                                   = "latest"
 "github:kjanat/runner"                  = "latest"
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"
 
+[wrappers.kprint]
+command = "run"
+args    = ["run-kprint"]
+
+# for what calls dprint (ex. the editor hook)
 [wrappers.dprint]
 command = "run"
-args    = ["run-dprint"]
+args    = ["run-kprint"]

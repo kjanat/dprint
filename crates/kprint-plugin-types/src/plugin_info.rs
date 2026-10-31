@@ -40,7 +40,7 @@ pub struct PluginInfo {
 /// doesn't understand, so point at upgrading rather than leaving the user with
 /// only a deserialization error.
 pub const FILE_MATCHING_INFO_ERROR_MESSAGE: &str =
-  "Failed getting the plugin's file matching info. This plugin may require a newer version of the dprint CLI. Try running: dprint upgrade";
+  "Failed getting the plugin's file matching info. This plugin may require a newer version of the kprint CLI. Try running: kprint upgrade";
 
 /// The plugin file matching information based on the configuration.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]

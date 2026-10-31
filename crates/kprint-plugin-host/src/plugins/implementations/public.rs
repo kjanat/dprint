@@ -297,7 +297,7 @@ fn changed_while_running_error(plugin_reference: &PluginSourceReference, info: &
     _ => String::new(),
   };
   anyhow::anyhow!(
-    "Error loading plugin {}: it changed while dprint was running{}. Run dprint again.",
+    "Error loading plugin {}: it changed while kprint was running{}. Run kprint again.",
     plugin_reference.display(),
     change
   )
@@ -409,8 +409,8 @@ mod test {
     assert_eq!(
       err.to_string(),
       concat!(
-        "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while dprint was running ",
-        "(test-plugin 0.2.0 is now test-plugin 0.1.0). Run dprint again."
+        "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while kprint was running ",
+        "(test-plugin 0.2.0 is now test-plugin 0.1.0). Run kprint again."
       )
     );
 
@@ -438,7 +438,7 @@ mod test {
     let err = plugin.initialize().await.err().unwrap();
     assert_eq!(
       err.to_string(),
-      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while dprint was running. Run dprint again."
+      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while kprint was running. Run kprint again."
     );
     environment.take_stderr_messages();
   }
@@ -461,7 +461,7 @@ mod test {
     let err = plugin.initialize().await.err().unwrap();
     assert_eq!(
       err.to_string(),
-      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while dprint was running. Run dprint again."
+      "Error loading plugin https://plugins.dprint.dev/test.wasm: it changed while kprint was running. Run kprint again."
     );
     environment.take_stderr_messages();
   }
@@ -525,7 +525,7 @@ mod test {
     let err = other_first_build_plugin.initialize().await.err().unwrap();
     assert_eq!(
       err.to_string(),
-      "Error loading plugin /test.wasm: it changed while dprint was running. Run dprint again."
+      "Error loading plugin /test.wasm: it changed while kprint was running. Run kprint again."
     );
     environment.take_stderr_messages();
   }

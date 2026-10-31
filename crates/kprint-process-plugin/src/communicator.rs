@@ -72,13 +72,13 @@ enum SchemaVersionError {
 enum CommunicatorError {
   #[error("Error starting {executable} with args [{args}]. {error}")]
   StartProcess { executable: String, args: String, error: std::io::Error },
-  #[error("Failed plugin schema verification. This may indicate you are using an old version of the dprint CLI or plugin and should upgrade")]
+  #[error("Failed plugin schema verification. This may indicate you are using an old version of the kprint CLI or plugin and should upgrade")]
   SchemaVerification(#[from] SchemaVersionError),
   #[error(
-    "This plugin is too old to run in the dprint CLI and you will need to manually upgrade it (version was {actual}, but expected {expected}).\n\nUpgrade instructions: https://github.com/dprint/dprint/issues/731"
+    "This plugin is too old to run in the kprint CLI and you will need to manually upgrade it (version was {actual}, but expected {expected}).\n\nUpgrade instructions: https://github.com/dprint/dprint/issues/731"
   )]
   PluginTooOld { actual: u32, expected: u32 },
-  #[error("Your dprint CLI is too old to run this plugin (version was {actual}, but expected {expected}). Try running: dprint upgrade")]
+  #[error("Your kprint CLI is too old to run this plugin (version was {actual}, but expected {expected}). Try running: kprint upgrade")]
   CliTooOld { actual: u32, expected: u32 },
   #[error("Error waiting on message ({message_id}). {error}")]
   WaitOnMessage {

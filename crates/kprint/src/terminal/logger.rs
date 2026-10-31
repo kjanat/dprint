@@ -111,7 +111,7 @@ impl Logger {
   /// Don't ever call this directly. It's only used by the macro, which
   /// is why it has this name to discourage its accidental use.
   pub fn __log_stderr__(&self, text: &str) {
-    self.log_stderr_with_context(text, "dprint");
+    self.log_stderr_with_context(text, "kprint");
   }
 
   pub fn log_stderr_with_context(&self, text: &str, context_name: &str) {

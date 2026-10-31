@@ -29,10 +29,11 @@ jobs:
       - name: Build dprint
         run: |
           metadata="$(cargo metadata --locked --no-deps --format-version 1)"
-          package="$(jq --raw-output '.packages[] | select(any(.targets[]; .kind == ["bin"] and .name == "dprint")) | .name' <<< "${metadata}")"
+          # the base branch's binary may still be named dprint
+          read -r package bin < <(jq --raw-output '.packages[] | .name as $package | .targets[] | select(.kind == ["bin"] and (.name == "kprint" or .name == "dprint")) | "\($package) \(.name)"' <<< "${metadata}")
           cargo build -p "${package}" --locked --release
           mkdir -p dist
-          cp target/release/dprint dist/dprint
+          cp "target/release/${bin}" dist/dprint
           git rev-parse HEAD > dist/sha
       - name: Upload dprint
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

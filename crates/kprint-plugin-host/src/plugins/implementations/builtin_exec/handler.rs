@@ -485,7 +485,7 @@ impl SetupFailure {
   fn new(mut message: String, failures: u32) -> Self {
     if failures >= MAX_SETUP_ATTEMPTS {
       message.push_str(&format!(
-        "\n\nIt failed {} times in a row, so it isn't run again until the plugin restarts (ex. dprint, or an editor's language server).",
+        "\n\nIt failed {} times in a row, so it isn't run again until the plugin restarts (ex. kprint, or an editor's language server).",
         failures
       ));
     }
@@ -1679,7 +1679,7 @@ mod test {
     }));
     let failed = "Setup command 'sh' exited with code 1: ";
     let last = format!(
-      "{}\n\nIt failed 5 times in a row, so it isn't run again until the plugin restarts (ex. dprint, or an editor's language server).",
+      "{}\n\nIt failed 5 times in a row, so it isn't run again until the plugin restarts (ex. kprint, or an editor's language server).",
       failed
     );
     run_leaving_nothing_running(async {

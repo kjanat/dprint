@@ -62,7 +62,7 @@ build() {
 }
 
 check_glibc() {
-	local binary="target/${TARGET}/${PROFILE}/dprint" required
+	local binary="target/${TARGET}/${PROFILE}/kprint" required
 	required="$(objdump -T "${binary}" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
 	echo "${binary} requires glibc ${required} (max allowed: ${GLIBC:?})"
 	[[ "$(printf '%s\n%s\n' "${required}" "${GLIBC}" | sort -V | tail -1)" == "${GLIBC}" ]]
@@ -76,9 +76,9 @@ run_tests() {
 package() {
 	cd "target/${TARGET}/${PROFILE}"
 	if [[ "${RUNNER_OS:-}" == Windows ]]; then
-		7z a -mx9 "dprint-${TARGET}.zip" dprint.exe
+		7z a -mx9 "kprint-${TARGET}.zip" kprint.exe
 	else
-		zip "dprint-${TARGET}.zip" dprint
+		zip "kprint-${TARGET}.zip" kprint
 	fi
 }
 

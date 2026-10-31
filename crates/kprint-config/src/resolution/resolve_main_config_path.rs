@@ -271,7 +271,7 @@ fn resolve_uncanonicalized_local_path(config: &str, cwd: &CanonicalizedPathBuf, 
 fn resolve_global_config_path_or_error(environment: &impl Environment) -> Result<ResolvedConfigPathWithText> {
   match resolve_global_config_path_and_text_detail(environment)? {
     ResolveGlobalConfigPathResult::Found(resolved_config_path) => Ok(resolved_config_path),
-    ResolveGlobalConfigPathResult::NotFound => anyhow::bail!("Could not find global dprint.json file. Create one with `dprint init --global`"),
+    ResolveGlobalConfigPathResult::NotFound => anyhow::bail!("Could not find global dprint.json file. Create one with `kprint init --global`"),
     ResolveGlobalConfigPathResult::FailedResolvingSystemDir(err) => Err(anyhow::Error::from(err).context(concat!(
       "Could not find system config directory. ",
       "Maybe specify the DPRINT_CONFIG_DIR environment ",

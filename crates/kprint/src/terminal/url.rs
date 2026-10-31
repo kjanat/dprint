@@ -619,7 +619,7 @@ mod test {
       RealUrlDownloader::new(
         None,
         Arc::new(Logger::new(&LoggerOptions {
-          initial_context_name: "dprint".to_string(),
+          initial_context_name: "kprint".to_string(),
           is_stdout_machine_readable: true,
           log_level: LogLevel::Silent,
         })),
@@ -688,7 +688,7 @@ mod test {
     RealUrlDownloader::new(
       None,
       Arc::new(Logger::new(&LoggerOptions {
-        initial_context_name: "dprint".to_string(),
+        initial_context_name: "kprint".to_string(),
         is_stdout_machine_readable: true,
         log_level: LogLevel::Silent,
       })),

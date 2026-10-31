@@ -485,7 +485,7 @@ impl<TEnvironment: Environment> InitializedWasmPlugin<TEnvironment> {
             CriticalFormatError(FormatError::new(anyhow!(
               concat!(
                 "Originally panicked in {}, then failed reinitialize. ",
-                "This may be a bug in the plugin, the dprint cli is out of date, or the ",
+                "This may be a bug in the plugin, the kprint cli is out of date, or the ",
                 "plugin is out of date.\nOriginal error: {}\nReinitialize error: {}",
               ),
               self.name,

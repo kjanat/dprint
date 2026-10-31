@@ -150,7 +150,7 @@ impl SubCommand {
   /// that has no config file of its own).
   ///
   /// `output-file-paths` always allows this because it's the command users are
-  /// pointed at to diagnose which files dprint is finding, so it should show
+  /// pointed at to diagnose which files kprint is finding, so it should show
   /// what it did resolve rather than fail.
   pub fn allow_skipping_paths(&self) -> bool {
     self.allow_no_files() || matches!(self, SubCommand::OutputFilePaths(_))
@@ -184,7 +184,7 @@ impl SubCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffFormat {
-  /// dprint's own human readable diff with line numbers and colors.
+  /// kprint's own human readable diff with line numbers and colors.
   #[default]
   Pretty,
   /// Standard unified diff that can be piped to other tools or applied with `patch`.
@@ -245,7 +245,7 @@ pub enum ConfigSubCommand {
     /// `package_json`, since an unversioned entry can't carry a checksum.
     checksum: bool,
     /// Don't resolve an npm plugin version published more recently than this.
-    /// Only applies to versions dprint picks — a version the user wrote out
+    /// Only applies to versions kprint picks — a version the user wrote out
     /// themselves is written as-is.
     minimum_dependency_age: Option<MinimumDependencyAgeArg>,
   },
@@ -535,7 +535,7 @@ fn inner_parse_args<TStdInReader: StdInReader>(args: Vec<String>, std_in_reader:
 /// * inline text — a value whose first non-whitespace character is `{`
 ///   (ex. `--config '{ "lineWidth": 80 }'`)
 /// * stdin — a value of `-`, or `--config` with no value at all, which is
-///   what `dprint fmt -c <<<'{ ... }'` ends up being once the shell has
+///   what `kprint fmt -c <<<'{ ... }'` ends up being once the shell has
 ///   turned the here-string into stdin
 ///
 /// A path that isn't a regular file (ex. the `/dev/fd/63` of a `<(...)`
@@ -583,7 +583,7 @@ fn parse_config_arg<TStdInReader: StdInReader>(
   if std_in_reader.is_terminal() {
     bail!(concat!(
       "Expected the configuration text on stdin because --config was provided without a file path ",
-      "(ex. `dprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
+      "(ex. `kprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
     ));
   }
 
@@ -700,8 +700,8 @@ fn values_to_vec(values: clap::parser::ValuesRef<String>) -> Vec<String> {
   values.map(std::string::ToString::to_string).collect()
 }
 
-/// Users have accidentally specified: dprint fmt --plugins <url1> <url2> -- <file-path>
-/// But it should be: dprint fmt --plugins <url1> <url2> -- <file-path>
+/// Users have accidentally specified: kprint fmt --plugins <url1> <url2> -- <file-path>
+/// But it should be: kprint fmt --plugins <url1> <url2> -- <file-path>
 fn validate_plugin_args_when_no_files(plugins: &[String]) -> Result<()> {
   for (i, plugin) in plugins.iter().enumerate() {
     let lower_plugin = plugin.to_lowercase();
@@ -743,7 +743,7 @@ pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
           .long("global")
           .short('g')
           .conflicts_with("config-discovery")
-          .help("Initialize the global dprint configuration file.")
+          .help("Initialize the global kprint configuration file.")
           .num_args(0)
           .required(false),
       )
@@ -772,7 +772,7 @@ pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
           .long("global")
           .short('g')
           .conflicts_with("config-discovery")
-          .help("Add to the global dprint configuration file.")
+          .help("Add to the global kprint configuration file.")
           .num_args(0)
           .required(false),
       )
@@ -823,7 +823,7 @@ pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
   use clap::Arg;
   use clap::Command;
 
-  let mut app = Command::new("dprint");
+  let mut app = Command::new("kprint");
 
   // hack to get this to display the way I want
   app = if kind == CliArgParserKind::ForOutputtingMainHelp {
@@ -833,11 +833,12 @@ pub fn create_cli_parser(kind: CliArgParserKind) -> clap::Command {
   };
 
   app = app
-    .bin_name("dprint")
-    .version(env!("CARGO_PKG_VERSION"))
+    .bin_name("kprint")
+    // the version without the fork's `-kjanat` (see `cli_display_version`)
+    .version(env!("CARGO_PKG_VERSION").strip_suffix("-kjanat").unwrap_or(env!("CARGO_PKG_VERSION")))
     .author("Copyright 2019 by David Sherret")
     .about("Auto-formats source code based on the specified plugins.")
-    .override_usage("dprint <SUBCOMMAND> [OPTIONS] [--] [files/directories/patterns]...")
+    .override_usage("kprint <SUBCOMMAND> [OPTIONS] [--] [files/directories/patterns]...")
     .help_template(r#"{bin} {version}
 {author}
 
@@ -849,13 +850,13 @@ USAGE:
 SUBCOMMANDS:
 {subcommands}
 
-More details at `dprint help <SUBCOMMAND>`
+More details at `kprint help <SUBCOMMAND>`
 
 OPTIONS:
 {options}
 
 ENVIRONMENT VARIABLES:
-  DPRINT_MAX_THREADS   Limit the number of threads dprint uses for
+  DPRINT_MAX_THREADS   Limit the number of threads kprint uses for
                        formatting (ex. DPRINT_MAX_THREADS=4).
   DPRINT_MAX_PLUGIN_COMPILES
                        The most Wasm plugins a run compiles to native code
@@ -875,7 +876,7 @@ ENVIRONMENT VARIABLES:
   DPRINT_TLS_CA_STORE  Comma-separated list of order dependent certificate stores.
                        Possible values: "mozilla" and "system".
                        Defaults to "mozilla,system".
-  DPRINT_IGNORE_CERTS  Unsafe way to get dprint to ignore certificates. Specify 1
+  DPRINT_IGNORE_CERTS  Unsafe way to get kprint to ignore certificates. Specify 1
                        to ignore all certificates or a comma separated list of specific
                        hosts to ignore (ex. dprint.dev,localhost,[::],127.0.0.1)
   DPRINT_EDITOR        Editor used for editing config files.
@@ -889,32 +890,32 @@ ENVIRONMENT VARIABLES:
     .after_help(
             r#"GETTING STARTED:
   1. Navigate to the root directory of a code repository.
-  2. Run `dprint init` to create a dprint.json file in that directory.
+  2. Run `kprint init` to create a dprint.json file in that directory.
   3. Modify configuration file if necessary.
-  4. Run `dprint fmt` or `dprint check`.
+  4. Run `kprint fmt` or `kprint check`.
 
 EXAMPLES:
   Write formatted files to file system:
 
-    dprint fmt
+    kprint fmt
 
   Check for files that haven't been formatted:
 
-    dprint check
+    kprint check
 
   Specify path to config file other than the default:
 
-    dprint fmt --config path/to/config/dprint.json
+    kprint fmt --config path/to/config/dprint.json
 
   Provide the configuration instead of a path to it:
 
-    dprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
-    dprint fmt --config <(cat path/to/config/dprint.json)
-    dprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
+    kprint fmt --config '{ "excludes": ["dist"], "plugins": ["..."] }'
+    kprint fmt --config <(cat path/to/config/dprint.json)
+    kprint fmt --config <<<'{ "excludes": ["dist"], "plugins": ["..."] }'
 
   Search for files using the specified paths or file patterns:
 
-    dprint fmt "**/*.{ts,tsx,js,jsx,json}""#,
+    kprint fmt "**/*.{ts,tsx,js,jsx,json}""#,
     )
     .subcommand(init_command())
     .subcommand(add_command())
@@ -1011,7 +1012,7 @@ EXAMPLES:
                 .long("global")
                 .short('g')
                 .conflicts_with("config-discovery")
-                .help("Update the global dprint configuration file.")
+                .help("Update the global kprint configuration file.")
                 .num_args(0)
                 .required(false)
             )
@@ -1036,7 +1037,7 @@ EXAMPLES:
                 .long("global")
                 .short('g')
                 .conflicts_with("config-discovery")
-                .help("Edit the global dprint configuration file.")
+                .help("Edit the global kprint configuration file.")
                 .num_args(0)
                 .required(false)
             )
@@ -1095,10 +1096,10 @@ EXAMPLES:
     )
     .subcommand(
       Command::new("upgrade")
-        .about("Upgrades the dprint executable.")
+        .about("Upgrades the kprint executable.")
     )
     .subcommand(
-      Command::new("completions").about("Generate shell completions script for dprint").arg(
+      Command::new("completions").about("Generate shell completions script for kprint").arg(
         Arg::new("shell")
           .action(clap::ArgAction::Set)
           .value_parser(clap::value_parser!(clap_complete::Shell))
@@ -1138,7 +1139,7 @@ EXAMPLES:
         .value_hint(clap::ValueHint::AnyPath)
         .global(true)
         .num_args(0..=1)
-        // so `dprint fmt -c <<<'{ ... }'` and `dprint fmt -c` read the config from stdin
+        // so `kprint fmt -c <<<'{ ... }'` and `kprint fmt -c` read the config from stdin
         .default_missing_value("-")
     )
     .arg(
@@ -1291,7 +1292,7 @@ impl ClapExtensions for clap::Command {
     self.arg(
       Arg::new("allow-no-files")
         .long("allow-no-files")
-        .help("Causes dprint to exit with exit code 0 when no files are found instead of exit code 14.")
+        .help("Causes kprint to exit with exit code 0 when no files are found instead of exit code 14.")
         .num_args(0)
         .required(false),
     )
@@ -1611,7 +1612,7 @@ mod test {
 
   #[test]
   fn config_arg_stdin() {
-    // `dprint fmt -c <<<'{ ... }'` reaches the cli as --config with no value
+    // `kprint fmt -c <<<'{ ... }'` reaches the cli as --config with no value
     // and the here-string on stdin
     for args in [vec!["fmt", "-c"], vec!["fmt", "-c", "-"], vec!["fmt", "--config", "-"], vec!["check", "-c"]] {
       let stdin_reader = TestStdInReader::from(r#"{ "lineWidth": 80 }"#);
@@ -1637,7 +1638,7 @@ mod test {
       err.to_string(),
       concat!(
         "Expected the configuration text on stdin because --config was provided without a file path ",
-        "(ex. `dprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
+        "(ex. `kprint fmt -c <<<'{ \"lineWidth\": 80 }'`), but stdin is a terminal."
       )
     );
   }
