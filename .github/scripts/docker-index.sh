@@ -2,9 +2,9 @@
 # Pushes the release zips in a directory as one OCI index that's both an image
 # and a store of the binaries:
 #
-#   docker run ghcr.io/kjanat/dprint:<tag> fmt
-#   oras pull --platform linux/amd64 ghcr.io/kjanat/dprint:<tag>  # ./usr/local/bin/dprint
-#   oras pull --platform darwin/arm64 ghcr.io/kjanat/dprint:<tag> # ./dprint-aarch64-apple-darwin.zip
+#   docker run ghcr.io/<owner>/<repository>:<tag> fmt
+#   oras pull --platform linux/amd64 ghcr.io/<owner>/<repository>:<tag>  # ./usr/local/bin/dprint
+#   oras pull --platform darwin/arm64 ghcr.io/<owner>/<repository>:<tag> # ./dprint-aarch64-apple-darwin.zip
 #
 # linux/amd64, linux/arm64 and linux/ppc64le are distroless images with the
 # static musl build, whose layer of it ORAS unpacks (its base's layers have no

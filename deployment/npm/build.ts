@@ -119,7 +119,7 @@ const fmtPackage = "@kjanat/fmt";
 // fmt.ts's configuration without one
 const fmtDefaultConfig = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
-const markdownText = `# ${mainPackage}
+const mainReadme = (repositoryUrl: string) => `# ${mainPackage}
 
 [kprint](https://dprint.kjanat.dev) is a pluggable and configurable code
 formatter written in Rust, forked from dprint. It has formatters built in (ex.
@@ -153,7 +153,7 @@ npx kprint fmt
 [${fmtPackage}](https://www.npmjs.com/package/${fmtPackage}) runs \`kprint fmt\` as \`fmt\`.
 
 See [dprint.kjanat.dev](https://dprint.kjanat.dev) for the configuration and the
-plugins, and [the repository](https://github.com/kjanat/dprint) for its source.
+plugins, and [the repository](${repositoryUrl}) for its source.
 `;
 
 const currentDir = $.path(import.meta.url).parentOrThrow();
@@ -183,11 +183,12 @@ if (packages.length === 0) {
 $.logStep(`Publishing ${npmVersion}...`);
 
 if (!args["publish-only"]) {
-  // Resolve the permanent repository ID so release URLs and metadata survive renames.
-  const repository = await $.request(
-    "https://api.github.com/repositories/1092062077",
-  ).json<{ html_url: string }>();
-  const repositoryUrl = repository.html_url;
+  // the repository CI runs in, or else the one with the permanent ID, which
+  // survives renames
+  const githubRepository = Deno.env.get("GITHUB_REPOSITORY");
+  const repositoryUrl = githubRepository != null
+    ? `${Deno.env.get("GITHUB_SERVER_URL") ?? "https://github.com"}/${githubRepository}`
+    : (await $.request("https://api.github.com/repositories/1092062077").json<{ html_url: string }>()).html_url;
   await $`rm -rf ${outputDir}`;
   await $`mkdir -p ${dprintDir} ${scopeDir}`;
 
@@ -224,7 +225,7 @@ if (!args["publish-only"]) {
     }
     dprintDir.join("package.json").writeJsonPrettySync(pkgJson);
     rootDir.join("LICENSE").copyFileSync(dprintDir.join("LICENSE"));
-    dprintDir.join("README.md").writeTextSync(markdownText);
+    dprintDir.join("README.md").writeTextSync(mainReadme(repositoryUrl));
     // ensure the test files don't get published
     dprintDir.join(".npmignore").writeTextSync("dprint\ndprint.exe\n");
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository=https://github.com/kjanat/dprint
+# the repository CI runs in, or kjanat/dprint
+repository_path="${GITHUB_REPOSITORY:-kjanat/dprint}"
+repository="${GITHUB_SERVER_URL:-https://github.com}/${repository_path}"
 homepage=https://dprint.kjanat.dev
 description='Pluggable and configurable code formatting platform'
 
@@ -37,24 +39,24 @@ cask "dprint" do
     on_arm do
       sha256 "${mac_arm}"
       url "${repository}/releases/download/#{version}/dprint-aarch64-apple-darwin.zip",
-        verified: "github.com/kjanat/dprint/"
+        verified: "${repository#*://}/"
     end
     on_intel do
       sha256 "${mac_x64}"
       url "${repository}/releases/download/#{version}/dprint-x86_64-apple-darwin.zip",
-        verified: "github.com/kjanat/dprint/"
+        verified: "${repository#*://}/"
     end
   end
   on_linux do
     on_arm do
       sha256 "${linux_arm}"
       url "${repository}/releases/download/#{version}/dprint-aarch64-unknown-linux-gnu.zip",
-        verified: "github.com/kjanat/dprint/"
+        verified: "${repository#*://}/"
     end
     on_intel do
       sha256 "${linux_x64}"
       url "${repository}/releases/download/#{version}/dprint-x86_64-unknown-linux-gnu.zip",
-        verified: "github.com/kjanat/dprint/"
+        verified: "${repository#*://}/"
     end
   end
 
@@ -99,22 +101,29 @@ RUBY
 }
 
 publish_file() {
-	local repo="$1" path="$2" file="$3" token="$4" endpoint previous sha=''
-	endpoint="repos/kjanat/${repo}/contents/${path}"
+	local repo="$1" path="$2" file="$3" token="$4" endpoint previous published wanted status content sha=''
+	endpoint="repos/${GITHUB_REPOSITORY_OWNER:-kjanat}/${repo}/contents/${path}"
 	if previous="$(GH_TOKEN="${token}" gh api "${endpoint}?ref=master")"; then
-		if [[ "$(jq -r .content <<<"${previous}" | base64 -d)" == "$(cat "${file}")" ]]; then
+		published="$(jq -r .content <<<"${previous}")"
+		published="$(base64 -d <<<"${published}")"
+		wanted="$(<"${file}")"
+		if [[ "${published}" == "${wanted}" ]]; then
 			echo "${repo}/${path} is up to date"
 			return
 		fi
 		sha="$(jq -r .sha <<<"${previous}")"
-	elif [[ "$(jq -r .status <<<"${previous}")" != 404 ]]; then
-		echo "Could not read ${repo}/${path}: ${previous}" >&2
-		exit 1
+	else
+		status="$(jq -r .status <<<"${previous}")"
+		if [[ "${status}" != 404 ]]; then
+			echo "Could not read ${repo}/${path}: ${previous}" >&2
+			exit 1
+		fi
 	fi
+	content="$(base64 -w0 "${file}")"
 	GH_TOKEN="${token}" gh api --method PUT "${endpoint}" \
 		-f message="Update dprint to ${tag}" \
 		-f branch=master \
-		-f content="$(base64 -w0 "${file}")" \
+		-f content="${content}" \
 		${sha:+-f sha="${sha}"} >/dev/null
 	echo "${repo}/${path} updated to ${tag}"
 }

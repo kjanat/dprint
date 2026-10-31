@@ -5,7 +5,7 @@ on:
     inputs:
       tags:
         description: >-
-          The tags (ex. `nightly`), one per line, of ghcr.io/<owner>/dprint: an image for the static musl builds
+          The tags (ex. `nightly`), one per line, of ghcr.io/<owner>/<repository>: an image for the static musl builds
           that ORAS also pulls the binaries of every platform from (see .github/scripts/docker-index.sh).
         required: true
         type: string
@@ -47,7 +47,7 @@ jobs:
         id: image
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dprint"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
           mapfile -t tags < <(grep -v '^[[:space:]]*$' <<< "${TAGS}")
           .github/scripts/docker-index.sh "${image}" zips "${tags[@]}"
           echo "ref=${image}:${tags[0]}" >> "${GITHUB_OUTPUT}"
