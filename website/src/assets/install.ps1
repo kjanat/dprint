@@ -12,8 +12,9 @@ $BinDir = switch ($env:DPRINT_INSTALL) {
 	{ $DprintIsWindows } { Join-Path $Home ".dprint" "bin" }
 	default { Join-Path $Home ".dprint" "bin" }
 }
-$DprintZip = Join-Path $BinDir "dprint.zip"
-$DprintExe = Join-Path $BinDir "dprint.exe"
+$KprintZip = Join-Path $BinDir "kprint.zip"
+$KprintExe = Join-Path $BinDir "kprint.exe"
+$AliasExe = Join-Path $BinDir "dprint.exe"
 
 # use the OS architecture (not the process arch) so the native build is chosen
 # even when running under x64 emulation on Windows on ARM
@@ -27,29 +28,36 @@ $RepositoryHeaders = @{}
 if ($env:GITHUB_TOKEN) { $RepositoryHeaders.Authorization = "Bearer $env:GITHUB_TOKEN" }
 $Repository = Invoke-RestMethod 'https://api.github.com/repositories/1092062077' -UseBasicParsing -Headers $RepositoryHeaders
 $RepositoryUrl = $Repository.html_url
-$DprintUri = $Version ? "$RepositoryUrl/releases/download/$Version/dprint-${Target}.zip" : "$RepositoryUrl/releases/latest/download/dprint-${Target}.zip"
+$ReleaseUri = $Version ? "$RepositoryUrl/releases/download/$Version" : "$RepositoryUrl/releases/latest/download"
 
 if (!(Test-Path $BinDir)) { New-Item $BinDir -ItemType Directory | Out-Null }
 
-# stop any running dprint editor services
+# stop any running editor services
+Stop-Process -Name "kprint" -Erroraction 'silentlycontinue'
 Stop-Process -Name "dprint" -Erroraction 'silentlycontinue'
 
-# download and install
-Invoke-WebRequest $DprintUri -OutFile $DprintZip
+# download; a release before kprint has dprint-<target>.zip with dprint.exe in it
+try { Invoke-WebRequest "$ReleaseUri/kprint-${Target}.zip" -OutFile $KprintZip }
+catch { Invoke-WebRequest "$ReleaseUri/dprint-${Target}.zip" -OutFile $KprintZip }
 
-if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) { Expand-Archive $DprintZip -Destination $BinDir -Force }
+if (Test-Path $AliasExe) { Remove-Item $AliasExe }
+if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) { Expand-Archive $KprintZip -Destination $BinDir -Force }
 else {
-	if (Test-Path $DprintExe) { Remove-Item $DprintExe }
+	if (Test-Path $KprintExe) { Remove-Item $KprintExe }
 	Add-Type -AssemblyName System.IO.Compression.FileSystem
-	[IO.Compression.ZipFile]::ExtractToDirectory($DprintZip, $BinDir)
+	[IO.Compression.ZipFile]::ExtractToDirectory($KprintZip, $BinDir)
 }
+if (Test-Path $AliasExe) { Move-Item $AliasExe $KprintExe -Force }
 
-Remove-Item $DprintZip
+Remove-Item $KprintZip
+
+# dprint.exe for what calls that, as a hard link that needs no administrator
+New-Item -ItemType HardLink -Path $AliasExe -Target $KprintExe | Out-Null
 
 $User = [EnvironmentVariableTarget]::User
 $Path = [Environment]::GetEnvironmentVariable('Path', $User)
 if (!(";$Path;".ToLower() -like "*;$BinDir;*".ToLower())) { [Environment]::SetEnvironmentVariable('Path', "$Path;$BinDir", $User) }
 if (!(";$Env:Path;".ToLower() -like "*;$BinDir;*".ToLower())) { $Env:Path += ";$BinDir" }
 
-Write-Output "dprint was installed successfully to $DprintExe"
-Write-Output "Run 'dprint --help' to get started"
+Write-Output "kprint was installed successfully to $KprintExe"
+Write-Output "Run 'kprint --help' to get started"

@@ -1,0 +1,31 @@
+[package]
+name                 = "kprint-lsp"
+version              = "0.1.0"
+edition.workspace    = true
+repository.workspace = true
+license.workspace    = true
+
+[dependencies]
+kprint-async-runtime      = { workspace = true }
+kprint-config             = { workspace = true }
+kprint-host               = { workspace = true }
+kprint-host-api.workspace = true
+kprint-platform           = { workspace = true }
+kprint-plugin-host        = { workspace = true }
+kprint-plugin-types       = { workspace = true }
+kprint-process-plugin     = { workspace = true }
+
+anyhow           = { workspace = true }
+jsonc-parser     = { workspace = true, features = ["cst", "preserve_order"] }
+parking_lot      = { workspace = true }
+percent-encoding = { workspace = true }
+serde_json       = { workspace = true }
+similar          = { workspace = true, features = ["inline"] }
+text-size        = { workspace = true }
+tokio            = { workspace = true, features = ["io-std"] }
+tokio-util       = { workspace = true }
+tower-lsp        = { workspace = true }
+url              = { workspace = true }
+
+[dev-dependencies]
+kprint-test-support = { workspace = true, features = ["plugins"] }

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "lib": ["dom", "dom.iterable", "esnext", "deno.ns"],
+    "types": ["./src/types.d.ts"]
+  },
+  "imports": {
+    "@types/react": "npm:@types/react@19.3.0",
+    "@types/react-dom": "npm:@types/react-dom@19.3.0",
+    "react": "npm:react@19.3.0",
+    "react/": "npm:/react@19.3.0/",
+    "react-dom/": "npm:/react-dom@19.3.0/",
+    "monaco-editor": "https://esm.sh/monaco-editor@0.57.0?standalone",
+    "monaco-editor/": "https://esm.sh/monaco-editor@0.57.0/",
+    "react-spinners": "npm:react-spinners@0.17.1",
+    "@dprint/formatter": "npm:@dprint/formatter@0.5.1",
+    "json5": "npm:json5@2.2.3",
+    "lz-string": "npm:lz-string@1.5.0"
+  },
+  "tasks": {
+    "build": "deno run --allow-read --allow-write --allow-run --allow-net --allow-env build.ts",
+    "check": "deno check src/main.tsx src/formatter.worker.ts build.ts",
+    "test": "deno test"
+  }
+}

@@ -1,0 +1,50 @@
+# Maintainer: Kaj Kowalski <info@kajkowalski.nl>
+# shellcheck disable=SC2034,SC2154
+
+pkgname=kprint
+pkgver=0.59.0
+pkgrel=1
+pkgdesc='Pluggable and configurable code formatter, forked from dprint (kjanat)'
+arch=('x86_64' 'aarch64')
+url='https://dprint.kjanat.dev'
+license=('MIT')
+depends=('bzip2' 'gcc-libs' 'glibc' 'xz')
+makedepends=('cargo' 'jq')
+provides=("kprint=${pkgver}" "dprint=${pkgver}")
+conflicts=('dprint' 'dprint-git' 'kprint-bin' 'kprint-git')
+options=('!lto')
+_tag="${pkgver}-kjanat"
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/kjanat/dprint/archive/refs/tags/${_tag}.tar.gz")
+sha256sums=('2ca93c954ffbf410e5428653a7c18288a319d98790c5b2563b7a8174695b4db2')
+
+prepare() {
+	cd "dprint-${_tag}" || exit
+	export RUSTUP_TOOLCHAIN=stable
+	_host="$(rustc --print host-tuple)"
+	cargo fetch --locked --target "${_host}"
+}
+
+build() {
+	cd "dprint-${_tag}" || exit
+	RUSTUP_TOOLCHAIN=stable
+	CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+	_metadata="$(cargo metadata --frozen --no-deps --format-version 1)"
+	_package="$(jq --raw-output '.packages[] | select(any(.targets[]; .kind == ["bin"] and .name == "kprint")) | .name' <<<"${_metadata}")"
+	cargo build --frozen --release -p "${_package}"
+}
+
+package() {
+	cd "dprint-${_tag}" || exit
+	install -Dm0755 target/release/kprint "${pkgdir}/usr/bin/kprint"
+	# for what calls dprint
+	ln -s kprint "${pkgdir}/usr/bin/dprint"
+	install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+	install -Dm0644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+	install -dm0755 "${pkgdir}/usr/share/bash-completion/completions" \
+		"${pkgdir}/usr/share/zsh/site-functions" \
+		"${pkgdir}/usr/share/fish/vendor_completions.d"
+	target/release/kprint completions bash >"${pkgdir}/usr/share/bash-completion/completions/kprint"
+	target/release/kprint completions zsh >"${pkgdir}/usr/share/zsh/site-functions/_kprint"
+	target/release/kprint completions fish >"${pkgdir}/usr/share/fish/vendor_completions.d/kprint.fish"
+}

@@ -1,0 +1,16 @@
+[package]
+name        = "kprint-core-macros"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Core formatting macros for kprint-core."
+homepage    = "https://github.com/kjanat/dprint/tree/HEAD/crates/kprint-core-macros"
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = { workspace = true }
+syn   = { workspace = true, features = ["full"] }

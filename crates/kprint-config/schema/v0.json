@@ -1,0 +1,298 @@
+{
+  "$id": "https://dprint.kjanat.dev/schemas/v0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "pluginTable": {
+      "description": "Plugin configuration.",
+      "type": "object",
+      "properties": {
+        "locked": {
+          "description": "Whether this plugin configuration is locked against overrides from extending configurations.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "associations": {
+          "description": "File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. \"!**/*.js\") to stop matching a default extension or file name.",
+          "anyOf": [
+            {
+              "description": "File patterns, one or more.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "description": "Plugin configuration overrides for specific file patterns.",
+          "anyOf": [
+            {
+              "description": "Overrides of a plugin's configuration, one or more.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/pluginOverride"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/pluginOverride"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. \"cs\": [\"exec\"]), in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "configFile": {
+          "description": "For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by \"#\" and the dotted path of the part to pass (ex. \"pyproject.toml#tool.tombi\"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.",
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "pluginOverride": {
+      "description": "An override of a plugin's configuration for some of its files.",
+      "type": "object",
+      "minProperties": 2,
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "files": {
+          "description": "File patterns this override applies to.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "embedded": {
+          "description": "The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.",
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "title": "dprint configuration file",
+  "description": "Schema for a dprint configuration file.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "The JSON schema reference. Normally you shouldn't bother to provide this as the dprint vscode editor extension will handle constructing the schema for you based on the plugins provided.",
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "incremental": {
+      "description": "Whether to format files only when they change.",
+      "default": true,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "inherit": {
+      "description": "For a nested (directory specific) configuration file, whether to inherit the plugins and configuration of the ancestor configuration file. Has no effect on a root configuration file.",
+      "default": false,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "extends": {
+      "description": "Configurations to extend.",
+      "anyOf": [
+        {
+          "description": "Configurations to extend.",
+          "anyOf": [
+            {
+              "description": "A file path or url to a configuration file to extend.",
+              "type": "string"
+            },
+            {
+              "description": "A collection of file paths and/or urls to configuration files to extend.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lineWidth": {
+      "description": "The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "indentWidth": {
+      "description": "The number of characters for an indent.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 255
+    },
+    "useTabs": {
+      "description": "Whether to use tabs (true) or spaces (false) for indentation.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "newLineKind": {
+      "description": "The kind of newline to use.",
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "description": "For each file, uses the newline kind found at the end of the last line.",
+              "type": "string",
+              "const": "auto"
+            },
+            {
+              "description": "Uses carriage return, line feed.",
+              "type": "string",
+              "const": "crlf"
+            },
+            {
+              "description": "Uses line feed.",
+              "type": "string",
+              "const": "lf"
+            },
+            {
+              "description": "Uses the system standard (ex. crlf on Windows).",
+              "type": "string",
+              "const": "system"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "includes": {
+      "description": "Array of patterns (globs) to use to find files to format.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "excludes": {
+      "description": "Array of patterns (globs) to exclude files or directories to format.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "shebangs": {
+      "description": "Maps a shebang line (ex. \"#!/usr/bin/env bash\") to a file extension so extensionless scripts can be routed to a plugin.",
+      "type": [
+        "null",
+        "object"
+      ],
+      "additionalProperties": {
+        "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\").",
+        "type": "string"
+      },
+      "propertyNames": {
+        "pattern": "^#!"
+      }
+    },
+    "plugins": {
+      "description": "Array of plugin URLs to format files.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "minimumDependencyAge": {
+      "description": "How long ago a version of an npm plugin must have been published for `dprint add` and `dprint config update` to select it: an ISO-8601 duration (ex. \"P3D\"), a number of minutes, a date or RFC3339 timestamp, or \"0\" for no minimum. The `--minimum-dependency-age` flag takes precedence.",
+      "type": [
+        "null",
+        "string"
+      ]
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/pluginTable"
+  },
+  "allowTrailingCommas": true
+}

@@ -1,0 +1,221 @@
+use std::fmt;
+
+use url::Url;
+
+use super::NpmSpecifier;
+use crate::environment::CanonicalizedPathBuf;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PluginKind {
+  Process,
+  Wasm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PathSource {
+  /// From the local file system.
+  Local(LocalPathSource),
+  /// From the internet.
+  Remote(RemotePathSource),
+  /// From an npm package.
+  Npm(NpmPathSource),
+}
+
+impl PathSource {
+  pub fn new_local(path: CanonicalizedPathBuf) -> PathSource {
+    PathSource::Local(LocalPathSource { path, display: None })
+  }
+
+  /// Creates a local path source for text that didn't come from `path` on
+  /// disk (ex. configuration provided inline, on stdin, or through a pipe
+  /// such as a shell process substitution).
+  ///
+  /// The path is only a stand-in used to resolve relative paths within the
+  /// text (its parent directory), while `display` is what gets shown to the
+  /// user in messages.
+  pub fn new_local_virtual(path: CanonicalizedPathBuf, display: String) -> PathSource {
+    PathSource::Local(LocalPathSource { path, display: Some(display) })
+  }
+
+  pub fn new_remote(url: Url) -> PathSource {
+    PathSource::Remote(RemotePathSource { url })
+  }
+
+  #[doc(hidden)]
+  pub fn new_remote_from_str(url: &str) -> PathSource {
+    PathSource::Remote(RemotePathSource { url: Url::parse(url).unwrap() })
+  }
+
+  pub fn new_npm(specifier: NpmSpecifier, base_dir: Option<CanonicalizedPathBuf>) -> PathSource {
+    PathSource::Npm(NpmPathSource { specifier, base_dir })
+  }
+
+  pub fn is_local(&self) -> bool {
+    match self {
+      PathSource::Local(_) => true,
+      PathSource::Remote(_) | PathSource::Npm(_) => false,
+    }
+  }
+
+  #[doc(hidden)]
+  pub fn is_remote(&self) -> bool {
+    match self {
+      PathSource::Remote(_) => true,
+      PathSource::Local(_) | PathSource::Npm(_) => false,
+    }
+  }
+
+  pub fn parent(&self) -> PathSource {
+    match self {
+      PathSource::Local(local) => {
+        if let Some(parent) = local.path.parent() {
+          PathSource::new_local(parent)
+        } else {
+          PathSource::new_local(local.path.clone())
+        }
+      }
+      PathSource::Remote(remote) => {
+        let mut parent_url = remote.url.join("./").expect("Expected to be able to go back a directory in the url.");
+        parent_url.set_query(None);
+        PathSource::new_remote(parent_url)
+      }
+      PathSource::Npm(_) => self.clone(),
+    }
+  }
+
+  pub fn maybe_local_path(&self) -> Option<&CanonicalizedPathBuf> {
+    match self {
+      PathSource::Local(local) => Some(&local.path),
+      PathSource::Remote(_) | PathSource::Npm(_) => None,
+    }
+  }
+
+  #[doc(hidden)]
+  pub fn unwrap_local(&self) -> LocalPathSource {
+    if let PathSource::Local(local_path_source) = self {
+      local_path_source.clone()
+    } else {
+      panic!("Attempted to unwrap a path source as local that was not local.");
+    }
+  }
+
+  #[doc(hidden)]
+  pub fn unwrap_remote(&self) -> RemotePathSource {
+    if let PathSource::Remote(remote_path_source) = self {
+      remote_path_source.clone()
+    } else {
+      panic!("Attempted to unwrap a path source as remote that was not remote.");
+    }
+  }
+
+  pub fn display(&self) -> String {
+    match self {
+      PathSource::Local(local) => match &local.display {
+        Some(display) => display.clone(),
+        None => local.path.display().to_string(),
+      },
+      PathSource::Remote(remote) => remote.url.to_string(),
+      PathSource::Npm(npm) => npm.specifier.display(),
+    }
+  }
+
+  pub fn plugin_kind(&self) -> Option<PluginKind> {
+    fn plugin_kind_from_path(path: &std::path::Path) -> Option<PluginKind> {
+      let ext = path.extension()?.to_str()?;
+      plugin_kind_from_ext(ext)
+    }
+
+    fn plugin_kind_from_str(s: &str) -> Option<PluginKind> {
+      let (_, ext) = s.rsplit_once('.')?;
+      plugin_kind_from_ext(ext)
+    }
+
+    fn plugin_kind_from_ext(ext: &str) -> Option<PluginKind> {
+      if ext.eq_ignore_ascii_case("wasm") {
+        Some(PluginKind::Wasm)
+      } else if ext.eq_ignore_ascii_case("json") {
+        Some(PluginKind::Process)
+      } else {
+        None
+      }
+    }
+
+    match self {
+      PathSource::Npm(npm) => Some(npm.specifier.plugin_kind()),
+      PathSource::Local(local) => plugin_kind_from_path(local.path.as_ref()),
+      PathSource::Remote(remote) => plugin_kind_from_str(remote.url.path()),
+    }
+  }
+}
+
+impl fmt::Display for PathSource {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        PathSource::Local(local) => match &local.display {
+          Some(display) => display.clone(),
+          None => local.path.to_string_lossy().to_string(),
+        },
+        PathSource::Remote(remote) => remote.url.to_string(),
+        PathSource::Npm(npm) => npm.specifier.display(),
+      }
+    )
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LocalPathSource {
+  pub path: CanonicalizedPathBuf,
+  /// Set when the text didn't come from `path` on disk. See
+  /// `PathSource::new_local_virtual`.
+  pub display: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RemotePathSource {
+  pub url: Url,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NpmPathSource {
+  pub specifier: NpmSpecifier,
+  /// The directory containing the config file that referenced this npm plugin.
+  /// Used as the starting point for node_modules resolution.
+  pub base_dir: Option<CanonicalizedPathBuf>,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use url::Url;
+
+  #[test]
+  fn should_get_parent_for_url() {
+    let source = PathSource::new_remote(Url::parse("https://dprint.dev/test/test.json").unwrap());
+    let parent = source.parent();
+    assert_eq!(parent, PathSource::new_remote(Url::parse("https://dprint.dev/test/").unwrap()))
+  }
+
+  #[test]
+  fn should_get_parent_for_file_path() {
+    let source = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/test/test/asdf.json"));
+    let parent = source.parent();
+    assert_eq!(parent, PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/test/test")))
+  }
+
+  #[test]
+  fn should_get_parent_for_root_dir_file() {
+    let source = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/test.json"));
+    let parent = source.parent();
+    assert_eq!(parent, PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/")))
+  }
+
+  #[test]
+  fn should_get_parent_for_root_dir() {
+    let source = PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/"));
+    let parent = source.parent();
+    assert_eq!(parent, PathSource::new_local(CanonicalizedPathBuf::new_for_testing("/")))
+  }
+}

@@ -1,0 +1,105 @@
+name: Preview
+run-name: "Preview ${{ github.event.pull_request && format('#{0}', github.event.pull_request.number) || github.ref_name }}"
+
+# A build of a branch or pull request to try before it's released: npm
+# packages on pkg.pr.new and an image at ghcr.io/kjanat/kprint.
+on:
+  push:
+    branches: [master, the-big-split]
+    paths-ignore: [website/**]
+  pull_request:
+    paths-ignore: [website/**]
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan
+    # a fork's pull request can't publish
+    if: github.repository_id == '1092062077' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      docker_tags: ${{ steps.plan.outputs.docker_tags }}
+      targets: ${{ steps.plan.outputs.targets }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ github.event.pull_request.head.sha || github.sha }}", persist-credentials: false }
+      - id: plan
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          base="$(sed -nE '0,/^version *= *"([^"]*)"/s//\1/p' crates/kprint/Cargo.toml)"
+          sha="$(git rev-parse HEAD)"
+          if [[ -n "${PR_NUMBER}" ]]; then
+            name="pr-${PR_NUMBER}"
+          else
+            # a tag can't have a slash, and the version only has [0-9A-Za-z-] identifiers
+            name="branch-${GITHUB_REF_NAME//[^[:alnum:]-]/-}"
+          fi
+          version="${base}.${name}.g${sha:0:7}"
+          # the platforms npm and Docker previews are for, without their tests,
+          # which CI runs
+          targets="$(jq -c 'map(select(.target | IN(
+            "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl",
+            "x86_64-apple-darwin", "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"
+          )) | .test = false)' .github/build-matrix.json)"
+          {
+            echo "version=${version}"
+            printf 'docker_tags<<EOF\n%s\nsha-%s\nEOF\n' "${name}" "${sha:0:7}"
+            echo "targets=${targets}"
+            echo "ref=${sha}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Preview ${version}"
+
+  build:
+    needs: plan
+    uses: $/.github/workflows/build.yml
+    with:
+      targets: ${{ needs.plan.outputs.targets }}
+      profile: release
+      ref: ${{ needs.plan.outputs.ref }}
+      version: ${{ needs.plan.outputs.version }}
+
+  npm:
+    name: npm (pkg.pr.new)
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ needs.plan.outputs.ref }}", persist-credentials: false }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { pattern: kprint-*, merge-multiple: true, path: zips }
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 24.x }
+      - name: Install the build's dependencies
+        run: deno install --entrypoint deployment/npm/build.ts
+      - name: Build npm packages
+        run: deno run -A deployment/npm/build.ts "${VERSION}" --zips zips
+      - name: Publish to pkg.pr.new
+        working-directory: deployment/npm/dist
+        run: |
+          chmod +x @kprint/*/kprint
+          npx --yes pkg-pr-new@0.0.93 publish --comment=update --bin ./kprint ./fmt ./@kprint/*
+
+  docker:
+    name: Docker
+    needs: [plan, build]
+    permissions: { contents: read, packages: write }
+    uses: $/.github/workflows/docker.yml
+    with:
+      tags: ${{ needs.plan.outputs.docker_tags }}

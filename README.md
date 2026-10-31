@@ -2,7 +2,7 @@
 
 <!--
 [![npm](https://img.shields.io/npm/v/dprint.svg)](https://www.npmjs.com/package/dprint)
-[![crates.io](https://img.shields.io/crates/v/dprint.svg)](https://crates.io/crates/dprint)
+[![crates.io](https://img.shields.io/crates/v/dprint.svg)](https://crates.io/crates/kprint)
 [![Homebrew](https://img.shields.io/badge/dynamic/json.svg?url=https://formulae.brew.sh/api/formula/dprint.json&query=$.versions.stable&label=homebrew)](https://formulae.brew.sh/formula/dprint)
 -->
 

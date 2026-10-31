@@ -1,0 +1,17 @@
+[package]
+name        = "kprint-wasm-plugin"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "The dprint Wasm plugin API and code generation."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+kprint-configuration = { workspace = true }
+kprint-plugin-types  = { workspace = true }
+serde                = { workspace = true }
+serde_json           = { workspace = true }

@@ -1,0 +1,24 @@
+[package]
+name        = "kprint-plugin-types"
+version     = "0.1.0"
+authors     = { workspace = true }
+edition     = { workspace = true }
+description = "Shared plugin metadata, configuration payloads, cancellation, and errors for dprint."
+repository  = { workspace = true }
+license     = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+kprint-async-runtime = { workspace = true, optional = true }
+kprint-configuration = { workspace = true }
+serde                = { workspace = true }
+serde_json           = { workspace = true }
+thiserror            = { workspace = true }
+tokio                = { workspace = true, optional = true }
+tokio-util           = { workspace = true, optional = true }
+
+[features]
+default       = []
+async_runtime = ["dep:kprint-async-runtime", "dep:tokio", "dep:tokio-util"]

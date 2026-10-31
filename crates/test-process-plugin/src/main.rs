@@ -1,28 +1,28 @@
 use std::path::PathBuf;
 
-use dprint_core::async_runtime::LocalBoxFuture;
-use dprint_core::async_runtime::async_trait;
-use dprint_core::configuration::ConfigKeyMap;
-use dprint_core::configuration::ConfigKeyValue;
-use dprint_core::configuration::ConfigurationDiagnostic;
-use dprint_core::configuration::GlobalConfiguration;
-use dprint_core::configuration::get_nullable_vec;
-use dprint_core::configuration::get_unknown_property_diagnostics;
-use dprint_core::configuration::get_value;
-use dprint_core::plugins::AsyncPluginHandler;
-use dprint_core::plugins::CheckConfigUpdatesMessage;
-use dprint_core::plugins::ConfigChange;
-use dprint_core::plugins::ConfigChangeKind;
-use dprint_core::plugins::FileMatchingInfo;
-use dprint_core::plugins::FormatError;
-use dprint_core::plugins::FormatRequest;
-use dprint_core::plugins::FormatResult;
-use dprint_core::plugins::HostFormatRequest;
-use dprint_core::plugins::PluginInfo;
-use dprint_core::plugins::PluginResolveConfigurationResult;
-use dprint_core::plugins::process::get_parent_process_id_from_cli_args;
-use dprint_core::plugins::process::handle_process_stdio_messages;
-use dprint_core::plugins::process::start_parent_process_checker_task;
+use kprint_async_runtime::LocalBoxFuture;
+use kprint_async_runtime::async_trait;
+use kprint_configuration::ConfigKeyMap;
+use kprint_configuration::ConfigKeyValue;
+use kprint_configuration::ConfigurationDiagnostic;
+use kprint_configuration::GlobalConfiguration;
+use kprint_configuration::get_nullable_vec;
+use kprint_configuration::get_unknown_property_diagnostics;
+use kprint_configuration::get_value;
+use kprint_plugin_types::CheckConfigUpdatesMessage;
+use kprint_plugin_types::ConfigChange;
+use kprint_plugin_types::ConfigChangeKind;
+use kprint_plugin_types::FileMatchingInfo;
+use kprint_plugin_types::FormatError;
+use kprint_plugin_types::FormatResult;
+use kprint_plugin_types::PluginInfo;
+use kprint_plugin_types::PluginResolveConfigurationResult;
+use kprint_process_plugin::AsyncPluginHandler;
+use kprint_process_plugin::FormatRequest;
+use kprint_process_plugin::HostFormatRequest;
+use kprint_process_plugin::get_parent_process_id_from_cli_args;
+use kprint_process_plugin::handle_process_stdio_messages;
+use kprint_process_plugin::start_parent_process_checker_task;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -71,6 +71,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
       help_url: "https://dprint.dev/plugins/test-process".to_string(),
       config_schema_url: "".to_string(),
       update_url: Some("https://plugins.dprint.dev/dprint/test-process-plugin/latest.json".to_string()),
+      config_files: None,
     }
   }
 
@@ -113,6 +114,7 @@ impl AsyncPluginHandler for TestProcessPluginHandler {
         file_extensions,
         file_names,
         additive,
+        additive_associations: Vec::new(),
       },
       config: Configuration { ending, line_width },
       diagnostics,

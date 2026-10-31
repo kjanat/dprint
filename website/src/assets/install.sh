@@ -5,12 +5,12 @@
 set -e
 
 if ! command -v unzip >/dev/null; then
-	echo "Error: unzip is required to install dprint." 1>&2
+	echo "Error: unzip is required to install kprint." 1>&2
 	exit 1
 fi
 
 if ! command -v jq >/dev/null; then
-	echo "Error: jq is required to resolve the dprint release repository." 1>&2
+	echo "Error: jq is required to resolve the kprint release repository." 1>&2
 	exit 1
 fi
 
@@ -25,7 +25,7 @@ else
 		"Darwin arm64") target="aarch64-apple-darwin" ;;
 		"FreeBSD amd64") target="x86_64-unknown-freebsd" ;;
 		FreeBSD\ *)
-			echo "Error: dprint provides FreeBSD binaries for amd64 only." 1>&2
+			echo "Error: kprint provides FreeBSD binaries for amd64 only." 1>&2
 			exit 1
 			;;
 		# Termux reports "Linux aarch64"/"Linux x86_64" but uses Android's bionic libc, so check uname -o.
@@ -68,9 +68,9 @@ else
 fi
 repository_url=$(printf '%s\n' "${repository_json}" | jq --exit-status --raw-output '.html_url | strings')
 if [ $# -eq 0 ]; then
-	dprint_uri="${repository_url}/releases/latest/download/dprint-${target}.zip"
+	release_uri="${repository_url}/releases/latest/download"
 else
-	dprint_uri="${repository_url}/releases/download/${1}/dprint-${target}.zip"
+	release_uri="${repository_url}/releases/download/${1}"
 fi
 
 dprint_install="${DPRINT_INSTALL:-${HOME}/.dprint}"
@@ -81,30 +81,38 @@ fi
 dprint_install="$(realpath "${dprint_install}")"
 bin_dir="${dprint_install}/bin"
 
-exe="${bin_dir}/dprint"
-zip="${exe}.zip"
-
-# append .exe for Windows
+exe_suffix=""
 case "${target}" in
-	*-pc-windows-msvc) exe="${exe}.exe" ;;
+	*-pc-windows-msvc) exe_suffix=".exe" ;;
 	*) ;;
 esac
+exe="${bin_dir}/kprint${exe_suffix}"
+alias_exe="${bin_dir}/dprint${exe_suffix}"
+zip="${bin_dir}/kprint.zip"
 
-# download
-curl --fail --location --progress-bar --output "${zip}" "${dprint_uri}"
+# download; a release before kprint has dprint-<target>.zip with dprint in it
+if ! curl --fail --location --progress-bar --output "${zip}" "${release_uri}/kprint-${target}.zip"; then
+	curl --fail --location --progress-bar --output "${zip}" "${release_uri}/dprint-${target}.zip"
+fi
 
-# stop any running dprint editor services
+# stop any running editor services
+pkill -9 "kprint" || true
 pkill -9 "dprint" || true
 
-# install
+# install, with dprint for what calls that
 cd "${bin_dir}"
+rm -f "${alias_exe}"
 unzip -o "${zip}"
+if [ -e "${alias_exe}" ]; then
+	mv -f "${alias_exe}" "${exe}"
+fi
 chmod +x "${exe}"
+ln -sf "kprint${exe_suffix}" "${alias_exe}"
 rm "${zip}"
 
-echo "dprint was installed successfully to ${exe}"
-if command -v dprint >/dev/null; then
-	echo "Run 'dprint --help' to get started"
+echo "kprint was installed successfully to ${exe}"
+if command -v kprint >/dev/null; then
+	echo "Run 'kprint --help' to get started"
 else
 	case "${SHELL}" in
 		/bin/zsh) shell_profile=".zshrc" ;;

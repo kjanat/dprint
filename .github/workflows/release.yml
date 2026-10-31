@@ -33,14 +33,15 @@ jobs:
           GH_WORKFLOW_ACTOR: "${{ github.actor }}"
           RELEASE_SUFFIX: "${{ github.event.inputs.suffix || (github.repository_owner != 'dprint' && github.repository_owner || '') }}"
           RELEASE_KIND: "${{ github.event.inputs.releaseKind }}"
-          f: crates/dprint/Cargo.toml
+          f: crates/kprint/Cargo.toml
         run: git config user.email "${GITHUB_ACTOR}@users.noreply.github.com";
           git config user.name "${GITHUB_ACTOR}";
           v=$(yq .package.version "${f}");
           IFS=.- read -r a b c _ <<<"${v}";
           [[ "${RELEASE_KIND}" = minor ]] && b=$((b+1)) c=0 || c=$((c+1));
           v="${a}.${b}.${c}${RELEASE_SUFFIX:+-${RELEASE_SUFFIX}}";
-          yq -i ".package.version = \"${v}\"" "${f}";
+          sed -i -E "0,/^version( *)= *\"[^\"]*\"/s//version\1= \"${v}\"/" "${f}";
+          [[ "$(yq .package.version "${f}")" = "${v}" ]];
           cargo update --workspace;
           git add .;
           git commit -m "${v}";

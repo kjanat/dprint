@@ -1,6 +1,6 @@
-import { playgroundPlugins as plugins } from "../../../src/scripts/plugin-repository.js";
+import { playgroundPlugins as plugins } from "../../../src/scripts/plugin-repository.ts";
 
-export { getPluginDownloadUrl } from "../../../src/scripts/plugin-repository.js";
+export { getPluginDownloadUrl } from "../../../src/scripts/plugin-repository.ts";
 
 export async function getPluginUrls(signal: AbortSignal): Promise<string[]> {
   return await Promise.all(

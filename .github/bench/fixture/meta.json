@@ -1,0 +1,25 @@
+{
+  "repository": "https://github.com/kjanat/dprint",
+  "versions": {
+    "official": "dprint 0.61.1",
+    "master": "dprint 0.59.0-kjanat",
+    "pr": "dprint 0.59.0-kjanat"
+  },
+  "shas": {
+    "master": "0000000000000000000000000000000000000000",
+    "pr": "1111111111111111111111111111111111111111"
+  },
+  "discovery": {
+    "master": "Read 466 files from the git index",
+    "pr": "Read 466 files from the git index"
+  },
+  "files": 161,
+  "git": "git version 2.55.0",
+  "plugins": [
+    "typescript-0.96.1",
+    "json-0.25.2",
+    "markdown-0.26.0",
+    "toml-0.9.0",
+    "dockerfile-0.7.0"
+  ]
+}

@@ -176,13 +176,15 @@ dprint config update --minimum-dependency-age=P3D
 
 The value takes the following forms: an ISO-8601 duration (`P3D`, `PT72H`), a plain number of minutes (`1440`), an absolute date (`2026-01-15`) or RFC3339 timestamp to hold back everything published after it, or `0` to turn the requirement off.
 
-With no flag, dprint reads `min-release-age` (in whole days) from the nearest `.npmrc` walking up from the configuration file, then `~/.npmrc` — the same npm setting other tools honour:
+With no flag, dprint uses the configuration file's `minimumDependencyAge`, which takes the same forms:
 
-```
-min-release-age=3
+```jsonc
+{
+  "minimumDependencyAge": "P3D"
+}
 ```
 
-There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
+The flag takes precedence, so `--minimum-dependency-age=0` turns a configured age off for one run. There is no minimum otherwise — a version is only ever held back when you ask for one. Some other notes:
 
 - It applies to npm-distributed plugins. Plugins served from a URL carry no publish date for dprint to check, so they resolve as they always have.
 - It never downgrades an entry you already have. Existing plugin versions are left alone, and a version you write out yourself (`dprint config add npm:@dprint/json@1.2.3`) is taken as your decision and added as-is — so an explicit version is a way to opt a single plugin out.
@@ -228,30 +230,15 @@ Supported `npm:` specifier forms:
 
 Behaviour:
 
-- A version after `@` makes dprint fetch the package from the npm registry and cache it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
+- A version after `@` makes dprint download the plugin and cache it. A Wasm plugin without a checksum comes straight from jsDelivr (`https://cdn.jsdelivr.net/npm/<name>@<version>/<path>`). A checksum covers the package tarball, so a checksummed reference and a process plugin download the tarball from `registry.npmjs.org` and verify it. Wasm plugins don't need a checksum; process plugins do (the `@<sha256>` after the path).
 - Omitting the version (`npm:@scope/name`) tells dprint to look up the package in `node_modules` walking up from the config file's directory. Use this when you want npm and your lockfile to be the source of truth.
-- The registry is resolved from `NPM_CONFIG_REGISTRY`, then `.npmrc` files walking up from the config, then `~/.npmrc`, then the default `https://registry.npmjs.org`. Scoped registries are supported.
-- `dprint config update` will bump versioned npm specifiers to the latest published version (and compute the new checksum for process plugins). Unversioned specifiers are managed by your package manager, so they're skipped. See [Minimum Dependency Age](#minimum-dependency-age) to hold off on npm dependencies that are only days old.
+- `dprint config update` will bump versioned npm specifiers to the latest published version (and compute the new checksum for process plugins). The latest version comes from jsDelivr's package API (`https://data.jsdelivr.com/v1/packages/npm/<name>/resolved?specifier=latest`). A minimum dependency age needs publish times, so it reads the package's metadata from `registry.npmjs.org` instead. Unversioned specifiers are managed by your package manager, so they're skipped. See [Minimum Dependency Age](#minimum-dependency-age) to hold off on npm dependencies that are only days old.
+- A plugin referenced by URL moves to npm only when its own update metadata declares an `npm` package. A matching plugin name in the global registry does not authorize a migration, even when both plugins use the same hostname. Without that declaration, the plugin continues to update through its own update URL.
 - `dprint add npm:@scope/name` resolves to the latest version and writes the pinned form, unless the package is listed in a nearby `package.json` under `devDependencies` — in which case the unversioned form is written so npm/`package-lock.json` stays the source of truth. When you don't include a plugin path, dprint inspects the package to detect whether it's a Wasm or process plugin and writes the right form automatically — for a process plugin that means `npm:@scope/name@<version>/plugin.json@<sha256>`.
 
 Available npm packages include `@dprint/typescript`, `@dprint/json`, `@dprint/markdown`, `@dprint/toml`, `@dprint/dockerfile`, `@dprint/biome`, `@dprint/oxc`, `@dprint/ruff`, `@dprint/sql`, `@dprint/mago`, `@dprint/jupyter`, `@dprint/exec`, `@dprint/prettier`, and `@dprint/roslyn`.
 
 You can also reference a plugin file directly in `node_modules` if you prefer (`"./node_modules/@dprint/typescript/plugin.wasm"`); the `npm:` form just removes the need for that path.
-
-#### Private npm registries
-
-dprint reads `.npmrc` files (walking up from the config, then `~/.npmrc`) to pick a registry and credentials. Both common auth schemes are supported:
-
-```
-@mycorp:registry=https://npm.mycorp.com
-//npm.mycorp.com/:_authToken=${MYCORP_NPM_TOKEN}
-```
-
-- `_authToken=…` → sent as `Authorization: Bearer …`
-- `_auth=…` (already base64-encoded user:pass) → sent as `Authorization: Basic …`
-- `${VAR}` substitution works the same as for npm itself.
-
-Credentials are dropped on cross-origin redirects (e.g. a registry that redirects tarball downloads to a CDN on a different host), so they never leak outside the configured registry.
 
 #### Process plugins distributed via npm
 
@@ -264,7 +251,7 @@ A process plugin's `plugin.json` lists per-platform binaries; for npm-installed 
 
 #### Cache layout
 
-Resolved npm packages are extracted under `<dprint-cache>/npm/<registry-host>/<name>@<version>/`. Different registries (public vs. private mirror) get separate directories. Compiled wasm modules and extracted process-plugin binaries continue to live under `<dprint-cache>/plugins/`. `dprint clear-cache` wipes everything.
+Resolved npm packages are extracted under `<dprint-cache>/npm/registry.npmjs.org/<name>@<version>/`. Compiled wasm modules and extracted process-plugin binaries continue to live under `<dprint-cache>/plugins/`. `dprint clear-cache` wipes everything.
 
 ### Editing Config via CLI
 
@@ -451,7 +438,7 @@ For multiple overrides, change it to an array:
 ```
 
 Each override must specify a `"files"` pattern or list of patterns. All other
-properties in the override are plugin configuration properties.
+properties in the override except `"embedded"` (see [Embedded Code](#embedded-code)) are plugin configuration properties.
 
 Note that `"overrides"` only changes configuration. It does not include files,
 exclude files, or associate files with a plugin. File discovery still uses the
@@ -460,6 +447,32 @@ the plugin's supported file names, file extensions, and `"associations"`.
 
 When multiple override blocks match the same file, they are applied in order and
 later values win.
+
+## Embedded Code
+
+Some plugins format code embedded in a file by handing it back to dprint, ex. the markdown plugin with the code blocks of a `.md` file. dprint formats that code with the plugin that formats the code's file extension. The plugin's `"embedded"` config names the plugins to format it with instead, by the code's file extension, in order. An empty array leaves that code as it is.
+
+```json
+{
+  "markdown": {
+    // C# code blocks are formatted with exec, and SQL code blocks are left as they are
+    "embedded": { "cs": ["exec"], "sql": [] },
+    "overrides": {
+      // except in README.md, whose TypeScript code blocks are left as they are too
+      "files": "README.md",
+      "embedded": { "ts": [] }
+    }
+  },
+  "exec": {
+    "commands": [{ "command": "dotnet csharpier --write-stdout", "exts": ["cs"] }]
+  }
+}
+```
+
+- The extension is the one the plugin gives the code. The markdown plugin gives it from the code block's tag (ex. `csharp` and `cs` are both `cs`), and its `"tags"` config maps other tags.
+- A plugin named in `"embedded"` must be in the configuration. It formats the code whatever file extensions it formats by default.
+- An override's `"embedded"` applies to the code in the files the override matches. The last matching override that names the code's file extension wins, otherwise the plugin's own `"embedded"` does.
+- `"extends"` merges `"embedded"` by file extension, with the extending config's entries taking precedence.
 
 ## Extending a Different Configuration File
 

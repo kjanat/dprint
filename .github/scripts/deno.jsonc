@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@actions/github-script": "https://esm.sh/gh/actions/github-script@v9.0.0",
+    "@types/node": "npm:@types/node@24.19.1"
+  }
+}

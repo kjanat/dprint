@@ -6,7 +6,7 @@ const formatListeners: ((text: string) => void)[] = [];
 const errorListeners: ((err: string) => void)[] = [];
 
 const formatterWorker = new Worker(
-  new URL("./formatter.worker.ts", import.meta.url),
+  new URL("./formatter.worker.js", import.meta.url),
   {
     type: "module",
   },

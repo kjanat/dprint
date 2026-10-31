@@ -1,0 +1,35 @@
+[package]
+name        = "kprint-core"
+version     = "0.70.0"
+authors     = ["Kaj Kowalski <info@kajkowalski.nl>", "David Sherret <dsherret@gmail.com>"]
+edition     = { workspace = true }
+description = "Core library for dprint."
+homepage    = "https://github.com/kjanat/dprint/tree/HEAD/crates/kprint-core"
+repository  = { workspace = true }
+license     = { workspace = true }
+keywords    = ["formatter", "formatting"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+kprint-async-runtime  = { workspace = true, optional = true }
+kprint-communication  = { workspace = true, optional = true }
+kprint-configuration  = { workspace = true }
+kprint-formatting     = { workspace = true, optional = true }
+kprint-owned-child    = { workspace = true, optional = true }
+kprint-plugin-types   = { workspace = true, optional = true }
+kprint-process-plugin = { workspace = true, optional = true }
+kprint-wasm-plugin    = { workspace = true, optional = true }
+
+[dev-dependencies]
+kprint-core-macros = { path = "../kprint-core-macros", version = "0.1.0" }
+
+[features]
+default       = ["formatting"]
+async_runtime = ["dep:kprint-async-runtime", "kprint-plugin-types?/async_runtime"]
+communication = ["async_runtime", "dep:kprint-communication"]
+formatting    = ["dep:kprint-formatting"]
+process       = ["communication", "dep:kprint-owned-child", "dep:kprint-plugin-types", "dep:kprint-process-plugin"]
+tracing       = ["formatting", "kprint-formatting/tracing"]
+wasm          = ["dep:kprint-plugin-types", "dep:kprint-wasm-plugin"]

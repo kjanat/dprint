@@ -1,0 +1,1074 @@
+//! What a dprint configuration file may hold, as types.
+//!
+//! These are what a configuration file is read into (see
+//! [`crate::from_values`]) and, with the `schema` feature, what its schema is
+//! generated from: the names, types and shapes of dprint's own properties and
+//! of every plugin's table, so what dprint accepts and what the schema says
+//! are one definition. What a plugin's own properties are is the plugin's
+//! schema's to say (see [`crate::compose`]), and what a configuration means
+//! once its files are combined is dprint's (see `config_layer.rs` and
+//! `resolve_config.rs` in the dprint crate, which convert these into that).
+
+use std::fmt;
+
+use indexmap::IndexMap;
+use kprint_configuration::ConfigKeyMap;
+use kprint_configuration::ConfigKeyValue;
+#[cfg(feature = "schema")]
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::de::Error as _;
+use serde::de::MapAccess;
+use serde::de::SeqAccess;
+use serde::de::Visitor;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::value::SeqAccessDeserializer;
+
+use crate::values::tracked;
+
+/// Where the website serves the schema of a configuration file without the
+/// plugins' schemas.
+pub const ROOT_SCHEMA_ID: &str = "https://dprint.kjanat.dev/schemas/v0.json";
+
+/// Schema for a dprint configuration file.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+  feature = "schema",
+  derive(JsonSchema),
+  schemars(title = "dprint configuration file", extend("$id" = ROOT_SCHEMA_ID, "allowTrailingCommas" = true))
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigFile {
+  /// The JSON schema reference. Normally you shouldn't bother to provide this as the dprint vscode editor extension will handle constructing the schema for you based on the plugins provided.
+  #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
+  pub schema: Option<String>,
+  /// Whether to format files only when they change.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[cfg_attr(feature = "schema", schemars(extend("default" = true)))]
+  pub incremental: Option<bool>,
+  /// For a nested (directory specific) configuration file, whether to inherit the plugins and configuration of the ancestor configuration file. Has no effect on a root configuration file.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[cfg_attr(feature = "schema", schemars(extend("default" = false)))]
+  pub inherit: Option<bool>,
+  /// Configurations to extend.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub extends: Option<Extends>,
+  /// The global configuration, which every plugin gets.
+  #[serde(flatten, deserialize_with = "tracked")]
+  pub global: GlobalSettings,
+  /// Array of patterns (globs) to use to find files to format.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub includes: Option<Vec<String>>,
+  /// Array of patterns (globs) to exclude files or directories to format.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub excludes: Option<Vec<String>>,
+  /// Maps a shebang line (ex. "#!/usr/bin/env bash") to a file extension so extensionless scripts can be routed to a plugin.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub shebangs: Option<Shebangs>,
+  /// Array of plugin URLs to format files.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub plugins: Option<Vec<String>>,
+  /// How long ago a version of an npm plugin must have been published for `dprint add` and `dprint config update` to select it: an ISO-8601 duration (ex. "P3D"), a number of minutes, a date or RFC3339 timestamp, or "0" for no minimum. The `--minimum-dependency-age` flag takes precedence.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+  pub minimum_dependency_age: Option<crate::utils::MinimumDependencyAgeArg>,
+  /// An old property that's no longer used, which is still accepted so old
+  /// configuration files keep working. Not in the schema, so editors don't
+  /// offer it.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[cfg_attr(feature = "schema", schemars(skip))]
+  pub project_type: Option<ConfigKeyValue>,
+  /// The plugins' tables, by the plugin's configuration key: every property
+  /// that isn't one of dprint's.
+  #[serde(flatten, deserialize_with = "tracked")]
+  pub plugin_tables: IndexMap<String, PluginTable>,
+}
+
+/// The configuration every plugin gets, which a plugin's table may set
+/// differently for the plugin.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSettings {
+  /// The width of a line the printer will try to stay under. Note that the printer may exceed this width in certain cases.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub line_width: Option<u32>,
+  /// The number of characters for an indent.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub indent_width: Option<u8>,
+  /// Whether to use tabs (true) or spaces (false) for indentation.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub use_tabs: Option<bool>,
+  /// The kind of newline to use.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub new_line_kind: Option<NewLineKind>,
+}
+
+/// Configurations to extend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(untagged, expecting = "Extends in configuration must be a string or an array of strings.")]
+pub enum Extends {
+  /// A file path or url to a configuration file to extend.
+  One(String),
+  /// A collection of file paths and/or urls to configuration files to extend.
+  Many(Vec<String>),
+}
+
+impl From<Extends> for Vec<String> {
+  fn from(extends: Extends) -> Self {
+    match extends {
+      Extends::One(specifier) => vec![specifier],
+      Extends::Many(specifiers) => specifiers,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(rename_all = "camelCase")]
+pub enum NewLineKind {
+  /// For each file, uses the newline kind found at the end of the last line.
+  Auto,
+  /// Uses carriage return, line feed.
+  Crlf,
+  /// Uses line feed.
+  Lf,
+  /// Uses the system standard (ex. crlf on Windows).
+  System,
+}
+
+/// What the global configuration resolves to for the plugins: `system` is
+/// this platform's.
+impl From<NewLineKind> for kprint_configuration::NewLineKind {
+  fn from(kind: NewLineKind) -> Self {
+    use kprint_configuration::NewLineKind as Resolved;
+    match kind {
+      NewLineKind::Auto => Resolved::Auto,
+      NewLineKind::Crlf => Resolved::CarriageReturnLineFeed,
+      NewLineKind::Lf => Resolved::LineFeed,
+      NewLineKind::System => {
+        if cfg!(windows) {
+          Resolved::CarriageReturnLineFeed
+        } else {
+          Resolved::LineFeed
+        }
+      }
+    }
+  }
+}
+
+/// What the global configuration resolves to for the plugins.
+impl From<GlobalSettings> for kprint_configuration::GlobalConfiguration {
+  fn from(settings: GlobalSettings) -> Self {
+    kprint_configuration::GlobalConfiguration {
+      line_width: settings.line_width,
+      use_tabs: settings.use_tabs,
+      indent_width: settings.indent_width,
+      new_line_kind: settings.new_line_kind.map(Into::into),
+    }
+  }
+}
+
+/// Shebang lines (ex. "#!/usr/bin/env bash") to file extensions.
+///
+/// Read, a shebang line is trimmed at its end and an extension is lowercased
+/// without its leading dot, so they compare the way file extensions do.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline, extend("propertyNames" = { "pattern": "^#!" })))]
+#[serde(try_from = "IndexMap<String, ShebangExtension>")]
+pub struct Shebangs(pub IndexMap<String, ShebangExtension>);
+
+impl TryFrom<IndexMap<String, ShebangExtension>> for Shebangs {
+  type Error = String;
+
+  fn try_from(shebangs: IndexMap<String, ShebangExtension>) -> Result<Self, Self::Error> {
+    let mut normalized = IndexMap::with_capacity(shebangs.len());
+    for (mut shebang, ShebangExtension(extension)) in shebangs {
+      if !shebang.starts_with("#!") || shebang.contains(['\r', '\n']) {
+        return Err(format!(
+          "Expected the key '{}' in the 'shebangs' property to be a shebang line starting with '#!'.",
+          shebang
+        ));
+      }
+      let Some(extension) = normalize_extension(&extension) else {
+        return Err(format!(
+          "Expected a file extension (ex. \"sh\") for shebang '{}' in the 'shebangs' property, but found '{}'.",
+          shebang, extension
+        ));
+      };
+      shebang.truncate(shebang.trim_end().len());
+      normalized.insert(shebang, ShebangExtension(extension));
+    }
+    Ok(Shebangs(normalized))
+  }
+}
+
+/// The file extension to treat matching files as (ex. "sh" or ".sh").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+pub struct ShebangExtension(pub String);
+
+fn normalize_extension(extension: &str) -> Option<String> {
+  let extension = extension.strip_prefix('.').unwrap_or(extension);
+  let invalid = extension.is_empty() || extension.contains(|c: char| c.is_whitespace() || matches!(c, '.' | '/' | '\\' | '*' | '?' | '[' | ']' | '{' | '}'));
+  (!invalid).then(|| extension.to_lowercase())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(try_from = "IndexMap<String, Vec<String>>")]
+pub struct Embedded(pub IndexMap<String, Vec<String>>);
+
+impl TryFrom<IndexMap<String, Vec<String>>> for Embedded {
+  type Error = String;
+
+  fn try_from(embedded: IndexMap<String, Vec<String>>) -> Result<Self, Self::Error> {
+    let mut normalized = IndexMap::with_capacity(embedded.len());
+    for (extension, plugins) in embedded {
+      let Some(normalized_extension) = normalize_extension(&extension) else {
+        return Err(format!(
+          "Expected a file extension (ex. \"cs\") as a key of the 'embedded' property, but found '{}'.",
+          extension
+        ));
+      };
+      normalized.insert(normalized_extension, plugins);
+    }
+    Ok(Embedded(normalized))
+  }
+}
+
+/// Plugin configuration.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(rename = "pluginTable"))]
+#[serde(expecting = "a plugin's configuration (an object), as a property that isn't one of dprint's")]
+pub struct PluginTable {
+  /// Whether this plugin configuration is locked against overrides from extending configurations.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub locked: Option<bool>,
+  /// File patterns to associate with this plugin, in addition to the file extensions and file names it matches by default. Use a negated glob (ex. "!**/*.js") to stop matching a default extension or file name.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub associations: Option<Associations>,
+  /// Plugin configuration overrides for specific file patterns.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub overrides: Option<Overrides>,
+  /// The plugins that format the code this plugin hands back to dprint (ex. markdown's code blocks), by the code's file extension (ex. "cs": ["exec"]), in order. An empty array leaves that code as it is.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub embedded: Option<Embedded>,
+  /// For a plugin that reads a configuration file of its own (ex. the Tombi plugin's tombi.toml), the file dprint passes it, relative to the directory of the configuration file dprint uses (not one it extends), optionally followed by "#" and the dotted path of the part to pass (ex. "pyproject.toml#tool.tombi"). Without it, the first of the files the plugin looks for that exists is passed; false passes none.
+  #[serde(rename = "configFile", skip_serializing_if = "Option::is_none")]
+  pub config_file: Option<PluginConfigFile>,
+  /// The plugin's own configuration, which its schema describes.
+  #[serde(flatten)]
+  #[cfg_attr(feature = "schema", schemars(with = "PluginProperties"))]
+  pub plugin: ConfigKeyMap,
+}
+
+/// The configuration file of its own a plugin is passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginConfigFile {
+  /// The file, ex. "tombi.toml" or "pyproject.toml#tool.tombi".
+  Path(String),
+  /// None, rather than one the plugin looks for (`false`).
+  Disabled,
+}
+
+impl Serialize for PluginConfigFile {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    match self {
+      PluginConfigFile::Path(path) => serializer.serialize_str(path),
+      PluginConfigFile::Disabled => serializer.serialize_bool(false),
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for PluginConfigFile {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct PluginConfigFileVisitor;
+
+    impl Visitor<'_> for PluginConfigFileVisitor {
+      type Value = PluginConfigFile;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a file path (ex. \"tombi.toml\") or false")
+      }
+
+      fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        if value.is_empty() {
+          return Err(E::invalid_value(serde::de::Unexpected::Str(value), &self));
+        }
+        Ok(PluginConfigFile::Path(value.to_string()))
+      }
+
+      fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        if value {
+          return Err(E::invalid_value(serde::de::Unexpected::Bool(true), &self));
+        }
+        Ok(PluginConfigFile::Disabled)
+      }
+    }
+
+    deserializer.deserialize_any(PluginConfigFileVisitor)
+  }
+}
+
+#[cfg(feature = "schema")]
+impl JsonSchema for PluginConfigFile {
+  fn schema_name() -> std::borrow::Cow<'static, str> {
+    "pluginConfigFile".into()
+  }
+
+  fn inline_schema() -> bool {
+    true
+  }
+
+  fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "const": false },
+      ]
+    })
+  }
+}
+
+/// What a plugin's own properties are is the plugin's schema's to say.
+#[cfg(feature = "schema")]
+struct PluginProperties;
+
+#[cfg(feature = "schema")]
+impl JsonSchema for PluginProperties {
+  fn schema_name() -> std::borrow::Cow<'static, str> {
+    "pluginProperties".into()
+  }
+
+  fn inline_schema() -> bool {
+    true
+  }
+
+  fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({ "type": "object", "additionalProperties": true })
+  }
+}
+
+/// File patterns, one or more.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(
+  untagged,
+  expecting = "The 'associations' property in a plugin configuration must be a string or an array of strings."
+)]
+pub enum Associations {
+  One(String),
+  Many(Vec<String>),
+}
+
+impl From<Associations> for Vec<String> {
+  fn from(associations: Associations) -> Self {
+    match associations {
+      Associations::One(pattern) => vec![pattern],
+      Associations::Many(patterns) => patterns,
+    }
+  }
+}
+
+/// Overrides of a plugin's configuration, one or more.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(untagged)]
+pub enum Overrides {
+  One(PluginOverride),
+  Many(Vec<PluginOverride>),
+}
+
+impl From<Overrides> for Vec<PluginOverride> {
+  fn from(overrides: Overrides) -> Self {
+    match overrides {
+      Overrides::One(override_config) => vec![override_config],
+      Overrides::Many(overrides) => overrides,
+    }
+  }
+}
+
+// read by hand rather than as an untagged enum so an error in an override
+// (ex. a missing `files`) is reported as what it is, which an untagged enum
+// can't say
+impl<'de> Deserialize<'de> for Overrides {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct OverridesVisitor;
+
+    impl<'de> Visitor<'de> for OverridesVisitor {
+      type Value = Overrides;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an override (an object) or an array of them")
+      }
+
+      fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        PluginOverride::deserialize(MapAccessDeserializer::new(map)).map(Overrides::One)
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        Vec::deserialize(SeqAccessDeserializer::new(seq)).map(Overrides::Many)
+      }
+    }
+
+    deserializer.deserialize_any(OverridesVisitor)
+  }
+}
+
+/// An override of a plugin's configuration for some of its files.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(rename = "pluginOverride", extend("minProperties" = 2)))]
+pub struct PluginOverride {
+  /// File patterns this override applies to.
+  pub files: OverrideFiles,
+  /// The plugins that format the code the plugin hands back to dprint for the files, by the code's file extension, in order. An empty array leaves that code as it is.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub embedded: Option<Embedded>,
+  /// The plugin's own configuration for the files, which its schema describes.
+  #[serde(flatten)]
+  #[cfg_attr(feature = "schema", schemars(with = "PluginProperties"))]
+  pub plugin: OverrideProperties,
+}
+
+#[derive(Deserialize)]
+#[serde(expecting = "an override (an object with 'files' and the plugin's properties for them)")]
+struct PluginOverrideFields {
+  files: OverrideFiles,
+  embedded: Option<Embedded>,
+  #[serde(flatten)]
+  plugin: ConfigKeyMap,
+}
+
+impl<'de> Deserialize<'de> for PluginOverride {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    let fields = PluginOverrideFields::deserialize(deserializer)?;
+    if fields.plugin.is_empty() && fields.embedded.is_none() {
+      return Err(serde::de::Error::custom(
+        "A plugin configuration override must specify at least one configuration property.",
+      ));
+    }
+    Ok(PluginOverride {
+      files: fields.files,
+      embedded: fields.embedded,
+      plugin: OverrideProperties(fields.plugin),
+    })
+  }
+}
+
+/// File patterns, one or more.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema), schemars(inline))]
+#[serde(untagged)]
+pub enum OverrideFiles {
+  One(String),
+  #[cfg_attr(feature = "schema", schemars(extend("minItems" = 1)))]
+  Many(Vec<String>),
+}
+
+impl From<OverrideFiles> for Vec<String> {
+  fn from(files: OverrideFiles) -> Self {
+    match files {
+      OverrideFiles::One(pattern) => vec![pattern],
+      OverrideFiles::Many(patterns) => patterns,
+    }
+  }
+}
+
+// read by hand so an empty array is reported as what it is (see `minItems`)
+impl<'de> Deserialize<'de> for OverrideFiles {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct FilesVisitor;
+
+    impl<'de> Visitor<'de> for FilesVisitor {
+      type Value = OverrideFiles;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a file pattern or an array of them")
+      }
+
+      fn visit_str<E: serde::de::Error>(self, pattern: &str) -> Result<Self::Value, E> {
+        Ok(OverrideFiles::One(pattern.to_string()))
+      }
+
+      fn visit_string<E: serde::de::Error>(self, pattern: String) -> Result<Self::Value, E> {
+        Ok(OverrideFiles::One(pattern))
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        let patterns: Vec<String> = Vec::deserialize(SeqAccessDeserializer::new(seq))?;
+        if patterns.is_empty() {
+          return Err(A::Error::custom("A plugin configuration override must specify at least one file pattern."));
+        }
+        Ok(OverrideFiles::Many(patterns))
+      }
+    }
+
+    deserializer.deserialize_any(FilesVisitor)
+  }
+}
+
+/// A plugin's properties in an override of its configuration. With
+/// `embedded`, an override has at least one property (see `minProperties` of
+/// [`PluginOverride`], which counts `files` too).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OverrideProperties(pub ConfigKeyMap);
+
+/// The schema of a configuration file without the plugins' schemas: what
+/// the website serves at [`ROOT_SCHEMA_ID`], and what `dprint schema`
+/// composes the plugins' schemas into.
+#[cfg(feature = "schema")]
+pub fn root_schema() -> serde_json::Value {
+  crate::schema_for::<ConfigFile>()
+}
+
+#[cfg(test)]
+mod test {
+  use pretty_assertions::assert_eq;
+  use serde_json::json;
+
+  use super::*;
+  use crate::from_json;
+
+  /// The properties of each object in a configuration (the file's, the
+  /// plugin tables', the overrides'), as the JSON pointer of the object and
+  /// the property's name.
+  pub(super) fn properties_of(value: &serde_json::Value, pointer: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    match value {
+      serde_json::Value::Object(object) => {
+        for (name, value) in object {
+          result.push((pointer.to_string(), name.clone()));
+          result.extend(properties_of(value, &format!("{}/{}", pointer, name.replace('~', "~0").replace('/', "~1"))));
+        }
+      }
+      serde_json::Value::Array(values) => {
+        for (index, value) in values.iter().enumerate() {
+          result.extend(properties_of(value, &format!("{}/{}", pointer, index)));
+        }
+      }
+      _ => {}
+    }
+    result
+  }
+
+  /// A configuration file with every property of dprint's, and a plugin's
+  /// table with every property of dprint's.
+  pub(super) fn full_config() -> serde_json::Value {
+    json!({
+      "$schema": ROOT_SCHEMA_ID,
+      "incremental": false,
+      "inherit": true,
+      "extends": ["./base.json", "https://example.com/base.json"],
+      "lineWidth": 100,
+      "indentWidth": 4,
+      "useTabs": true,
+      "newLineKind": "lf",
+      "includes": ["**/*.ts"],
+      "excludes": ["**/node_modules"],
+      "shebangs": { "#!/usr/bin/env bash": "sh" },
+      "plugins": ["https://plugins.dprint.dev/typescript-0.96.1.wasm"],
+      "typescript": {
+        "locked": true,
+        "associations": ["**/*.cts"],
+        "semiColons": "asNeeded",
+        "quoteStyle": { "prefer": "single" },
+        "overrides": [{ "files": "*.test.ts", "semiColons": "always" }]
+      },
+      "json": { "overrides": { "files": ["*.lock.json"], "indentWidth": 2 } }
+    })
+  }
+
+  #[test]
+  fn reads_a_configuration_file() {
+    let file: ConfigFile = from_json(full_config()).unwrap();
+    assert_eq!(file.schema.as_deref(), Some(ROOT_SCHEMA_ID));
+    assert_eq!(file.incremental, Some(false));
+    assert_eq!(file.inherit, Some(true));
+    assert_eq!(
+      file.extends,
+      Some(Extends::Many(vec!["./base.json".to_string(), "https://example.com/base.json".to_string()]))
+    );
+    assert_eq!(
+      file.global,
+      GlobalSettings {
+        line_width: Some(100),
+        indent_width: Some(4),
+        use_tabs: Some(true),
+        new_line_kind: Some(NewLineKind::Lf),
+      }
+    );
+    assert_eq!(file.includes, Some(vec!["**/*.ts".to_string()]));
+    assert_eq!(file.excludes, Some(vec!["**/node_modules".to_string()]));
+    assert_eq!(
+      file.shebangs,
+      Some(Shebangs(IndexMap::from([(
+        "#!/usr/bin/env bash".to_string(),
+        ShebangExtension("sh".to_string())
+      )])))
+    );
+    assert_eq!(file.plugins, Some(vec!["https://plugins.dprint.dev/typescript-0.96.1.wasm".to_string()]));
+    assert_eq!(file.project_type, None);
+    assert_eq!(file.plugin_tables.keys().collect::<Vec<_>>(), ["typescript", "json"]);
+    let typescript = &file.plugin_tables["typescript"];
+    assert_eq!(typescript.locked, Some(true));
+    assert_eq!(typescript.associations, Some(Associations::Many(vec!["**/*.cts".to_string()])));
+    // the plugin's own properties, in order, however deep
+    assert_eq!(
+      typescript.plugin,
+      ConfigKeyMap::from([
+        ("semiColons".to_string(), ConfigKeyValue::from_str("asNeeded")),
+        (
+          "quoteStyle".to_string(),
+          ConfigKeyValue::Object(ConfigKeyMap::from([("prefer".to_string(), ConfigKeyValue::from_str("single"))]))
+        ),
+      ])
+    );
+    assert_eq!(
+      typescript.overrides,
+      Some(Overrides::Many(vec![PluginOverride {
+        files: OverrideFiles::One("*.test.ts".to_string()),
+        embedded: None,
+        plugin: OverrideProperties(ConfigKeyMap::from([("semiColons".to_string(), ConfigKeyValue::from_str("always"))])),
+      }]))
+    );
+    assert_eq!(
+      file.plugin_tables["json"].overrides,
+      Some(Overrides::One(PluginOverride {
+        files: OverrideFiles::Many(vec!["*.lock.json".to_string()]),
+        embedded: None,
+        plugin: OverrideProperties(ConfigKeyMap::from([("indentWidth".to_string(), ConfigKeyValue::from_i32(2))])),
+      }))
+    );
+  }
+
+  #[test]
+  fn writes_a_configuration_file_as_it_was_read() {
+    let file: ConfigFile = from_json(full_config()).unwrap();
+    assert_eq!(serde_json::to_value(&file).unwrap(), full_config());
+    // an empty file has nothing
+    assert_eq!(serde_json::to_value(ConfigFile::default()).unwrap(), json!({}));
+  }
+
+  #[test]
+  fn normalizes_shebangs_as_file_extensions() {
+    let file: ConfigFile = from_json(json!({ "shebangs": { "#!/bin/sh  ": ".SH", "#!/usr/bin/env node": "mjs" } })).unwrap();
+    assert_eq!(
+      file
+        .shebangs
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|(shebang, extension)| (shebang, extension.0))
+        .collect::<Vec<_>>(),
+      [
+        ("#!/bin/sh".to_string(), "sh".to_string()),
+        ("#!/usr/bin/env node".to_string(), "mjs".to_string())
+      ]
+    );
+  }
+
+  #[test]
+  fn reads_a_plugins_config_file() {
+    let file: ConfigFile = from_json(json!({
+      "toml": { "configFile": "pyproject.toml#tool.tombi", "lineWidth": 80 },
+      "other": { "configFile": false },
+    }))
+    .unwrap();
+    let toml = &file.plugin_tables["toml"];
+    assert_eq!(toml.config_file, Some(PluginConfigFile::Path("pyproject.toml#tool.tombi".to_string())));
+    // it isn't one of the plugin's own properties
+    assert_eq!(toml.plugin.keys().collect::<Vec<_>>(), ["lineWidth"]);
+    assert_eq!(file.plugin_tables["other"].config_file, Some(PluginConfigFile::Disabled));
+    assert_eq!(serde_json::to_value(&file.plugin_tables["other"]).unwrap(), json!({ "configFile": false }));
+
+    for (value, message) in [
+      (
+        json!(true),
+        "toml.configFile: invalid value: boolean `true`, expected a file path (ex. \"tombi.toml\") or false",
+      ),
+      (
+        json!(""),
+        "toml.configFile: invalid value: string \"\", expected a file path (ex. \"tombi.toml\") or false",
+      ),
+      (
+        json!(1),
+        "toml.configFile: invalid type: integer `1`, expected a file path (ex. \"tombi.toml\") or false",
+      ),
+    ] {
+      assert_eq!(
+        from_json::<ConfigFile>(json!({ "toml": { "configFile": value } })).unwrap_err().to_string(),
+        message
+      );
+    }
+  }
+
+  #[test]
+  fn keeps_the_old_project_type_property_out_of_the_plugins_tables() {
+    let file: ConfigFile = from_json(json!({ "projectType": "openSource", "test": {} })).unwrap();
+    assert_eq!(file.project_type, Some(ConfigKeyValue::from_str("openSource")));
+    assert_eq!(file.plugin_tables.keys().collect::<Vec<_>>(), ["test"]);
+  }
+
+  #[test]
+  fn says_what_is_wrong_and_where() {
+    let cases = [
+      // dprint's properties
+      (json!({ "$schema": 1 }), "$schema: invalid type: integer `1`, expected a string"),
+      (json!({ "incremental": "yes" }), "incremental: invalid type: string \"yes\", expected a boolean"),
+      (json!({ "inherit": 1 }), "inherit: invalid type: integer `1`, expected a boolean"),
+      (
+        json!({ "extends": 5 }),
+        "extends: Extends in configuration must be a string or an array of strings.",
+      ),
+      (
+        json!({ "extends": [5] }),
+        "extends: Extends in configuration must be a string or an array of strings.",
+      ),
+      (json!({ "lineWidth": "80" }), "lineWidth: invalid type: string \"80\", expected u32"),
+      (json!({ "lineWidth": -1 }), "lineWidth: invalid value: integer `-1`, expected u32"),
+      (json!({ "indentWidth": 300 }), "indentWidth: invalid value: integer `300`, expected u8"),
+      (json!({ "useTabs": "no" }), "useTabs: invalid type: string \"no\", expected a boolean"),
+      (
+        json!({ "newLineKind": "cr" }),
+        "newLineKind: unknown variant `cr`, expected one of `auto`, `crlf`, `lf`, `system`",
+      ),
+      (
+        json!({ "includes": "**/*.ts" }),
+        "includes: invalid type: string \"**/*.ts\", expected a sequence",
+      ),
+      (json!({ "excludes": [1] }), "excludes[0]: invalid type: integer `1`, expected a string"),
+      (json!({ "plugins": {} }), "plugins: invalid type: map, expected a sequence"),
+      (
+        json!({ "shebangs": { "/bin/sh": "sh" } }),
+        "shebangs: Expected the key '/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.",
+      ),
+      (
+        json!({ "shebangs": { " #!/bin/sh": "sh" } }),
+        "shebangs: Expected the key ' #!/bin/sh' in the 'shebangs' property to be a shebang line starting with '#!'.",
+      ),
+      (
+        json!({ "shebangs": { "#!/bin/sh\ntext": "sh" } }),
+        "shebangs: Expected the key '#!/bin/sh\ntext' in the 'shebangs' property to be a shebang line starting with '#!'.",
+      ),
+      (
+        json!({ "shebangs": { "#!/bin/sh": "" } }),
+        "shebangs: Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found ''.",
+      ),
+      (
+        json!({ "shebangs": { "#!/bin/sh": "tar.gz" } }),
+        "shebangs: Expected a file extension (ex. \"sh\") for shebang '#!/bin/sh' in the 'shebangs' property, but found 'tar.gz'.",
+      ),
+      (
+        json!({ "shebangs": { "#!/bin/sh": 5 } }),
+        "shebangs.#!/bin/sh: invalid type: integer `5`, expected a string",
+      ),
+      (json!({ "shebangs": [] }), "shebangs: invalid type: sequence, expected a map"),
+      // what isn't one of dprint's properties is a plugin's table
+      (
+        json!({ "lineWidht": 80 }),
+        "lineWidht: invalid type: integer `80`, expected a plugin's configuration (an object), as a property that isn't one of dprint's",
+      ),
+      (
+        json!({ "test": null }),
+        "test: invalid type: null, expected a plugin's configuration (an object), as a property that isn't one of dprint's",
+      ),
+      (
+        json!({ "test": ["a"] }),
+        "test: invalid type: sequence, expected a plugin's configuration (an object), as a property that isn't one of dprint's",
+      ),
+      // dprint's properties of a plugin's table
+      (json!({ "test": { "locked": 1 } }), "test.locked: invalid type: integer `1`, expected a boolean"),
+      (
+        json!({ "test": { "associations": 1 } }),
+        "test.associations: The 'associations' property in a plugin configuration must be a string or an array of strings.",
+      ),
+      (
+        json!({ "test": { "associations": [1] } }),
+        "test.associations: The 'associations' property in a plugin configuration must be a string or an array of strings.",
+      ),
+      (
+        json!({ "test": { "overrides": 5 } }),
+        "test.overrides: invalid type: integer `5`, expected an override (an object) or an array of them",
+      ),
+      (
+        json!({ "test": { "overrides": [5] } }),
+        "test.overrides[0]: invalid type: integer `5`, expected an override (an object with 'files' and the plugin's properties for them)",
+      ),
+      (json!({ "test": { "overrides": [{ "a": 1 }] } }), "test.overrides[0]: missing field `files`"),
+      (
+        json!({ "test": { "overrides": [{ "files": 5, "a": 1 }] } }),
+        "test.overrides[0].files: invalid type: integer `5`, expected a file pattern or an array of them",
+      ),
+      (
+        json!({ "test": { "overrides": [{ "files": [1], "a": 1 }] } }),
+        "test.overrides[0].files[0]: invalid type: integer `1`, expected a string",
+      ),
+      (
+        json!({ "test": { "overrides": [{ "files": [], "a": 1 }] } }),
+        "test.overrides[0].files: A plugin configuration override must specify at least one file pattern.",
+      ),
+      (
+        json!({ "test": { "overrides": { "files": "*.x" } } }),
+        "test.overrides: A plugin configuration override must specify at least one configuration property.",
+      ),
+      (
+        json!({ "test": { "overrides": [{ "files": "*.x" }] } }),
+        "test.overrides[0]: A plugin configuration override must specify at least one configuration property.",
+      ),
+    ];
+    for (text, expected) in cases {
+      let err = from_json::<ConfigFile>(text.clone()).unwrap_err();
+      assert_eq!(err.to_string(), expected, "{}", text);
+    }
+  }
+
+  #[test]
+  fn reads_embedded_on_a_table_and_in_an_override() {
+    let file: ConfigFile = from_json(json!({
+      "test": {
+        "embedded": { ".CS": ["exec"], "sql": [] },
+        "overrides": { "files": "README.md", "embedded": { "ts": [] } }
+      }
+    }))
+    .unwrap();
+    let table = &file.plugin_tables["test"];
+    assert_eq!(
+      table.embedded,
+      Some(Embedded(IndexMap::from([
+        ("cs".to_string(), vec!["exec".to_string()]),
+        ("sql".to_string(), Vec::new()),
+      ])))
+    );
+    let Some(Overrides::One(override_config)) = &table.overrides else {
+      panic!("{:?}", table.overrides);
+    };
+    assert_eq!(override_config.embedded, Some(Embedded(IndexMap::from([("ts".to_string(), Vec::new())]))));
+    assert!(override_config.plugin.0.is_empty());
+
+    for (text, expected) in [
+      (
+        json!({ "test": { "embedded": { "a.b": [] } } }),
+        "test.embedded: Expected a file extension (ex. \"cs\") as a key of the 'embedded' property, but found 'a.b'.",
+      ),
+      (
+        json!({ "test": { "embedded": { "cs": "exec" } } }),
+        "test.embedded.cs: invalid type: string \"exec\", expected a sequence",
+      ),
+    ] {
+      assert_eq!(from_json::<ConfigFile>(text.clone()).unwrap_err().to_string(), expected, "{}", text);
+    }
+  }
+
+  #[test]
+  fn a_plugins_own_properties_may_be_anything() {
+    let file: ConfigFile = from_json(json!({
+      "test": { "a": null, "b": [1, "two", { "three": 3 }], "c": -1, "locked": false }
+    }))
+    .unwrap();
+    let table = &file.plugin_tables["test"];
+    assert_eq!(table.locked, Some(false));
+    assert_eq!(table.plugin.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+    assert_eq!(table.plugin["a"], ConfigKeyValue::Null);
+    assert_eq!(table.plugin["c"], ConfigKeyValue::from_i32(-1));
+  }
+}
+
+#[cfg(all(test, feature = "schema"))]
+mod schema_test {
+  use pretty_assertions::assert_eq;
+  use serde_json::Value;
+  use serde_json::json;
+
+  use super::*;
+  use crate::from_json;
+
+  /// The schema as published, which the website serves.
+  const PUBLISHED_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/schema/v0.json");
+
+  #[test]
+  fn the_published_schema_is_the_generated_one() {
+    // Match jsonSchemaSort in .dprint.jsonc. Only schema-safe arrays are sorted;
+    // literal values and ordered arrays (such as prefixItems) stay intact.
+    let mut options = json_schema_sort::SortOptions::default();
+    options.properties = json_schema_sort::PropertyOrdering::Preserve;
+    let generated = json_schema_sort::to_string_sorted_with_options(&crate::schema_json_for::<ConfigFile>(), options).unwrap();
+    if std::env::var_os("UPDATE_CONFIG_SCHEMA").is_some() {
+      std::fs::write(PUBLISHED_PATH, &generated).unwrap();
+    }
+    // Read after regenerating so the assertion checks the file just written.
+    let published = std::fs::read_to_string(PUBLISHED_PATH).unwrap();
+    let published = json_schema_sort::to_string_sorted_with_options(&published, options).unwrap();
+    assert_eq!(
+      published, generated,
+      "schema/v0.json isn't the generated schema. Run `UPDATE_CONFIG_SCHEMA=1 cargo test -p kprint-config --features schema` to regenerate it."
+    );
+  }
+
+  fn validate(schema: &Value, instance: &Value) -> Result<(), String> {
+    let mut schemas = boon::Schemas::new();
+    let mut compiler = boon::Compiler::new();
+    compiler.add_resource(ROOT_SCHEMA_ID, schema.clone()).unwrap();
+    let index = compiler.compile(ROOT_SCHEMA_ID, &mut schemas).map_err(|err| format!("{:#}", err))?;
+    schemas.validate(instance, index).map_err(|err| format!("{:#}", err))
+  }
+
+  #[test]
+  fn the_schema_accepts_what_the_model_reads_and_rejects_what_it_doesnt() {
+    let schema = root_schema();
+    let full = super::test::full_config();
+    assert_eq!(from_json::<ConfigFile>(full.clone()).is_ok(), true);
+    assert_eq!(validate(&schema, &full), Ok(()));
+    // a written file reads the same, so it validates the same
+    let written = serde_json::to_value(from_json::<ConfigFile>(full.clone()).unwrap()).unwrap();
+    assert_eq!(validate(&schema, &written), Ok(()));
+
+    // each property left out, `null` and as it is, of the file, of a plugin's
+    // table and of an override: the model and the schema agree on every one
+    // (a property of an `Option` reads `null` as left out, and the schema says
+    // so, while one that isn't optional doesn't)
+    let mut agreed = 0;
+    let mut nulls_accepted = 0;
+    let mut nulls_rejected = 0;
+    for (parent_pointer, name) in super::test::properties_of(&full, "") {
+      for variant in ["left out", "null", "as it is"] {
+        let mut config = full.clone();
+        let parent = config.pointer_mut(&parent_pointer).unwrap().as_object_mut().unwrap();
+        match variant {
+          "left out" => {
+            parent.shift_remove(&name);
+          }
+          "null" => {
+            parent[&name] = Value::Null;
+          }
+          _ => {}
+        }
+        let reads = from_json::<ConfigFile>(config.clone());
+        let validates = validate(&schema, &config);
+        assert_eq!(
+          reads.is_ok(),
+          validates.is_ok(),
+          "{}/{} {}: model {:?}, schema {:?}",
+          parent_pointer,
+          name,
+          variant,
+          reads.err(),
+          validates.err()
+        );
+        agreed += 1;
+        if variant == "null" {
+          if reads.is_ok() {
+            nulls_accepted += 1;
+          } else {
+            nulls_rejected += 1;
+          }
+        }
+      }
+    }
+    assert!(agreed > 60, "{}", agreed);
+    // dprint's optional properties, and a plugin's own properties
+    assert!(nulls_accepted > 10, "{}", nulls_accepted);
+    // a plugin's table, an override's `files` and a shebang's extension
+    assert!(nulls_rejected >= 3, "{}", nulls_rejected);
+    assert!(from_json::<ConfigFile>(json!({ "incremental": null, "plugins": null, "extends": null })).is_ok());
+    assert_eq!(validate(&schema, &json!({ "incremental": null, "plugins": null, "extends": null })), Ok(()));
+    assert!(from_json::<ConfigFile>(json!({ "typescript": null })).is_err());
+    assert!(validate(&schema, &json!({ "typescript": null })).is_err());
+
+    // what the model rejects, the schema does too (the shape; the schema
+    // can't know a shebang's extension is normalized)
+    for invalid in [
+      json!({ "incremental": "yes" }),
+      json!({ "extends": 5 }),
+      json!({ "lineWidth": "80" }),
+      json!({ "lineWidth": -1 }),
+      json!({ "indentWidth": 300 }),
+      json!({ "newLineKind": "cr" }),
+      json!({ "includes": "**/*.ts" }),
+      json!({ "shebangs": { "/bin/sh": "sh" } }),
+      json!({ "shebangs": { "#!/bin/sh": 5 } }),
+      json!({ "lineWidht": 80 }),
+      json!({ "test": null }),
+      json!({ "test": { "locked": 1 } }),
+      json!({ "test": { "associations": [1] } }),
+      json!({ "test": { "overrides": 5 } }),
+      json!({ "test": { "overrides": [{ "a": 1 }] } }),
+      json!({ "test": { "overrides": [{ "files": [], "a": 1 }] } }),
+      json!({ "test": { "overrides": [{ "files": "*.x" }] } }),
+    ] {
+      assert!(from_json::<ConfigFile>(invalid.clone()).is_err(), "{}", invalid);
+      assert!(validate(&schema, &invalid).is_err(), "{}", invalid);
+    }
+    // and the old `projectType` is accepted but not offered
+    assert!(from_json::<ConfigFile>(json!({ "projectType": "openSource" })).is_ok());
+    assert!(schema["properties"].get("projectType").is_none());
+  }
+
+  #[test]
+  fn describes_dprints_properties_and_the_plugins_tables() {
+    let schema = root_schema();
+    assert_eq!(schema["$schema"], json!("https://json-schema.org/draft/2020-12/schema"));
+    assert_eq!(schema["$id"], json!(ROOT_SCHEMA_ID));
+    assert_eq!(schema["allowTrailingCommas"], json!(true));
+    assert_eq!(schema["properties"]["incremental"]["default"], json!(true));
+    // every property of dprint's may be left out, which `null` reads as
+    assert_eq!(schema["properties"]["incremental"]["type"], json!(["boolean", "null"]));
+    assert_eq!(
+      schema["properties"]["lineWidth"],
+      json!({ "description": schema["properties"]["lineWidth"]["description"], "type": ["integer", "null"], "minimum": 0 })
+    );
+    assert_eq!(
+      schema["properties"]["newLineKind"]["anyOf"][0]["oneOf"][1],
+      json!({ "description": "Uses carriage return, line feed.", "type": "string", "const": "crlf" })
+    );
+    assert_eq!(schema["properties"]["newLineKind"]["anyOf"][1], json!({ "type": "null" }));
+    assert_eq!(
+      schema["properties"]["shebangs"],
+      json!({
+        "description": schema["properties"]["shebangs"]["description"],
+        "type": ["object", "null"],
+        "additionalProperties": { "description": "The file extension to treat matching files as (ex. \"sh\" or \".sh\").", "type": "string" },
+        "propertyNames": { "pattern": "^#!" }
+      })
+    );
+    // every other property is a plugin's table
+    assert_eq!(schema["additionalProperties"], json!({ "$ref": "#/$defs/pluginTable" }));
+    let table = &schema["$defs"]["pluginTable"];
+    assert_eq!(table["type"], json!("object"));
+    assert_eq!(table["additionalProperties"], json!(true));
+    assert_eq!(
+      table["properties"]["overrides"]["anyOf"],
+      json!([
+        {
+          "anyOf": [{ "$ref": "#/$defs/pluginOverride" }, { "type": "array", "items": { "$ref": "#/$defs/pluginOverride" } }],
+          "description": "Overrides of a plugin's configuration, one or more."
+        },
+        { "type": "null" }
+      ])
+    );
+    assert_eq!(table["properties"]["locked"]["type"], json!(["boolean", "null"]));
+    let override_schema = &schema["$defs"]["pluginOverride"];
+    assert_eq!(override_schema["required"], json!(["files"]));
+    assert_eq!(override_schema["minProperties"], json!(2));
+    assert_eq!(override_schema["additionalProperties"], json!(true));
+    assert_eq!(
+      override_schema["properties"]["files"]["anyOf"],
+      json!([{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1 }])
+    );
+    // no integer has a Rust width
+    fn check(value: &Value) {
+      match value {
+        Value::Object(object) => {
+          assert!(object.get("format").is_none(), "{}", value);
+          object.values().for_each(check);
+        }
+        Value::Array(values) => values.iter().for_each(check),
+        _ => {}
+      }
+    }
+    check(&schema);
+  }
+}

@@ -1,13 +1,12 @@
 # :schema https://www.schemastore.org/cargo-config.json
 
 [alias]
-lint = "clippy --workspace --all-features --all-targets"
+build-kprint = "build -p kprint --release --bin kprint"
+lint         = "clippy --workspace --all-features --all-targets"
+run-kprint   = "run -qp kprint --release --bin kprint --"
 
-# [build]
-# rustflags = "-D warnings"
-
-[env]
-RUSTFLAGS = "-D warnings"
+[build]
+rustflags = "-Dwarnings"
 
 [target]
 # statically link the c runtime https://github.com/rust-lang/rust/issues/100874

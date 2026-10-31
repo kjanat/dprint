@@ -1,0 +1,34 @@
+# Maintainer: Kaj Kowalski <info@kajkowalski.nl>
+# shellcheck disable=SC2034,SC2154
+
+pkgname=kprint-bin
+pkgver=0.59.0
+pkgrel=1
+pkgdesc='Pluggable and configurable code formatter, forked from dprint (kjanat, prebuilt binary)'
+arch=('x86_64' 'aarch64')
+url='https://dprint.kjanat.dev'
+license=('MIT')
+depends=('glibc')
+provides=("kprint=${pkgver}" "dprint=${pkgver}")
+conflicts=('dprint' 'dprint-git' 'kprint' 'kprint-git')
+_tag="${pkgver}-kjanat"
+_releases="https://github.com/kjanat/dprint/releases/download/${_tag}"
+source=("LICENSE-${_tag}::https://raw.githubusercontent.com/kjanat/dprint/${_tag}/LICENSE")
+source_x86_64=("kprint-x86_64-${_tag}.zip::${_releases}/kprint-x86_64-unknown-linux-gnu.zip")
+source_aarch64=("kprint-aarch64-${_tag}.zip::${_releases}/kprint-aarch64-unknown-linux-gnu.zip")
+sha256sums=('f49eac7bc59816a4b7fffd64914169ef46deb636f94b77eaa274e7352983c3fa')
+sha256sums_x86_64=('e6027824dd7195b658e8cfaccd7c36bd127bbbba894b888af74da9159cf683a0')
+sha256sums_aarch64=('78be7c4abd67d37ab27e9cc3e415efb6dcc38f3d3170c17b63fd20ac796c0d73')
+
+package() {
+	install -Dm0755 kprint "${pkgdir}/usr/bin/kprint"
+	# for what calls dprint
+	ln -s kprint "${pkgdir}/usr/bin/dprint"
+	install -Dm0644 "LICENSE-${_tag}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+	install -dm0755 "${pkgdir}/usr/share/bash-completion/completions" \
+		"${pkgdir}/usr/share/zsh/site-functions" \
+		"${pkgdir}/usr/share/fish/vendor_completions.d"
+	./kprint completions bash >"${pkgdir}/usr/share/bash-completion/completions/kprint"
+	./kprint completions zsh >"${pkgdir}/usr/share/zsh/site-functions/_kprint"
+	./kprint completions fish >"${pkgdir}/usr/share/fish/vendor_completions.d/kprint.fish"
+}
