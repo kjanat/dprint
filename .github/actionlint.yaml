@@ -1,10 +1,29 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/kjanat/actionlint/e6a3f3cb997b50f1598b778785a0f3e31801e55b/actionlint.schema.json
----
-policy:
-  cache-call-unrestricted: true
-  cache-operation: true
-  cache-write-untrusted: true
-  disallow-suppressions: true
-  require-commit-hash: true
-  require-job-timeout: true
-  require-permissions: true
+lint:
+  rules:
+    security:
+      cache-call-unrestricted:
+        options: null
+        level: on
+      cache-write-untrusted:
+        options: null
+        level: on
+    correctness:
+      cache-operation:
+        options: null
+        level: on
+    policy:
+      disallow-suppressions:
+        options: null
+        level: on
+      require-commit-hash:
+        options: null
+        level: on
+      require-job-timeout:
+        options: null
+        level: on
+      require-permissions:
+        options: null
+        level: on
+plugins:
+    - shellcheck
+    - ruff

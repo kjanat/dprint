@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "registry": "https://plugins.actionlint.kjanat.dev/",
+      "name": "github.com/kjanat/actionlint-plugin-ruff",
+      "alias": "ruff",
+      "repository_id": "1412347408",
+      "owner_id": "6353477",
+      "plugin_id": "actionlint-plugin-ruff",
+      "selector": "latest",
+      "version": "v0.2.0",
+      "kind": "component",
+      "asset": "plugin.component.wasm",
+      "url": "https://github.com/kjanat/actionlint-plugin-ruff/releases/download/v0.2.0/plugin.component.wasm",
+      "sha256": "059450bf4c7c44ed9d9fb89a123bca5a3a2a7adb4d81d5b1c13db02b7d736202",
+      "contract": "kjanat:actionlint/script-engine@0.2.0#sha256=c20d7e9e516166576fdf19bfd86e0843838179b12ad55350c33db8d04c2eaa9b"
+    },
+    {
+      "registry": "https://plugins.actionlint.kjanat.dev/",
+      "name": "github.com/kjanat/actionlint-plugin-shellcheck",
+      "alias": "shellcheck",
+      "repository_id": "1422095402",
+      "owner_id": "6353477",
+      "plugin_id": "shellcheck-rs",
+      "selector": "latest",
+      "version": "v0.2.0",
+      "kind": "component",
+      "asset": "plugin.wasm",
+      "url": "https://github.com/kjanat/actionlint-plugin-shellcheck/releases/download/v0.2.0/plugin.wasm",
+      "sha256": "4fd3d4a82a5e7808b96b2c303a9ca753219c657a8fe08ec3a07b84c0b453c5d5",
+      "contract": "kjanat:actionlint/analyzer@0.2.0#sha256=4f3bfad82ef81650110ceaad751d245484899425e65c74cda1d919ea30828073"
+    }
+  ]
+}

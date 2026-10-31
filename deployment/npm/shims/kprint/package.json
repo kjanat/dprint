@@ -1,0 +1,48 @@
+{
+  "name": "@kprint/kprint",
+  "version": "0.60.5",
+  "description": "kprint: a pluggable and configurable code formatter written in Rust, forked from dprint.",
+  "bin": {
+    "kprint": "bin.cjs",
+    "dprint": "bin.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kjanat/dprint.git"
+  },
+  "author": "Kaj Kowalski",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/kjanat/dprint/issues"
+  },
+  "keywords": [
+    "dprint",
+    "formatter",
+    "format",
+    "code",
+    "cli"
+  ],
+  "homepage": "https://dprint.kjanat.dev",
+  "preferUnplugged": true,
+  "scripts": {
+    "postinstall": "node ./install.cjs"
+  },
+  "optionalDependencies": {
+    "@kprint/kprint-freebsd-x64": "0.60.5",
+    "@kprint/kprint-win32-x64": "0.60.5",
+    "@kprint/kprint-win32-arm64": "0.60.5",
+    "@kprint/kprint-darwin-x64": "0.60.5",
+    "@kprint/kprint-darwin-arm64": "0.60.5",
+    "@kprint/kprint-linux-x64-glibc": "0.60.5",
+    "@kprint/kprint-linux-x64-musl": "0.60.5",
+    "@kprint/kprint-linux-arm64-glibc": "0.60.5",
+    "@kprint/kprint-linux-arm64-musl": "0.60.5",
+    "@kprint/kprint-linux-riscv64-glibc": "0.60.5",
+    "@kprint/kprint-linux-loong64-glibc": "0.60.5",
+    "@kprint/kprint-linux-loong64-musl": "0.60.5",
+    "@kprint/kprint-linux-ppc64-glibc": "0.60.5",
+    "@kprint/kprint-linux-ppc64-musl": "0.60.5",
+    "@kprint/kprint-android-arm64": "0.60.5",
+    "@kprint/kprint-android-x64": "0.60.5"
+  }
+}

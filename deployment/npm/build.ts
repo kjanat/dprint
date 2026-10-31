@@ -119,7 +119,8 @@ const fmtPackage = "@kjanat/fmt";
 // fmt.ts's configuration without one
 const fmtDefaultConfig = "https://raw.githubusercontent.com/kjanat/kjanat/refs/heads/master/configs/dprint.remote.json";
 
-const mainReadme = (repositoryUrl: string) => `# ${mainPackage}
+const mainReadme = (repositoryUrl: string) =>
+  `# ${mainPackage}
 
 [kprint](https://dprint.kjanat.dev) is a pluggable and configurable code
 formatter written in Rust, forked from dprint. It has formatters built in (ex.
@@ -260,7 +261,9 @@ if (!args["publish-only"]) {
       pkgDir
         .join("README.md")
         .writeTextSync(
-          `# ${getPackageName(pkg)}\n\nThe ${describePlatform(pkg)} binary of [${mainPackage}](https://www.npmjs.com/package/${mainPackage}), which installs it. Install that instead.\n`,
+          `# ${getPackageName(pkg)}\n\nThe ${
+            describePlatform(pkg)
+          } binary of [${mainPackage}](https://www.npmjs.com/package/${mainPackage}), which installs it. Install that instead.\n`,
         );
       pkgDir.join("package.json").writeJsonPrettySync({
         name: getPackageName(pkg),
